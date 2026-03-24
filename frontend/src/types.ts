@@ -24,6 +24,20 @@ export interface AccountRow {
   health_tier?: string
   scheduler_score?: number
   dynamic_concurrency_limit?: number
+  scheduler_breakdown?: {
+    unauthorized_penalty: number
+    rate_limit_penalty: number
+    timeout_penalty: number
+    server_penalty: number
+    failure_penalty: number
+    success_bonus: number
+    usage_penalty_7d: number
+    latency_penalty: number
+  }
+  last_unauthorized_at?: ISODateString
+  last_rate_limited_at?: ISODateString
+  last_timeout_at?: ISODateString
+  last_server_error_at?: ISODateString
   proxy_url: string
   updated_at: ISODateString
   active_requests?: number

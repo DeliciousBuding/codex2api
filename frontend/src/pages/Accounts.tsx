@@ -633,6 +633,15 @@ function formatTestErrorMessage(message: string) {
   }
 }
 
+function formatTestOutput(text: string) {
+  try {
+    const parsed = JSON.parse(text);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return text;
+  }
+}
+
 function TestConnectionModal({
   account,
   onClose,
@@ -657,11 +666,18 @@ function TestConnectionModal({
   }, [onSettled])
 
   useEffect(() => {
+    // 重置状态（StrictMode 二次 mount 时清理上一次的残留）
+    setOutput([])
+    setStatus('connecting')
+    setErrorMsg('')
+    settledRef.current = false
+
     const controller = new AbortController()
     abortRef.current = controller
-    let cancelled = false
 
     const run = async () => {
+      if (controller.signal.aborted) return
+
       try {
         const res = await fetch(`/api/admin/accounts/${account.id}/test`, {
           signal: controller.signal,
@@ -756,14 +772,12 @@ function TestConnectionModal({
       }
     }
 
+    // 延迟 50ms 启动，确保 StrictMode cleanup 有足够时间执行 abort
     const timer = window.setTimeout(() => {
-      if (!cancelled) {
-        void run()
-      }
-    }, 0)
+      void run()
+    }, 50)
 
     return () => {
-      cancelled = true
       window.clearTimeout(timer)
       controller.abort()
     }

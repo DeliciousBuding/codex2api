@@ -78,6 +78,30 @@ type Account struct {
 	LastUsedAt     int64 // 最后使用时间（UnixNano）
 }
 
+// SchedulerBreakdown 调度评分拆解
+type SchedulerBreakdown struct {
+	UnauthorizedPenalty float64
+	RateLimitPenalty    float64
+	TimeoutPenalty      float64
+	ServerPenalty       float64
+	FailurePenalty      float64
+	SuccessBonus        float64
+	UsagePenalty7d      float64
+	LatencyPenalty      float64
+}
+
+// SchedulerDebugSnapshot 调度调试快照
+type SchedulerDebugSnapshot struct {
+	HealthTier              string
+	SchedulerScore          float64
+	DynamicConcurrencyLimit int64
+	Breakdown               SchedulerBreakdown
+	LastUnauthorizedAt      time.Time
+	LastRateLimitedAt       time.Time
+	LastTimeoutAt           time.Time
+	LastServerErrorAt       time.Time
+}
+
 // ID 返回数据库 ID
 func (a *Account) ID() int64 {
 	return a.DBID
@@ -162,61 +186,77 @@ func (a *Account) recordLatencyLocked(latency time.Duration) {
 	a.LatencyEWMA = a.LatencyEWMA*0.8 + latencyMs*0.2
 }
 
-func (a *Account) recomputeSchedulerLocked(baseLimit int64) {
+func (a *Account) schedulerBreakdownLocked() SchedulerBreakdown {
 	now := time.Now()
-	score := 100.0
+	breakdown := SchedulerBreakdown{}
 
 	if !a.LastUnauthorizedAt.IsZero() {
 		since := now.Sub(a.LastUnauthorizedAt)
 		switch {
 		case since < time.Hour:
-			score -= 50
+			breakdown.UnauthorizedPenalty = 50
 		case since < 6*time.Hour:
-			score -= 30
+			breakdown.UnauthorizedPenalty = 30
 		case since < 24*time.Hour:
-			score -= 15
+			breakdown.UnauthorizedPenalty = 15
 		}
 	}
 	if !a.LastRateLimitedAt.IsZero() {
 		since := now.Sub(a.LastRateLimitedAt)
 		switch {
 		case since < 10*time.Minute:
-			score -= 22
+			breakdown.RateLimitPenalty = 22
 		case since < time.Hour:
-			score -= 10
+			breakdown.RateLimitPenalty = 10
 		}
 	}
 	if !a.LastTimeoutAt.IsZero() && now.Sub(a.LastTimeoutAt) < 15*time.Minute {
-		score -= 18
+		breakdown.TimeoutPenalty = 18
 	}
 	if !a.LastServerErrorAt.IsZero() && now.Sub(a.LastServerErrorAt) < 15*time.Minute {
-		score -= 12
+		breakdown.ServerPenalty = 12
 	}
 
-	score -= float64(clampInt(a.FailureStreak*6, 0, 24))
-	score += float64(clampInt(a.SuccessStreak*2, 0, 12))
+	breakdown.FailurePenalty = float64(clampInt(a.FailureStreak*6, 0, 24))
+	breakdown.SuccessBonus = float64(clampInt(a.SuccessStreak*2, 0, 12))
 
 	if a.UsagePercent7dValid && strings.EqualFold(a.PlanType, "free") {
 		switch {
 		case a.UsagePercent7d >= 100:
-			score -= 40
+			breakdown.UsagePenalty7d = 40
 		case a.UsagePercent7d >= 95:
-			score -= 30
+			breakdown.UsagePenalty7d = 30
 		case a.UsagePercent7d >= 85:
-			score -= 18
+			breakdown.UsagePenalty7d = 18
 		case a.UsagePercent7d >= 70:
-			score -= 8
+			breakdown.UsagePenalty7d = 8
 		}
 	}
 
 	switch {
 	case a.LatencyEWMA >= 20000:
-		score -= 15
+		breakdown.LatencyPenalty = 15
 	case a.LatencyEWMA >= 10000:
-		score -= 8
+		breakdown.LatencyPenalty = 8
 	case a.LatencyEWMA >= 5000:
-		score -= 4
+		breakdown.LatencyPenalty = 4
 	}
+
+	return breakdown
+}
+
+func (a *Account) recomputeSchedulerLocked(baseLimit int64) {
+	now := time.Now()
+	breakdown := a.schedulerBreakdownLocked()
+	score := 100.0 -
+		breakdown.UnauthorizedPenalty -
+		breakdown.RateLimitPenalty -
+		breakdown.TimeoutPenalty -
+		breakdown.ServerPenalty -
+		breakdown.FailurePenalty -
+		breakdown.UsagePenalty7d -
+		breakdown.LatencyPenalty +
+		breakdown.SuccessBonus
 
 	tier := HealthTierHealthy
 	switch {
@@ -404,6 +444,24 @@ func (a *Account) GetDynamicConcurrencyLimit() int64 {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.DynamicConcurrencyLimit
+}
+
+// GetSchedulerDebugSnapshot 获取调度调试快照
+func (a *Account) GetSchedulerDebugSnapshot(baseLimit int64) SchedulerDebugSnapshot {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.recomputeSchedulerLocked(baseLimit)
+	return SchedulerDebugSnapshot{
+		HealthTier:              string(a.HealthTier),
+		SchedulerScore:          a.SchedulerScore,
+		DynamicConcurrencyLimit: a.DynamicConcurrencyLimit,
+		Breakdown:               a.schedulerBreakdownLocked(),
+		LastUnauthorizedAt:      a.LastUnauthorizedAt,
+		LastRateLimitedAt:       a.LastRateLimitedAt,
+		LastTimeoutAt:           a.LastTimeoutAt,
+		LastServerErrorAt:       a.LastServerErrorAt,
+	}
 }
 
 // NeedsUsageProbe 判断是否需要主动探针刷新用量

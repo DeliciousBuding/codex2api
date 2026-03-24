@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Activity, AlertTriangle, BarChart3, Clock3, Cpu, Database, HardDrive, RefreshCw, Server, Users, Zap } from 'lucide-react'
 import { api } from '../api'
 import PageHeader from '../components/PageHeader'
@@ -9,10 +9,13 @@ import type { AccountRow, OpsOverviewResponse } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Select } from '@/components/ui/select'
 
 type MetricTone = 'normal' | 'warning' | 'danger' | 'info'
 
 export default function Operations() {
+  const [tierFilter, setTierFilter] = useState('all')
+  const [sortBy, setSortBy] = useState('risk')
   const loadOperationsData = useCallback(async () => {
     const [overview, accountsResponse] = await Promise.all([
       api.getOpsOverview(),
@@ -53,6 +56,21 @@ export default function Operations() {
     risky: accounts.filter((account) => account.health_tier === 'risky').length,
     banned: accounts.filter((account) => account.health_tier === 'banned' || account.status === 'unauthorized').length,
   }), [accounts])
+  const recentIssueCounts = useMemo(() => {
+    const now = Date.now()
+    const withinWindow = (iso?: string, minutes = 60) => {
+      if (!iso) return false
+      const ts = new Date(iso).getTime()
+      if (Number.isNaN(ts)) return false
+      return now-ts <= minutes*60*1000
+    }
+
+    return {
+      unauthorized24h: accounts.filter((account) => withinWindow(account.last_unauthorized_at, 24 * 60)).length,
+      rateLimited1h: accounts.filter((account) => withinWindow(account.last_rate_limited_at, 60)).length,
+      timeout15m: accounts.filter((account) => withinWindow(account.last_timeout_at, 15)).length,
+    }
+  }, [accounts])
   const spotlightAccounts = useMemo(() => {
     const priority = (account: AccountRow) => {
       if (account.health_tier === 'banned' || account.status === 'unauthorized') return 3
@@ -62,14 +80,35 @@ export default function Operations() {
     }
 
     return [...accounts]
-      .filter((account) => priority(account) > 0)
+      .filter((account) => {
+        if (tierFilter === 'all') {
+          return priority(account) > 0
+        }
+        if (tierFilter === 'banned') {
+          return account.health_tier === 'banned' || account.status === 'unauthorized'
+        }
+        return account.health_tier === tierFilter
+      })
       .sort((left, right) => {
-        const priorityDiff = priority(right) - priority(left)
-        if (priorityDiff !== 0) return priorityDiff
-        return (left.scheduler_score ?? 0) - (right.scheduler_score ?? 0)
+        switch (sortBy) {
+          case 'score_asc':
+            return (left.scheduler_score ?? 0) - (right.scheduler_score ?? 0)
+          case 'usage_desc':
+            return (right.usage_percent_7d ?? -1) - (left.usage_percent_7d ?? -1)
+          case 'latency_penalty':
+            return (right.scheduler_breakdown?.latency_penalty ?? 0) - (left.scheduler_breakdown?.latency_penalty ?? 0)
+          case 'unauthorized':
+            return Number(Boolean(right.last_unauthorized_at)) - Number(Boolean(left.last_unauthorized_at))
+          case 'risk':
+          default: {
+            const priorityDiff = priority(right) - priority(left)
+            if (priorityDiff !== 0) return priorityDiff
+            return (left.scheduler_score ?? 0) - (right.scheduler_score ?? 0)
+          }
+        }
       })
       .slice(0, 8)
-  }, [accounts])
+  }, [accounts, tierFilter, sortBy])
 
   return (
     <StateShell
@@ -120,6 +159,57 @@ export default function Operations() {
                   </div>
                 </div>
 
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <MiniOpsCard
+                    label="最近 401"
+                    value={formatNumber(recentIssueCounts.unauthorized24h)}
+                    sub="24 小时内被判定 unauthorized 的账号数"
+                    tone="danger"
+                  />
+                  <MiniOpsCard
+                    label="最近 429"
+                    value={formatNumber(recentIssueCounts.rateLimited1h)}
+                    sub="1 小时内触发限流的账号数"
+                    tone="warning"
+                  />
+                  <MiniOpsCard
+                    label="最近 Timeout"
+                    value={formatNumber(recentIssueCounts.timeout15m)}
+                    sub="15 分钟内出现超时的账号数"
+                    tone="neutral"
+                  />
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-white/45 px-4 py-3">
+                  <span className="text-[12px] font-semibold text-muted-foreground">筛选</span>
+                  <div className="w-[180px]">
+                    <Select
+                      value={tierFilter}
+                      onValueChange={setTierFilter}
+                      options={[
+                        { label: '全部风险账号', value: 'all' },
+                        { label: 'Warm', value: 'warm' },
+                        { label: 'Risky', value: 'risky' },
+                        { label: 'Banned', value: 'banned' },
+                      ]}
+                    />
+                  </div>
+                  <span className="text-[12px] font-semibold text-muted-foreground">排序</span>
+                  <div className="w-[200px]">
+                    <Select
+                      value={sortBy}
+                      onValueChange={setSortBy}
+                      options={[
+                        { label: '风险优先', value: 'risk' },
+                        { label: '分数升序', value: 'score_asc' },
+                        { label: '7d 用量高优先', value: 'usage_desc' },
+                        { label: '延迟惩罚高优先', value: 'latency_penalty' },
+                        { label: '401 近期优先', value: 'unauthorized' },
+                      ]}
+                    />
+                  </div>
+                </div>
+
                 <div className="mt-5 grid gap-3 md:grid-cols-2">
                   {spotlightAccounts.length > 0 ? (
                     spotlightAccounts.map((account) => (
@@ -144,6 +234,13 @@ export default function Operations() {
                               7d {account.usage_percent_7d.toFixed(1)}%
                             </Badge>
                           ) : null}
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {buildScoreReasonTags(account).map((tag) => (
+                            <Badge key={tag.label} variant="outline" className={tag.className}>
+                              {tag.label}
+                            </Badge>
+                          ))}
                         </div>
                       </div>
                     ))
@@ -344,6 +441,34 @@ function SchedulerPill({
   )
 }
 
+function MiniOpsCard({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string
+  value: string
+  sub: string
+  tone: 'neutral' | 'warning' | 'danger'
+}) {
+  const toneStyle = {
+    neutral: 'bg-slate-500/10 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300',
+    warning: 'bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300',
+    danger: 'bg-red-500/10 text-red-600 dark:bg-red-500/20 dark:text-red-300',
+  }[tone]
+
+  return (
+    <div className="rounded-2xl border border-border bg-white/45 px-4 py-4">
+      <div className="text-[12px] font-semibold text-muted-foreground">{label}</div>
+      <div className="mt-2 text-[28px] font-bold leading-none tracking-tight text-foreground">{value}</div>
+      <div className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ${toneStyle}`}>
+        {sub}
+      </div>
+    </div>
+  )
+}
+
 function getHealthTierClassName(healthTier?: string) {
   switch (healthTier) {
     case 'healthy':
@@ -372,6 +497,42 @@ function formatHealthTier(healthTier?: string) {
     default:
       return '未知'
   }
+}
+
+function buildScoreReasonTags(account: AccountRow) {
+  const breakdown = account.scheduler_breakdown
+  if (!breakdown) {
+    return []
+  }
+
+  const tags: Array<{ label: string; className: string }> = []
+
+  if (breakdown.unauthorized_penalty > 0) {
+    tags.push({ label: `401 -${Math.round(breakdown.unauthorized_penalty)}`, className: 'border-transparent bg-red-500/10 text-red-600 dark:bg-red-500/20 dark:text-red-300' })
+  }
+  if (breakdown.rate_limit_penalty > 0) {
+    tags.push({ label: `429 -${Math.round(breakdown.rate_limit_penalty)}`, className: 'border-transparent bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300' })
+  }
+  if (breakdown.timeout_penalty > 0) {
+    tags.push({ label: `超时 -${Math.round(breakdown.timeout_penalty)}`, className: 'border-transparent bg-orange-500/10 text-orange-600 dark:bg-orange-500/20 dark:text-orange-300' })
+  }
+  if (breakdown.server_penalty > 0) {
+    tags.push({ label: `5xx -${Math.round(breakdown.server_penalty)}`, className: 'border-transparent bg-rose-500/10 text-rose-600 dark:bg-rose-500/20 dark:text-rose-300' })
+  }
+  if (breakdown.failure_penalty > 0) {
+    tags.push({ label: `失败串 -${Math.round(breakdown.failure_penalty)}`, className: 'border-transparent bg-slate-500/10 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300' })
+  }
+  if (breakdown.usage_penalty_7d > 0) {
+    tags.push({ label: `7d -${Math.round(breakdown.usage_penalty_7d)}`, className: 'border-transparent bg-fuchsia-500/10 text-fuchsia-600 dark:bg-fuchsia-500/20 dark:text-fuchsia-300' })
+  }
+  if (breakdown.latency_penalty > 0) {
+    tags.push({ label: `延迟 -${Math.round(breakdown.latency_penalty)}`, className: 'border-transparent bg-cyan-500/10 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300' })
+  }
+  if (breakdown.success_bonus > 0) {
+    tags.push({ label: `成功 +${Math.round(breakdown.success_bonus)}`, className: 'border-transparent bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300' })
+  }
+
+  return tags
 }
 
 function getPercentTone(value: number, warningThreshold: number, dangerThreshold: number): MetricTone {

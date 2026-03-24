@@ -112,22 +112,38 @@ func (h *Handler) GetStats(c *gin.Context) {
 // ==================== Accounts ====================
 
 type accountResponse struct {
-	ID              int64    `json:"id"`
-	Name            string   `json:"name"`
-	Email           string   `json:"email"`
-	PlanType        string   `json:"plan_type"`
-	Status          string   `json:"status"`
-	HealthTier      string   `json:"health_tier"`
-	SchedulerScore  float64  `json:"scheduler_score"`
-	ConcurrencyCap  int64    `json:"dynamic_concurrency_limit"`
-	ProxyURL        string   `json:"proxy_url"`
-	UpdatedAt       string   `json:"updated_at"`
-	ActiveRequests  int64    `json:"active_requests"`
-	TotalRequests   int64    `json:"total_requests"`
-	LastUsedAt      string   `json:"last_used_at"`
-	SuccessRequests int64    `json:"success_requests"`
-	ErrorRequests   int64    `json:"error_requests"`
-	UsagePercent7d  *float64 `json:"usage_percent_7d"`
+	ID                 int64                      `json:"id"`
+	Name               string                     `json:"name"`
+	Email              string                     `json:"email"`
+	PlanType           string                     `json:"plan_type"`
+	Status             string                     `json:"status"`
+	HealthTier         string                     `json:"health_tier"`
+	SchedulerScore     float64                    `json:"scheduler_score"`
+	ConcurrencyCap     int64                      `json:"dynamic_concurrency_limit"`
+	ProxyURL           string                     `json:"proxy_url"`
+	UpdatedAt          string                     `json:"updated_at"`
+	ActiveRequests     int64                      `json:"active_requests"`
+	TotalRequests      int64                      `json:"total_requests"`
+	LastUsedAt         string                     `json:"last_used_at"`
+	SuccessRequests    int64                      `json:"success_requests"`
+	ErrorRequests      int64                      `json:"error_requests"`
+	UsagePercent7d     *float64                   `json:"usage_percent_7d"`
+	ScoreBreakdown     schedulerBreakdownResponse `json:"scheduler_breakdown"`
+	LastUnauthorizedAt string                     `json:"last_unauthorized_at,omitempty"`
+	LastRateLimitedAt  string                     `json:"last_rate_limited_at,omitempty"`
+	LastTimeoutAt      string                     `json:"last_timeout_at,omitempty"`
+	LastServerErrorAt  string                     `json:"last_server_error_at,omitempty"`
+}
+
+type schedulerBreakdownResponse struct {
+	UnauthorizedPenalty float64 `json:"unauthorized_penalty"`
+	RateLimitPenalty    float64 `json:"rate_limit_penalty"`
+	TimeoutPenalty      float64 `json:"timeout_penalty"`
+	ServerPenalty       float64 `json:"server_penalty"`
+	FailurePenalty      float64 `json:"failure_penalty"`
+	SuccessBonus        float64 `json:"success_bonus"`
+	UsagePenalty7d      float64 `json:"usage_penalty_7d"`
+	LatencyPenalty      float64 `json:"latency_penalty"`
 }
 
 // ListAccounts 获取账号列表
@@ -167,14 +183,37 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 		if acc, ok := accountMap[row.ID]; ok {
 			resp.ActiveRequests = acc.GetActiveRequests()
 			resp.TotalRequests = acc.GetTotalRequests()
-			resp.HealthTier = acc.GetHealthTier()
-			resp.SchedulerScore = acc.GetSchedulerScore()
-			resp.ConcurrencyCap = acc.GetDynamicConcurrencyLimit()
+			debug := acc.GetSchedulerDebugSnapshot(int64(h.store.GetMaxConcurrency()))
+			resp.HealthTier = debug.HealthTier
+			resp.SchedulerScore = debug.SchedulerScore
+			resp.ConcurrencyCap = debug.DynamicConcurrencyLimit
+			resp.ScoreBreakdown = schedulerBreakdownResponse{
+				UnauthorizedPenalty: debug.Breakdown.UnauthorizedPenalty,
+				RateLimitPenalty:    debug.Breakdown.RateLimitPenalty,
+				TimeoutPenalty:      debug.Breakdown.TimeoutPenalty,
+				ServerPenalty:       debug.Breakdown.ServerPenalty,
+				FailurePenalty:      debug.Breakdown.FailurePenalty,
+				SuccessBonus:        debug.Breakdown.SuccessBonus,
+				UsagePenalty7d:      debug.Breakdown.UsagePenalty7d,
+				LatencyPenalty:      debug.Breakdown.LatencyPenalty,
+			}
 			if usagePct, ok := acc.GetUsagePercent7d(); ok {
 				resp.UsagePercent7d = &usagePct
 			}
 			if t := acc.GetLastUsedAt(); !t.IsZero() {
 				resp.LastUsedAt = t.Format(time.RFC3339)
+			}
+			if !debug.LastUnauthorizedAt.IsZero() {
+				resp.LastUnauthorizedAt = debug.LastUnauthorizedAt.Format(time.RFC3339)
+			}
+			if !debug.LastRateLimitedAt.IsZero() {
+				resp.LastRateLimitedAt = debug.LastRateLimitedAt.Format(time.RFC3339)
+			}
+			if !debug.LastTimeoutAt.IsZero() {
+				resp.LastTimeoutAt = debug.LastTimeoutAt.Format(time.RFC3339)
+			}
+			if !debug.LastServerErrorAt.IsZero() {
+				resp.LastServerErrorAt = debug.LastServerErrorAt.Format(time.RFC3339)
 			}
 			// 使用运行时状态（优先于 DB 状态）
 			resp.Status = acc.RuntimeStatus()
