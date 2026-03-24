@@ -351,21 +351,25 @@ export default function Accounts() {
                         </TableCell>
                         <TableCell>
                           {account.plan_type?.toLowerCase() === 'free' ? (
+                            account.usage_percent_7d !== null && account.usage_percent_7d !== undefined ? (
                             <div className="w-24">
                               <div className="flex items-center justify-between mb-1">
-                                <span className="text-[12px] font-medium">{(account.usage_percent_7d ?? 0).toFixed(1)}%</span>
+                                <span className="text-[12px] font-medium">{account.usage_percent_7d.toFixed(1)}%</span>
                               </div>
                               <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                                 <div
                                   className={`h-full rounded-full transition-all ${
-                                    (account.usage_percent_7d ?? 0) >= 90 ? 'bg-red-500' :
-                                    (account.usage_percent_7d ?? 0) >= 70 ? 'bg-amber-500' :
+                                    account.usage_percent_7d >= 90 ? 'bg-red-500' :
+                                    account.usage_percent_7d >= 70 ? 'bg-amber-500' :
                                     'bg-emerald-500'
                                   }`}
-                                  style={{ width: `${Math.min(100, account.usage_percent_7d ?? 0)}%` }}
+                                  style={{ width: `${Math.min(100, account.usage_percent_7d)}%` }}
                                 />
                               </div>
                             </div>
+                            ) : (
+                              <span className="text-[12px] font-medium text-muted-foreground">未采集</span>
+                            )
                           ) : (
                             <span className="text-[13px] text-muted-foreground">-</span>
                           )}

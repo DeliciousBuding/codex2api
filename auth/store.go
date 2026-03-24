@@ -40,7 +40,8 @@ type Account struct {
 	ErrorMsg       string
 
 	// 用量进度（从 Codex 响应头被动解析）
-	UsagePercent7d float64 // 7d 窗口使用率 0-100+
+	UsagePercent7d      float64 // 7d 窗口使用率 0-100+
+	UsagePercent7dValid bool
 
 	// 高并发调度指标（原子操作，无需锁）
 	ActiveRequests int64 // 当前并发请求数
@@ -144,13 +145,14 @@ func (a *Account) SetUsagePercent7d(pct float64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.UsagePercent7d = pct
+	a.UsagePercent7dValid = true
 }
 
 // GetUsagePercent7d 获取 7d 用量百分比
-func (a *Account) GetUsagePercent7d() float64 {
+func (a *Account) GetUsagePercent7d() (float64, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.UsagePercent7d
+	return a.UsagePercent7d, a.UsagePercent7dValid
 }
 
 // GetActiveRequests 获取当前并发数

@@ -104,19 +104,19 @@ func (h *Handler) GetStats(c *gin.Context) {
 // ==================== Accounts ====================
 
 type accountResponse struct {
-	ID              int64   `json:"id"`
-	Name            string  `json:"name"`
-	Email           string  `json:"email"`
-	PlanType        string  `json:"plan_type"`
-	Status          string  `json:"status"`
-	ProxyURL        string  `json:"proxy_url"`
-	UpdatedAt       string  `json:"updated_at"`
-	ActiveRequests  int64   `json:"active_requests"`
-	TotalRequests   int64   `json:"total_requests"`
-	LastUsedAt      string  `json:"last_used_at"`
-	SuccessRequests int64   `json:"success_requests"`
-	ErrorRequests   int64   `json:"error_requests"`
-	UsagePercent7d  float64 `json:"usage_percent_7d"`
+	ID              int64    `json:"id"`
+	Name            string   `json:"name"`
+	Email           string   `json:"email"`
+	PlanType        string   `json:"plan_type"`
+	Status          string   `json:"status"`
+	ProxyURL        string   `json:"proxy_url"`
+	UpdatedAt       string   `json:"updated_at"`
+	ActiveRequests  int64    `json:"active_requests"`
+	TotalRequests   int64    `json:"total_requests"`
+	LastUsedAt      string   `json:"last_used_at"`
+	SuccessRequests int64    `json:"success_requests"`
+	ErrorRequests   int64    `json:"error_requests"`
+	UsagePercent7d  *float64 `json:"usage_percent_7d"`
 }
 
 // ListAccounts 获取账号列表
@@ -153,7 +153,9 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 		if acc, ok := accountMap[row.ID]; ok {
 			resp.ActiveRequests = acc.GetActiveRequests()
 			resp.TotalRequests = acc.GetTotalRequests()
-			resp.UsagePercent7d = acc.GetUsagePercent7d()
+			if usagePct, ok := acc.GetUsagePercent7d(); ok {
+				resp.UsagePercent7d = &usagePct
+			}
 			if t := acc.GetLastUsedAt(); !t.IsZero() {
 				resp.LastUsedAt = t.Format(time.RFC3339)
 			}

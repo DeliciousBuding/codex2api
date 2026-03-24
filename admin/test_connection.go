@@ -79,6 +79,7 @@ func (h *Handler) TestConnection(c *gin.Context) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		proxy.ParseCodexUsageHeaders(resp, account)
 		switch resp.StatusCode {
 		case http.StatusUnauthorized:
 			h.store.MarkCooldown(account, 24*time.Hour, "unauthorized")
@@ -224,9 +225,11 @@ func (h *Handler) BatchTest(c *gin.Context) {
 				h.store.ClearCooldown(acc)
 				atomic.AddInt64(&successCount, 1)
 			case http.StatusUnauthorized:
+				proxy.ParseCodexUsageHeaders(resp, acc)
 				h.store.MarkCooldown(acc, 24*time.Hour, "unauthorized")
 				atomic.AddInt64(&bannedCount, 1)
 			case http.StatusTooManyRequests:
+				proxy.ParseCodexUsageHeaders(resp, acc)
 				h.store.MarkCooldown(acc, 5*time.Minute, "rate_limited")
 				atomic.AddInt64(&rateLimitCount, 1)
 			default:
