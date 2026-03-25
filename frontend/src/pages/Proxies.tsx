@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Globe, Plus, Trash2, TestTube, ToggleLeft, ToggleRight, MapPin, Loader2 } from 'lucide-react'
+import { Globe, Plus, Trash2, TestTube, MapPin, Loader2 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { api, type ProxyRow, type ProxyTestResult } from '../api'
 
@@ -114,18 +114,33 @@ export default function Proxies() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {/* Pool Toggle */}
-          <button
-            onClick={handleTogglePool}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border transition-all duration-200 ${
-              poolEnabled
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
-                : 'bg-muted/50 border-border text-muted-foreground'
-            }`}
-          >
-            {poolEnabled ? <ToggleRight className="size-5" /> : <ToggleLeft className="size-5" />}
-            {poolEnabled ? '代理池已启用' : '代理池已关闭'}
-          </button>
+          {/* Pool Toggle Switch */}
+          {(() => {
+            const enabledCount = proxies.filter(p => p.enabled).length
+            const canEnable = enabledCount > 0
+            return (
+              <div className="flex items-center gap-3" title={!canEnable && !poolEnabled ? '请先添加至少一个代理' : undefined}>
+                <span className={`text-sm font-medium ${poolEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>
+                  {poolEnabled ? '代理池已启用' : '代理池已关闭'}
+                </span>
+                <button
+                  role="switch"
+                  aria-checked={poolEnabled}
+                  disabled={!canEnable && !poolEnabled}
+                  onClick={handleTogglePool}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40 ${
+                    poolEnabled ? 'bg-emerald-500' : 'bg-muted-foreground/30'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 ${
+                      poolEnabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+            )
+          })()}
 
           {selected.size > 0 && (
             <button
