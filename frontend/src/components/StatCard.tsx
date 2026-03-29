@@ -10,10 +10,10 @@ interface StatCardProps {
 }
 
 const iconColors: Record<string, string> = {
-  blue: 'bg-[hsl(var(--info-bg))] text-[hsl(var(--info))]',
-  green: 'bg-[hsl(var(--success-bg))] text-[hsl(var(--success))]',
-  red: 'bg-destructive/12 text-destructive',
-  purple: 'bg-primary/12 text-primary',
+  blue: 'bg-[hsl(var(--info-bg))] text-[hsl(var(--info))] dark:bg-[hsl(var(--info))]/20 dark:text-[hsl(var(--info))]',
+  green: 'bg-[hsl(var(--success-bg))] text-[hsl(var(--success))] dark:bg-[hsl(var(--success))]/20 dark:text-[hsl(var(--success))]',
+  red: 'bg-destructive/12 text-destructive dark:bg-destructive/20 dark:text-destructive/90',
+  purple: 'bg-primary/12 text-primary dark:bg-primary/20 dark:text-primary',
 }
 
 export default function StatCard({ icon, iconClass, label, value, sub }: StatCardProps) {

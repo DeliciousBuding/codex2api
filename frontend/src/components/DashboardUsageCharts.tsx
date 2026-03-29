@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useMemo } from 'react'
+import { useMemo, useCallback, memo } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Area,
@@ -51,15 +51,19 @@ interface ModelRankingPoint {
 const chartMargin = { top: 8, right: 12, left: -12, bottom: 0 }
 const gridColor = 'var(--color-border)'
 const axisColor = 'var(--color-muted-foreground)'
-const tooltipContentStyle = {
-  backgroundColor: 'var(--color-card)',
-  border: '1px solid var(--color-border)',
-  borderRadius: '16px',
-  boxShadow: '0 18px 40px rgba(0, 0, 0, 0.12)',
-}
+
+// 深色模式感知的 tooltip 样式
+const getTooltipContentStyle = (isDark: boolean) => ({
+  backgroundColor: isDark ? 'hsl(var(--card))' : 'hsl(var(--background))',
+  border: '1px solid hsl(var(--border))',
+  borderRadius: '12px',
+  boxShadow: isDark ? '0 18px 40px rgba(0, 0, 0, 0.4)' : '0 18px 40px rgba(0, 0, 0, 0.12)',
+})
+
 const tooltipLabelStyle = { color: 'var(--color-foreground)', fontWeight: 600 }
 const tooltipItemStyle = { color: 'var(--color-foreground)' }
 const tokenBreakdownTooltipPosition = { y: -160 }
+
 const compactNumberFormatter = new Intl.NumberFormat(undefined, {
   notation: 'compact',
   maximumFractionDigits: 1,
@@ -85,6 +89,86 @@ export function getBucketConfig(range: TimeRangeKey): { bucketMinutes: number; b
   }
 }
 
+// 时间范围按钮组件 - memoized
+const TimeRangeButton = memo(function TimeRangeButton({
+  rangeKey,
+  isActive,
+  onClick,
+  label,
+}: {
+  rangeKey: TimeRangeKey
+  isActive: boolean
+  onClick: () => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200 ${
+        isActive
+          ? 'bg-background text-foreground shadow-sm border border-border'
+          : 'text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {label}
+    </button>
+  )
+})
+
+// 图表卡片组件 - memoized
+const ChartCard = memo(function ChartCard({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description: string
+  children: ReactNode
+}) {
+  return (
+    <Card className="py-0">
+      <CardContent className="p-4 sm:p-6">
+        <div className="mb-4 sm:mb-5">
+          <h4 className="text-base font-semibold text-foreground">{title}</h4>
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{description}</p>
+        </div>
+        <div className="h-[240px] sm:h-[280px]">{children}</div>
+      </CardContent>
+    </Card>
+  )
+})
+
+// 骨架屏图表组件
+const ChartSkeleton = memo(function ChartSkeleton() {
+  return (
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <Card key={i} className="py-0">
+          <CardContent className="p-4 sm:p-6">
+            <div className="mb-4 sm:mb-5 space-y-2">
+              <div className="h-4 w-32 rounded-md bg-muted animate-pulse" />
+              <div className="h-3 w-48 rounded-md bg-muted/60 animate-pulse" />
+            </div>
+            <div className="h-[240px] sm:h-[280px] flex items-end gap-2 px-4 pb-4">
+              {Array.from({ length: 12 }).map((h, j) => (
+                <div
+                  key={j}
+                  className="flex-1 rounded-t-md bg-muted/50 animate-pulse"
+                  style={{
+                    height: `${[40, 65, 30, 80, 55, 70, 45, 60, 35, 75, 50, 68][j] || 50}%`,
+                    animationDelay: `${j * 80}ms`,
+                  }}
+                />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  )
+})
+
 export default function DashboardUsageCharts({
   chartData: serverData,
   refreshedAt,
@@ -99,9 +183,23 @@ export default function DashboardUsageCharts({
   const lastUpdatedAtLabel = formatClockTime(refreshedAt)
   const useFullDate = bucketMinutes >= 360
 
+  // 检测深色模式
+  const isDarkMode = typeof document !== 'undefined'
+    ? document.documentElement.classList.contains('dark')
+    : false
+
+  const tooltipContentStyle = useMemo(() => getTooltipContentStyle(isDarkMode), [isDarkMode])
+
+  // 时间范围切换处理
+  const handleTimeRangeChange = useCallback((key: TimeRangeKey) => {
+    onTimeRangeChange(key)
+  }, [onTimeRangeChange])
+
   // 将服务端聚合数据映射为图表渲染格式（极轻量，无聚合计算）
   const displayData = useMemo(() => {
-    if (!serverData) return { timelineData: [] as TimelinePoint[], modelData: [] as ModelRankingPoint[], sampleCount: 0 }
+    if (!serverData) {
+      return { timelineData: [] as TimelinePoint[], modelData: [] as ModelRankingPoint[], sampleCount: 0 }
+    }
 
     const totalRequests = serverData.timeline.reduce((sum, p) => sum + p.requests, 0)
 
@@ -133,12 +231,24 @@ export default function DashboardUsageCharts({
     return { timelineData, modelData, sampleCount: totalRequests }
   }, [serverData, useFullDate, bucketMinutes])
 
+  // 时间范围标签
+  const timeRangeLabels = useMemo(() => ({
+    '1h': t('dashboard.timeRange1H'),
+    '6h': t('dashboard.timeRange6H'),
+    '24h': t('dashboard.timeRange24H'),
+    '7d': t('dashboard.timeRange7D'),
+    '30d': t('dashboard.timeRange30D'),
+  }), [t])
+
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
+      {/* Header section with responsive layout */}
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
+        <div className="min-w-0 flex-1">
           <h3 className="text-base font-semibold text-foreground">{t('dashboard.usageCharts')}</h3>
-          <p className="mt-1 text-sm text-muted-foreground">{t('dashboard.usageChartsDesc', { count: displayData.sampleCount.toLocaleString() })}</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t('dashboard.usageChartsDesc', { count: displayData.sampleCount.toLocaleString() })}
+          </p>
           {isLive && (
             <p className="mt-1 text-xs text-muted-foreground">
               {t('dashboard.liveWindowDesc', {
@@ -150,57 +260,32 @@ export default function DashboardUsageCharts({
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {isLive && (
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-300 mr-2">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-300">
               <span className="size-2 rounded-full bg-current animate-pulse" />
               <span>{t('dashboard.liveBadge')}</span>
             </div>
           )}
           <div className="inline-flex rounded-lg border border-border bg-muted/50 p-0.5">
             {TIME_RANGE_OPTIONS.map((key) => (
-              <button
+              <TimeRangeButton
                 key={key}
-                type="button"
-                onClick={() => onTimeRangeChange(key)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200 ${
-                  timeRange === key
-                    ? 'bg-background text-foreground shadow-sm border border-border'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {t(`dashboard.timeRange${key.toUpperCase()}`)}
-              </button>
+                rangeKey={key}
+                isActive={timeRange === key}
+                onClick={() => handleTimeRangeChange(key)}
+                label={timeRangeLabels[key]}
+              />
             ))}
           </div>
         </div>
       </div>
 
       {loading ? (
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {[0, 1, 2, 3].map((i) => (
-            <Card key={i} className="py-0">
-              <CardContent className="p-6">
-                <div className="mb-5 space-y-2">
-                  <div className="h-4 w-32 rounded-md bg-muted animate-pulse" />
-                  <div className="h-3 w-48 rounded-md bg-muted/60 animate-pulse" />
-                </div>
-                <div className="h-[280px] flex items-end gap-2 px-4 pb-4">
-                  {[40, 65, 30, 80, 55, 70, 45, 60, 35, 75, 50, 68].map((h, j) => (
-                    <div
-                      key={j}
-                      className="flex-1 rounded-t-md bg-muted/50 animate-pulse"
-                      style={{ height: `${h}%`, animationDelay: `${j * 80}ms` }}
-                    />
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+        <ChartSkeleton />
       ) : displayData.sampleCount === 0 ? (
         <Card>
-          <CardContent className="p-6">
+          <CardContent className="p-4 sm:p-6">
             <StateShell
               variant="section"
               isEmpty
@@ -218,13 +303,31 @@ export default function DashboardUsageCharts({
               <ComposedChart data={displayData.timelineData} margin={chartMargin}>
                 <defs>
                   <linearGradient id="dashboard-request-gradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--color-primary)" stopOpacity={0.28} />
-                    <stop offset="95%" stopColor="var(--color-primary)" stopOpacity={0} />
+                    <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.28} />
+                    <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="dashboard-request-gradient-dark" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0.05} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid vertical={false} stroke={gridColor} strokeDasharray="4 4" />
-                <XAxis dataKey="label" tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} minTickGap={20} tickMargin={8} />
-                <YAxis tickFormatter={formatCompactNumber} tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} allowDecimals={false} tickCount={8} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: axisColor, fontSize: 12 }}
+                  axisLine={{ stroke: gridColor }}
+                  tickLine={{ stroke: gridColor }}
+                  minTickGap={20}
+                  tickMargin={8}
+                />
+                <YAxis
+                  tickFormatter={formatCompactNumber}
+                  tick={{ fill: axisColor, fontSize: 12 }}
+                  axisLine={{ stroke: gridColor }}
+                  tickLine={{ stroke: gridColor }}
+                  allowDecimals={false}
+                  tickCount={8}
+                />
                 <Tooltip
                   position={{ y: 10 }}
                   formatter={(value) => formatNumber(value)}
@@ -239,15 +342,15 @@ export default function DashboardUsageCharts({
                   type="monotone"
                   dataKey="requests"
                   name={t('dashboard.seriesRequests')}
-                  stroke="var(--color-primary)"
-                  fill="url(#dashboard-request-gradient)"
+                  stroke="hsl(var(--primary))"
+                  fill={isDarkMode ? 'url(#dashboard-request-gradient-dark)' : 'url(#dashboard-request-gradient)'}
                   strokeWidth={2.5}
                 />
                 <Line
                   type="monotone"
                   dataKey="errors401"
                   name={t('dashboard.series401Errors')}
-                  stroke="var(--color-destructive)"
+                  stroke="hsl(var(--destructive))"
                   strokeWidth={2}
                   dot={false}
                   activeDot={{ r: 4 }}
@@ -260,8 +363,21 @@ export default function DashboardUsageCharts({
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={displayData.timelineData} margin={chartMargin}>
                 <CartesianGrid vertical={false} stroke={gridColor} strokeDasharray="4 4" />
-                <XAxis dataKey="label" tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} minTickGap={20} tickMargin={8} />
-                <YAxis tickFormatter={formatDurationTick} tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} width={54} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: axisColor, fontSize: 12 }}
+                  axisLine={{ stroke: gridColor }}
+                  tickLine={{ stroke: gridColor }}
+                  minTickGap={20}
+                  tickMargin={8}
+                />
+                <YAxis
+                  tickFormatter={formatDurationTick}
+                  tick={{ fill: axisColor, fontSize: 12 }}
+                  axisLine={{ stroke: gridColor }}
+                  tickLine={{ stroke: gridColor }}
+                  width={54}
+                />
                 <Tooltip
                   position={{ y: 10 }}
                   formatter={(value) => formatDuration(value)}
@@ -288,8 +404,20 @@ export default function DashboardUsageCharts({
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={displayData.timelineData} margin={chartMargin}>
                 <CartesianGrid vertical={false} stroke={gridColor} strokeDasharray="4 4" />
-                <XAxis dataKey="label" tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} minTickGap={20} tickMargin={8} />
-                <YAxis tickFormatter={formatCompactNumber} tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: axisColor, fontSize: 12 }}
+                  axisLine={{ stroke: gridColor }}
+                  tickLine={{ stroke: gridColor }}
+                  minTickGap={20}
+                  tickMargin={8}
+                />
+                <YAxis
+                  tickFormatter={formatCompactNumber}
+                  tick={{ fill: axisColor, fontSize: 12 }}
+                  axisLine={{ stroke: gridColor }}
+                  tickLine={{ stroke: gridColor }}
+                />
                 <Tooltip
                   position={tokenBreakdownTooltipPosition}
                   allowEscapeViewBox={{ y: true }}
@@ -301,20 +429,62 @@ export default function DashboardUsageCharts({
                   itemStyle={tooltipItemStyle}
                 />
                 <Legend wrapperStyle={{ paddingTop: 12, fontSize: 12, color: axisColor }} />
-                <Bar dataKey="inputTokens" stackId="tokens" name={t('dashboard.seriesInputTokens')} fill="hsl(var(--info))" radius={[0, 0, 4, 4]} />
-                <Bar dataKey="outputTokens" stackId="tokens" name={t('dashboard.seriesOutputTokens')} fill="hsl(var(--success))" minPointSize={4} />
-                <Bar dataKey="reasoningTokens" stackId="tokens" name={t('dashboard.seriesReasoningTokens')} fill="hsl(36 90% 55%)" minPointSize={4} />
-                <Bar dataKey="cachedTokens" stackId="tokens" name={t('dashboard.seriesCachedTokens')} fill="hsl(262 83% 58%)" radius={[4, 4, 0, 0]} />
+                <Bar
+                  dataKey="inputTokens"
+                  stackId="tokens"
+                  name={t('dashboard.seriesInputTokens')}
+                  fill="hsl(var(--info))"
+                  radius={[0, 0, 4, 4]}
+                />
+                <Bar
+                  dataKey="outputTokens"
+                  stackId="tokens"
+                  name={t('dashboard.seriesOutputTokens')}
+                  fill="hsl(var(--success))"
+                  minPointSize={4}
+                />
+                <Bar
+                  dataKey="reasoningTokens"
+                  stackId="tokens"
+                  name={t('dashboard.seriesReasoningTokens')}
+                  fill="hsl(36 90% 55%)"
+                  minPointSize={4}
+                />
+                <Bar
+                  dataKey="cachedTokens"
+                  stackId="tokens"
+                  name={t('dashboard.seriesCachedTokens')}
+                  fill="hsl(262 83% 58%)"
+                  radius={[4, 4, 0, 0]}
+                />
               </BarChart>
             </ResponsiveContainer>
           </ChartCard>
 
           <ChartCard title={t('dashboard.modelRanking')} description={t('dashboard.modelRankingDesc')}>
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={displayData.modelData} layout="vertical" margin={{ top: 8, right: 12, left: 8, bottom: 0 }}>
+              <BarChart
+                data={displayData.modelData}
+                layout="vertical"
+                margin={{ top: 8, right: 12, left: 8, bottom: 0 }}
+              >
                 <CartesianGrid horizontal={false} stroke={gridColor} strokeDasharray="4 4" />
-                <XAxis type="number" tickFormatter={formatCompactNumber} tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} allowDecimals={false} />
-                <YAxis dataKey="shortModel" type="category" width={128} tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} />
+                <XAxis
+                  type="number"
+                  tickFormatter={formatCompactNumber}
+                  tick={{ fill: axisColor, fontSize: 12 }}
+                  axisLine={{ stroke: gridColor }}
+                  tickLine={{ stroke: gridColor }}
+                  allowDecimals={false}
+                />
+                <YAxis
+                  dataKey="shortModel"
+                  type="category"
+                  width={128}
+                  tick={{ fill: axisColor, fontSize: 12 }}
+                  axisLine={{ stroke: gridColor }}
+                  tickLine={{ stroke: gridColor }}
+                />
                 <Tooltip
                   position={{ y: 10 }}
                   formatter={(value) => formatNumber(value)}
@@ -323,27 +493,18 @@ export default function DashboardUsageCharts({
                   labelStyle={tooltipLabelStyle}
                   itemStyle={tooltipItemStyle}
                 />
-                <Bar dataKey="requests" name={t('dashboard.seriesRequestCount')} fill="hsl(var(--success))" radius={[0, 8, 8, 0]} />
+                <Bar
+                  dataKey="requests"
+                  name={t('dashboard.seriesRequestCount')}
+                  fill="hsl(var(--success))"
+                  radius={[0, 8, 8, 0]}
+                />
               </BarChart>
             </ResponsiveContainer>
           </ChartCard>
         </div>
       )}
     </div>
-  )
-}
-
-function ChartCard({ title, description, children }: { title: string; description: string; children: ReactNode }) {
-  return (
-    <Card className="py-0">
-      <CardContent className="p-6">
-        <div className="mb-5">
-          <h4 className="text-base font-semibold text-foreground">{title}</h4>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{description}</p>
-        </div>
-        <div className="h-[280px]">{children}</div>
-      </CardContent>
-    </Card>
   )
 }
 
@@ -417,7 +578,10 @@ function formatDurationTick(value: number | string): string {
   return formatDuration(numericValue)
 }
 
-function getTooltipLabel(payload: readonly { payload?: Record<string, unknown> }[] | undefined, key: string): string {
+function getTooltipLabel(
+  payload: readonly { payload?: Record<string, unknown> }[] | undefined,
+  key: string
+): string {
   const tooltipPayload = payload?.[0]?.payload
   const rawValue = tooltipPayload?.[key]
   return typeof rawValue === 'string' && rawValue ? rawValue : ''
