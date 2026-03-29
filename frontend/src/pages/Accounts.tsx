@@ -37,13 +37,6 @@ interface OperationLog {
   timestamp: Date
 }
 
-interface FilterState {
-  status: typeof statusFilter
-  plan: typeof planFilter
-  proxy: string
-  search: string
-}
-
 export default function Accounts() {
   const { t } = useTranslation()
   const [showAdd, setShowAdd] = useState(false)
@@ -143,18 +136,29 @@ export default function Accounts() {
       case 'banned':
         if (account.status !== 'unauthorized') return false
         break
+      case 'error':
+        if (account.status !== 'error') return false
+        break
+      case 'paused':
+        if (account.status !== 'paused') return false
+        break
     }
     // 套餐过滤
     if (planFilter !== 'all') {
       const plan = (account.plan_type || '').toLowerCase()
       if (plan !== planFilter) return false
     }
+    // 代理过滤
+    if (proxyFilter !== 'all') {
+      if (account.proxy_url !== proxyFilter) return false
+    }
     // 搜索过滤
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       const email = (account.email || '').toLowerCase()
       const name = (account.name || '').toLowerCase()
-      if (!email.includes(q) && !name.includes(q)) return false
+      const id = String(account.id)
+      if (!email.includes(q) && !name.includes(q) && !id.includes(q)) return false
     }
     return true
   })
@@ -168,6 +172,8 @@ export default function Accounts() {
       diff = (a.usage_percent_7d ?? -1) - (b.usage_percent_7d ?? -1)
     } else if (sortKey === 'importTime') {
       diff = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+    } else if (sortKey === 'healthScore') {
+      diff = (a.scheduler_score ?? 0) - (b.scheduler_score ?? 0)
     }
     return sortDir === 'asc' ? diff : -diff
   })
@@ -279,6 +285,7 @@ export default function Accounts() {
     if (!reader) return
     const decoder = new TextDecoder()
     let buffer = ''
+    let finalEvent: { success: number; duplicate: number; failed: number } | null = null
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
@@ -290,9 +297,15 @@ export default function Accounts() {
         try {
           const event = JSON.parse(line.slice(6)) as { type: string; current: number; total: number; success: number; duplicate: number; failed: number }
           setImportProgress(p => ({ ...p, current: event.current, total: event.total, success: event.success, duplicate: event.duplicate, failed: event.failed, done: event.type === 'complete' }))
-          if (event.type === 'complete') void reload()
+          if (event.type === 'complete') {
+            finalEvent = { success: event.success, duplicate: event.duplicate, failed: event.failed }
+            void reload()
+          }
         } catch { /* 忽略解析异常 */ }
       }
+    }
+    if (finalEvent) {
+      addLog('import', t('accounts.importTitle'), `Success: ${finalEvent.success}, Duplicate: ${finalEvent.duplicate}, Failed: ${finalEvent.failed}`, finalEvent.failed === 0)
     }
   }
 
@@ -384,8 +397,10 @@ export default function Accounts() {
         const blob = new Blob([text], { type: 'text/plain' })
         downloadBlob(blob, `rt-${ts}-${data.length}.txt`)
       }
+      addLog('export', `JSON/TXT (${scope})`, t('accounts.exportSuccess', { count: data.length }), true)
       showToast(t('accounts.exportSuccess', { count: data.length }))
     } catch (error) {
+      addLog('export', 'JSON/TXT', getErrorMessage(error), false)
       showToast(`${t('accounts.exportFailed')}: ${getErrorMessage(error)}`, 'error')
     } finally {
       setExporting(false)
@@ -432,9 +447,11 @@ export default function Accounts() {
     if (!confirmed) return
     try {
       await api.deleteAccount(account.id)
+      addLog('delete', account.email || `ID ${account.id}`, t('accounts.deleted'), true)
       showToast(t('accounts.deleted'))
       void reload()
     } catch (error) {
+      addLog('delete', account.email || `ID ${account.id}`, getErrorMessage(error), false)
       showToast(t('accounts.deleteFailed', { error: getErrorMessage(error) }), 'error')
     }
   }
@@ -443,9 +460,11 @@ export default function Accounts() {
     setRefreshingIds((prev) => new Set(prev).add(account.id))
     try {
       const result = await api.refreshAccount(account.id)
+      addLog('refresh', account.email || `ID ${account.id}`, result.message || t('accounts.refreshRequested'), true)
       showToast(result.message || t('accounts.refreshRequested'))
       void reloadSilently()
     } catch (error) {
+      addLog('refresh', account.email || `ID ${account.id}`, getErrorMessage(error), false)
       showToast(t('accounts.refreshFailed', { error: getErrorMessage(error) }), 'error')
     } finally {
       setRefreshingIds((prev) => {
@@ -477,6 +496,7 @@ export default function Accounts() {
         fail++
       }
     }
+    addLog('delete', t('accounts.batchDeleteTitle'), t('accounts.batchDeleteResult', { success, fail }), fail === 0)
     showToast(t('accounts.batchDeleteDone', { success, fail }))
     setSelected(new Set())
     setBatchLoading(false)
@@ -496,6 +516,7 @@ export default function Accounts() {
         fail++
       }
     }
+    addLog('refresh', t('accounts.batchRefresh'), t('accounts.batchRefreshResult', { success, fail }), fail === 0)
     showToast(t('accounts.batchRefreshDone', { success, fail }))
     setBatchLoading(false)
     void reload()
@@ -505,6 +526,7 @@ export default function Accounts() {
     setBatchTesting(true)
     try {
       const result = await api.batchTestAccounts()
+      addLog('test', t('accounts.batchTest'), t('accounts.batchTestResult', result), result.failed === 0)
       showToast(t('accounts.batchTestDone', {
         success: result.success,
         banned: result.banned,
@@ -513,6 +535,7 @@ export default function Accounts() {
       }))
       void reload()
     } catch (error) {
+      addLog('test', t('accounts.batchTest'), getErrorMessage(error), false)
       showToast(t('accounts.batchTestFailed', { error: getErrorMessage(error) }), 'error')
     } finally {
       setBatchTesting(false)
@@ -530,9 +553,11 @@ export default function Accounts() {
     setCleaningBanned(true)
     try {
       await api.cleanBanned()
+      addLog('clean', t('accounts.cleanBannedTitle'), t('accounts.cleanBannedSuccess'), true)
       showToast(t('accounts.cleanBannedSuccess'))
       void reload()
     } catch (error) {
+      addLog('clean', t('accounts.cleanBannedTitle'), getErrorMessage(error), false)
       showToast(t('accounts.cleanBannedFailed', { error: getErrorMessage(error) }), 'error')
     } finally {
       setCleaningBanned(false)
@@ -550,9 +575,11 @@ export default function Accounts() {
     setCleaningRateLimited(true)
     try {
       await api.cleanRateLimited()
+      addLog('clean', t('accounts.cleanRateLimitedTitle'), t('accounts.cleanRateLimitedSuccess'), true)
       showToast(t('accounts.cleanRateLimitedSuccess'))
       void reload()
     } catch (error) {
+      addLog('clean', t('accounts.cleanRateLimitedTitle'), getErrorMessage(error), false)
       showToast(t('accounts.cleanRateLimitedFailed', { error: getErrorMessage(error) }), 'error')
     } finally {
       setCleaningRateLimited(false)
@@ -570,14 +597,111 @@ export default function Accounts() {
     setCleaningError(true)
     try {
       await api.cleanError()
+      addLog('clean', t('accounts.cleanErrorTitle'), t('accounts.cleanErrorSuccess'), true)
       showToast(t('accounts.cleanErrorSuccess'))
       void reload()
     } catch (error) {
+      addLog('clean', t('accounts.cleanErrorTitle'), getErrorMessage(error), false)
       showToast(t('accounts.cleanErrorFailed', { error: getErrorMessage(error) }), 'error')
     } finally {
       setCleaningError(false)
     }
   }
+
+  const addLog = (type: OperationLog['type'], target: string, details: string, success: boolean) => {
+    const newLog: OperationLog = {
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      type,
+      target,
+      details,
+      success,
+      timestamp: new Date(),
+    }
+    setOperationLogs(prev => [newLog, ...prev].slice(0, 100))
+  }
+
+  const handleBatchEnable = async () => {
+    if (selected.size === 0) return
+    const confirmed = await confirm({
+      title: t('accounts.batchEnableTitle'),
+      description: t('accounts.batchEnableDesc', { count: selected.size }),
+      confirmText: t('accounts.enableConfirm'),
+      tone: 'default',
+    })
+    if (!confirmed) return
+    setBatchEnabling(true)
+    let success = 0
+    let fail = 0
+    for (const id of selected) {
+      try {
+        await api.refreshAccount(id)
+        success++
+      } catch {
+        fail++
+      }
+    }
+    addLog('enable', t('accounts.batchEnableTitle'), t('accounts.batchEnableResult', { success, fail }), fail === 0)
+    showToast(t('accounts.batchEnableDone', { success, fail }))
+    setBatchEnabling(false)
+    void reload()
+  }
+
+  const handleBatchDisable = async () => {
+    if (selected.size === 0) return
+    const confirmed = await confirm({
+      title: t('accounts.batchDisableTitle'),
+      description: t('accounts.batchDisableDesc', { count: selected.size }),
+      confirmText: t('accounts.disableConfirm'),
+      tone: 'warning',
+    })
+    if (!confirmed) return
+    setBatchDisabling(true)
+    let success = 0
+    let fail = 0
+    const selectedAccounts = accounts.filter(a => selected.has(a.id))
+    for (const account of selectedAccounts) {
+      try {
+        await api.deleteAccount(account.id)
+        success++
+      } catch {
+        fail++
+      }
+    }
+    addLog('disable', t('accounts.batchDisableTitle'), t('accounts.batchDisableResult', { success, fail }), fail === 0)
+    showToast(t('accounts.batchDisableDone', { success, fail }))
+    setSelected(new Set())
+    setBatchDisabling(false)
+    void reload()
+  }
+
+  const handleExportCSV = () => {
+    const headers = ['ID', 'Email', 'Name', 'Plan', 'Status', 'Health Tier', 'Score', 'Proxy', 'Created At', 'Updated At']
+    const rows = filteredAccounts.map(a => [
+      a.id,
+      a.email || '',
+      a.name || '',
+      a.plan_type || '',
+      a.status,
+      a.health_tier || '',
+      a.scheduler_score?.toString() || '',
+      a.proxy_url || '',
+      a.created_at,
+      a.updated_at,
+    ])
+    const csv = [headers.join(','), ...rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))].join('\n')
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    downloadBlob(blob, `accounts-${ts}.csv`)
+    addLog('export', 'CSV', t('accounts.exportCSVSuccess', { count: filteredAccounts.length }), true)
+    showToast(t('accounts.exportCSVSuccess', { count: filteredAccounts.length }))
+  }
+
+  const clearLogs = () => {
+    setOperationLogs([])
+    showToast(t('accounts.logsCleared'))
+  }
+
+  const uniqueProxies = Array.from(new Set(accounts.map(a => a.proxy_url).filter(Boolean)))
 
   return (
     <StateShell
@@ -656,17 +780,24 @@ export default function Accounts() {
 
         <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-white/55 px-4 py-3 text-[12px] text-muted-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]">
           <span className="font-semibold text-foreground">{t('accounts.filter')}</span>
-          {([['all', t('accounts.filterAll')], ['normal', t('accounts.filterNormal')], ['rate_limited', t('accounts.filterRateLimited')], ['banned', t('accounts.filterBanned')]] as const).map(([key, label]) => (
+          {([
+            ['all', t('accounts.filterAll'), totalAccounts],
+            ['normal', t('accounts.filterNormal'), normalAccounts],
+            ['rate_limited', t('accounts.filterRateLimited'), rateLimitedAccounts],
+            ['banned', t('accounts.filterBanned'), bannedAccounts],
+            ['error', t('accounts.filterError'), accounts.filter(a => a.status === 'error').length],
+            ['paused', t('accounts.filterPaused'), accounts.filter(a => a.status === 'paused').length],
+          ] as const).map(([key, label, count]) => (
             <button
               key={key}
-              onClick={() => { setStatusFilter(key); setPage(1) }}
+              onClick={() => { setStatusFilter(key as typeof statusFilter); setPage(1) }}
               className={`rounded-full px-3 py-1 font-semibold transition-colors ${
                 statusFilter === key
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-muted/50 text-muted-foreground hover:bg-muted'
               }`}
             >
-              {label} {key === 'all' ? totalAccounts : key === 'normal' ? normalAccounts : key === 'rate_limited' ? rateLimitedAccounts : bannedAccounts}
+              {label} {count}
             </button>
           ))}
         </div>
@@ -679,7 +810,7 @@ export default function Accounts() {
           <SchedulerChip label={t('status.unauthorized')} value={bannedAccounts} tone="neutral" />
         </div>
 
-        <div className="mb-4 flex items-center gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-3">
           <div className="relative w-64">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
             <Input
@@ -704,16 +835,112 @@ export default function Accounts() {
               </button>
             ))}
           </div>
+          {uniqueProxies.length > 0 && (
+            <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/30 p-0.5">
+              <select
+                value={proxyFilter}
+                onChange={(e) => { setProxyFilter(e.target.value); setPage(1) }}
+                className="h-7 px-2 text-[12px] bg-transparent border-none outline-none cursor-pointer"
+              >
+                <option value="all">{t('accounts.filterAllProxies')}</option>
+                {uniqueProxies.map(proxy => (
+                  <option key={proxy} value={proxy}>{proxy}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1"
+            onClick={() => setShowFilterPanel(!showFilterPanel)}
+          >
+            <Filter className="size-3.5" />
+            {t('accounts.advancedFilter')}
+            <ChevronDown className={`size-3 transition-transform ${showFilterPanel ? 'rotate-180' : ''}`} />
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1"
+            onClick={() => setShowHistory(true)}
+          >
+            <History className="size-3.5" />
+            {t('accounts.operationHistory')}
+          </Button>
         </div>
+
+        {showFilterPanel && (
+          <div className="mb-4 p-4 rounded-2xl border border-border bg-muted/30">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-muted-foreground">{t('accounts.sortBy')}:</span>
+                <div className="flex items-center gap-1 rounded-lg border border-border bg-background p-0.5">
+                  {([
+                    ['requests', t('accounts.requests')],
+                    ['usage', t('accounts.usage')],
+                    ['importTime', t('accounts.importTime')],
+                    ['healthScore', t('accounts.healthScore')],
+                  ] as const).map(([key, label]) => (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        if (sortKey === key) {
+                          setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+                        } else {
+                          setSortKey(key)
+                          setSortDir('desc')
+                        }
+                        setPage(1)
+                      }}
+                      className={`rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors ${
+                        sortKey === key
+                          ? 'bg-primary/10 text-primary'
+                          : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      {label} {sortKey === key ? (sortDir === 'desc' ? '↓' : '↑') : ''}
+                    </button>
+                  ))}
+                  {sortKey && (
+                    <button
+                      onClick={() => { setSortKey(null); setSortDir('desc') }}
+                      className="rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    >
+                      {t('common.cancel')}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-muted-foreground">{t('accounts.quickActions')}:</span>
+                <Button variant="outline" size="sm" className="h-7 text-[12px]" onClick={handleExportCSV}>
+                  <FileSpreadsheet className="size-3 mr-1" />
+                  {t('accounts.exportCSV')}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {selected.size > 0 && (
           <div className="flex items-center justify-between gap-3 px-4 py-2.5 mb-4 rounded-2xl bg-primary/10 border border-primary/20 text-sm font-semibold text-primary">
             <span>{t('common.selected', { count: selected.size })}</span>
             <div className="flex items-center gap-1.5">
-              <Button variant="outline" size="sm" disabled={batchLoading} onClick={() => void handleBatchRefresh()}>
-                {t('accounts.batchRefresh')}
+              <Button variant="outline" size="sm" disabled={batchLoading || batchEnabling} onClick={() => void handleBatchRefresh()}>
+                <RefreshCw className="size-3 mr-1" />
+                {batchLoading ? t('accounts.refreshing') : t('accounts.batchRefresh')}
+              </Button>
+              <Button variant="outline" size="sm" disabled={batchEnabling} onClick={() => void handleBatchEnable()}>
+                <Power className="size-3 mr-1" />
+                {batchEnabling ? t('accounts.enabling') : t('accounts.batchEnable')}
+              </Button>
+              <Button variant="outline" size="sm" disabled={batchDisabling} onClick={() => void handleBatchDisable()}>
+                <PowerOff className="size-3 mr-1" />
+                {batchDisabling ? t('accounts.disabling') : t('accounts.batchDisable')}
               </Button>
               <Button variant="destructive" size="sm" disabled={batchLoading} onClick={() => void handleBatchDelete()}>
+                <Trash2 className="size-3 mr-1" />
                 {t('accounts.batchDelete')}
               </Button>
               <Button variant="outline" size="sm" onClick={() => setSelected(new Set())}>
@@ -1213,6 +1440,72 @@ export default function Accounts() {
           </div>
         </Modal>
 
+        <Modal
+          show={showHistory}
+          title={t('accounts.operationHistoryTitle')}
+          contentClassName="sm:max-w-[720px]"
+          onClose={() => setShowHistory(false)}
+        >
+          <div className="space-y-4">
+            {operationLogs.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">
+                {t('accounts.noOperationLogs')}
+              </div>
+            ) : (
+              <>
+                <div className="flex justify-end">
+                  <Button variant="outline" size="sm" onClick={clearLogs}>
+                    <Trash2 className="size-3 mr-1" />
+                    {t('accounts.clearLogs')}
+                  </Button>
+                </div>
+                <div className="border border-border rounded-xl overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-[13px] font-semibold">{t('accounts.logTime')}</TableHead>
+                        <TableHead className="text-[13px] font-semibold">{t('accounts.logType')}</TableHead>
+                        <TableHead className="text-[13px] font-semibold">{t('accounts.logTarget')}</TableHead>
+                        <TableHead className="text-[13px] font-semibold">{t('accounts.logDetails')}</TableHead>
+                        <TableHead className="text-[13px] font-semibold">{t('accounts.logStatus')}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {operationLogs.map((log) => (
+                        <TableRow key={log.id}>
+                          <TableCell className="text-[13px] text-muted-foreground whitespace-nowrap">
+                            {log.timestamp.toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-[13px]">
+                            <LogTypeBadge type={log.type} />
+                          </TableCell>
+                          <TableCell className="text-[13px] text-muted-foreground">{log.target}</TableCell>
+                          <TableCell className="text-[13px] text-muted-foreground max-w-[200px] truncate" title={log.details}>
+                            {log.details}
+                          </TableCell>
+                          <TableCell>
+                            {log.success ? (
+                              <span className="inline-flex items-center gap-1 text-[12px] text-emerald-600">
+                                <span className="size-1.5 rounded-full bg-emerald-500" />
+                                {t('accounts.logSuccess')}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[12px] text-red-600">
+                                <span className="size-1.5 rounded-full bg-red-500" />
+                                {t('accounts.logFailed')}
+                              </span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            )}
+          </div>
+        </Modal>
+
         {confirmDialog}
 
         <ToastNotice toast={toast} />
@@ -1230,6 +1523,25 @@ function downloadBlob(blob: Blob, filename: string) {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+function LogTypeBadge({ type }: { type: OperationLog['type'] }) {
+  const config: Record<OperationLog['type'], { label: string; className: string }> = {
+    delete: { label: '删除', className: 'bg-red-100 text-red-700' },
+    refresh: { label: '刷新', className: 'bg-blue-100 text-blue-700' },
+    enable: { label: '启用', className: 'bg-emerald-100 text-emerald-700' },
+    disable: { label: '禁用', className: 'bg-amber-100 text-amber-700' },
+    import: { label: '导入', className: 'bg-purple-100 text-purple-700' },
+    export: { label: '导出', className: 'bg-cyan-100 text-cyan-700' },
+    test: { label: '测试', className: 'bg-indigo-100 text-indigo-700' },
+    clean: { label: '清理', className: 'bg-orange-100 text-orange-700' },
+  }
+  const { label, className } = config[type] || { label: type, className: 'bg-gray-100 text-gray-700' }
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${className}`}>
+      {label}
+    </span>
+  )
 }
 
 function CompactStat({
