@@ -130,7 +130,8 @@ const (
 
 // ExecuteRequest 向 Codex 上游发送请求
 // sessionID 可选，用于 prompt cache 会话绑定
-func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string) (*http.Response, error) {
+// provider 用于 affinity 作用域隔离
+func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, provider ...string) (*http.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -150,6 +151,14 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		return nil, fmt.Errorf("无可用 access_token")
 	}
 
+	// ==================== CPA Session Affinity 作用域隔离 ====================
+	// 生成 provider 隔离的 session key
+	providerKey := ""
+	if len(provider) > 0 && provider[0] != "" {
+		providerKey = provider[0]
+	}
+	isolatedSessionID := auth.GenerateSessionKey(sessionID, providerKey)
+
 	// ==================== Codex 请求体优化 ====================
 	// 参考 CLIProxyAPI/codex_executor.go + sub2api 的实现
 
@@ -164,12 +173,34 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	requestBody, _ = sjson.DeleteBytes(requestBody, "safety_identifier")
 	requestBody, _ = sjson.DeleteBytes(requestBody, "disable_response_storage")
 
-	// 3. 注入 prompt_cache_key（如果请求体中没有，且 sessionID 不为空）
+	// 3. 注入 prompt_cache_key（如果请求体中没有，且 isolatedSessionID 不为空）
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 	cacheKey := existingCacheKey
-	if cacheKey == "" && sessionID != "" {
-		cacheKey = sessionID
+	if cacheKey == "" && isolatedSessionID != "" {
+		cacheKey = isolatedSessionID
 		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
+	}
+
+	// ==================== 请求诊断日志（参考 CLIProxyAPI）====================
+	if IsDiagnosticsEnabled() || IsDebugEnabled() {
+		diag := &RequestDiagnostics{
+			Timestamp:    time.Now(),
+			AccountID:    account.ID(),
+			Provider:     providerKey,
+			SessionID:    isolatedSessionID,
+			SessionKey:   cacheKey,
+			RequestID:    getRequestID(ctx),
+		}
+		// 从请求体提取诊断信息
+		if len(requestBody) > 0 {
+			diag.PromptCacheKey = strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
+			diag.PromptCacheRetention = gjson.GetBytes(requestBody, "prompt_cache_retention").String()
+			diag.Store = gjson.GetBytes(requestBody, "store").Bool()
+			diag.HasInstructions = gjson.GetBytes(requestBody, "instructions").Exists()
+			diag.ReasoningEffort = gjson.GetBytes(requestBody, "reasoning.effort").String()
+			diag.ReasoningSummary = gjson.GetBytes(requestBody, "reasoning.summary").String()
+		}
+		LogRequestDiagnostics(ctx, diag)
 	}
 
 	endpoint := CodexBaseURL + "/responses"
@@ -179,7 +210,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 
-	// ==================== 请求头（伪装 Codex CLI） ====================
+	// ==================== 请求头（伪装 Codex CLI）====================
 	// 每个账号使用确定性的 ClientProfile（UA + Version），模拟真实用户多样性
 	profile := ProfileForAccount(account.ID())
 

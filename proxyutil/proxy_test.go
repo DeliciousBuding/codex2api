@@ -1,7 +1,6 @@
 package proxyutil
 
 import (
-	"net/http"
 	"testing"
 )
 
@@ -133,19 +132,6 @@ func TestBuildHTTPTransport(t *testing.T) {
 }
 
 func TestShouldBypassProxy(t *testing.T) {
-	// Save original NO_PROXY
-	origNoProxy := ""
-	for _, key := range []string{"NO_PROXY", "no_proxy"} {
-		if v := ""; v != "" {
-			continue
-		}
-		origNoProxy = ""
-	}
-	origNoProxy = ""
-	defer func() {
-		// Restore would be handled by test isolation
-	}()
-
 	tests := []struct {
 		name       string
 		noProxy    string
@@ -290,7 +276,7 @@ func BenchmarkParse(b *testing.B) {
 // BenchmarkShouldBypassProxy benchmarks the ShouldBypassProxy function
 func BenchmarkShouldBypassProxy(b *testing.B) {
 	noProxy := "localhost,127.0.0.1,.example.com,.internal.company.com,api.internal,*.wildcard.com"
-	t.Setenv("NO_PROXY", noProxy)
+	b.Setenv("NO_PROXY", noProxy)
 	targetHosts := []string{
 		"api.example.com",
 		"sub.internal.company.com",
