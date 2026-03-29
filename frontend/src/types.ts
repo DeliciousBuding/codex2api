@@ -250,6 +250,7 @@ export interface ChartTimelinePoint {
 export interface ChartModelPoint {
   model: string
   requests: number
+  tokens?: number
 }
 
 export interface ChartAggregation {

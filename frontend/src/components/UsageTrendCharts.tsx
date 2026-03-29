@@ -16,7 +16,7 @@ import {
 } from 'recharts'
 import { api } from '../api'
 import { Card, CardContent } from '@/components/ui/card'
-import type { ChartAggregation, ChartTimelinePoint } from '../types'
+import type { ChartAggregation } from '../types'
 
 export type UsageTimeRange = '1h' | '6h' | '24h' | '7d' | '30d'
 

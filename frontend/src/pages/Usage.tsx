@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api'
-import { getTimeRangeISO } from '../components/DashboardUsageCharts'
 import type { TimeRangeKey } from '../components/DashboardUsageCharts'
 import PageHeader from '../components/PageHeader'
 import Pagination from '../components/Pagination'
 import StateShell from '../components/StateShell'
 import ToastNotice from '../components/ToastNotice'
+import UsageTrendCharts from '../components/UsageTrendCharts'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { useToast } from '../hooks/useToast'
@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Activity, Box, Clock, Zap, AlertTriangle, Search, Brain, DatabaseZap, X } from 'lucide-react'
+import { Activity, Box, Clock, Zap, AlertTriangle, Search, Brain, DatabaseZap, X, Download, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 
@@ -62,7 +62,51 @@ function getStatusBadgeClassName(statusCode: number): string {
   return 'border-transparent bg-slate-500/14 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300'
 }
 
+function getTrendIcon(trend: 'up' | 'down' | 'stable') {
+  if (trend === 'up') return <TrendingUp className="size-4 text-emerald-500" />
+  if (trend === 'down') return <TrendingDown className="size-4 text-red-500" />
+  return <Minus className="size-4 text-muted-foreground" />
+}
+
 const TIME_RANGE_OPTIONS: TimeRangeKey[] = ['1h', '6h', '24h', '7d', '30d']
+
+// 将 Date 格式化为带本地时区偏移的 RFC3339 字符串
+function toLocalRFC3339(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const offset = date.getTimezoneOffset()
+  const sign = offset <= 0 ? '+' : '-'
+  const absOffset = Math.abs(offset)
+  const tzH = pad(Math.floor(absOffset / 60))
+  const tzM = pad(absOffset % 60)
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${tzH}:${tzM}`
+}
+
+function getTimeRangeISO(range: TimeRangeKey): { start: string; end: string } {
+  const now = new Date()
+  const end = toLocalRFC3339(now)
+  let offsetMs: number
+  switch (range) {
+    case '1h':
+      offsetMs = 60 * 60 * 1000
+      break
+    case '6h':
+      offsetMs = 6 * 60 * 60 * 1000
+      break
+    case '24h':
+      offsetMs = 24 * 60 * 60 * 1000
+      break
+    case '7d':
+      offsetMs = 7 * 24 * 60 * 60 * 1000
+      break
+    case '30d':
+      offsetMs = 30 * 24 * 60 * 60 * 1000
+      break
+    default:
+      offsetMs = 60 * 60 * 1000
+  }
+  const start = toLocalRFC3339(new Date(now.getTime() - offsetMs))
+  return { start, end }
+}
 
 export default function Usage() {
   const { t } = useTranslation()
@@ -71,6 +115,7 @@ export default function Usage() {
   const [page, setPage] = useState(1)
   const [clearing, setClearing] = useState(false)
   const [timeRange, setTimeRange] = useState<TimeRangeKey>('1h')
+  const [chartTimeRange, setChartTimeRange] = useState<TimeRangeKey>('24h')
   const [logs, setLogs] = useState<UsageLog[]>([])
   const [logsTotal, setLogsTotal] = useState(0)
   const [logsLoading, setLogsLoading] = useState(false)
@@ -80,6 +125,15 @@ export default function Usage() {
   const [filterEndpoint, setFilterEndpoint] = useState('')
   const [filterFast, setFilterFast] = useState('')
   const [filterStream, setFilterStream] = useState<'' | 'true' | 'false'>('')
+  const [exporting, setExporting] = useState(false)
+  const [trendAnalysis, setTrendAnalysis] = useState<{
+    requestTrend: 'up' | 'down' | 'stable'
+    tokenTrend: 'up' | 'down' | 'stable'
+    errorTrend: 'up' | 'down' | 'stable'
+    requestChange: number
+    tokenChange: number
+    errorChange: number
+  } | null>(null)
   const showFastFilter = false
   const PAGE_SIZE = 20
   const searchTimer = useRef<ReturnType<typeof setTimeout>>(null)
@@ -129,10 +183,118 @@ export default function Usage() {
     }
   }, [timeRange, page, searchEmail, filterModel, filterEndpoint, filterFast, filterStream])
 
+  // 趋势分析
+  const analyzeTrend = useCallback(async () => {
+    try {
+      const { start, end } = getTimeRangeISO(chartTimeRange)
+      const { bucketMinutes } = (() => {
+        switch (chartTimeRange) {
+          case '1h': return { bucketMinutes: 5 }
+          case '6h': return { bucketMinutes: 15 }
+          case '24h': return { bucketMinutes: 30 }
+          case '7d': return { bucketMinutes: 360 }
+          case '30d': return { bucketMinutes: 1440 }
+          default: return { bucketMinutes: 5 }
+        }
+      })()
+      const data = await api.getChartData({ start, end, bucketMinutes })
+
+      if (data.timeline.length >= 2) {
+        const half = Math.floor(data.timeline.length / 2)
+        const firstHalf = data.timeline.slice(0, half)
+        const secondHalf = data.timeline.slice(half)
+
+        const firstRequests = firstHalf.reduce((s, p) => s + p.requests, 0)
+        const secondRequests = secondHalf.reduce((s, p) => s + p.requests, 0)
+        const requestChange = firstRequests > 0 ? ((secondRequests - firstRequests) / firstRequests) * 100 : 0
+
+        const firstTokens = firstHalf.reduce((s, p) => s + p.input_tokens + p.output_tokens, 0)
+        const secondTokens = secondHalf.reduce((s, p) => s + p.input_tokens + p.output_tokens, 0)
+        const tokenChange = firstTokens > 0 ? ((secondTokens - firstTokens) / firstTokens) * 100 : 0
+
+        const firstErrors = firstHalf.reduce((s, p) => s + p.errors_401, 0)
+        const secondErrors = secondHalf.reduce((s, p) => s + p.errors_401, 0)
+        const errorChange = firstRequests > 0 ? ((secondErrors / secondRequests - firstErrors / firstRequests) * 100) : 0
+
+        setTrendAnalysis({
+          requestTrend: requestChange > 5 ? 'up' : requestChange < -5 ? 'down' : 'stable',
+          tokenTrend: tokenChange > 5 ? 'up' : tokenChange < -5 ? 'down' : 'stable',
+          errorTrend: errorChange > 2 ? 'up' : errorChange < -2 ? 'down' : 'stable',
+          requestChange,
+          tokenChange,
+          errorChange,
+        })
+      }
+    } catch {
+      // 静默容错
+    }
+  }, [chartTimeRange])
+
+  // 导出报表
+  const exportReport = useCallback(async () => {
+    setExporting(true)
+    try {
+      const { start, end } = getTimeRangeISO(chartTimeRange)
+      const res = await api.getUsageLogsPaged({
+        start, end, page: 1, pageSize: 10000,
+        email: searchEmail || undefined,
+        model: filterModel || undefined,
+        endpoint: filterEndpoint || undefined,
+        stream: filterStream || undefined,
+      })
+
+      const logs = res.logs || []
+      const csvHeaders = [
+        'ID', 'Time', 'Account', 'Model', 'Endpoint', 'Status', 'Type',
+        'Input Tokens', 'Output Tokens', 'Reasoning Tokens', 'Cached Tokens', 'Total Tokens',
+        'First Token (ms)', 'Duration (ms)', 'Reasoning Effort', 'Service Tier'
+      ]
+
+      const csvRows = logs.map((log) => [
+        log.id,
+        formatTime(log.created_at),
+        log.account_email || '-',
+        log.model || '-',
+        log.endpoint || '-',
+        log.status_code,
+        log.stream ? 'stream' : 'sync',
+        log.input_tokens,
+        log.output_tokens,
+        log.reasoning_tokens,
+        log.cached_tokens,
+        log.total_tokens,
+        log.first_token_ms,
+        log.duration_ms,
+        log.reasoning_effort || '-',
+        log.service_tier || '-',
+      ])
+
+      const csvContent = [csvHeaders.join(','), ...csvRows.map((row) => row.join(','))].join('\n')
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+      const link = document.createElement('a')
+      const url = URL.createObjectURL(blob)
+      link.setAttribute('href', url)
+      link.setAttribute('download', `usage-report-${new Date().toISOString().split('T')[0]}.csv`)
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      showToast(t('usage.exportSuccess'))
+    } catch {
+      showToast(t('usage.exportFailed'), 'error')
+    } finally {
+      setExporting(false)
+    }
+  }, [chartTimeRange, searchEmail, filterModel, filterEndpoint, filterStream, t])
+
   // 首次加载 + timeRange/page 变更时重新拉取日志
   useEffect(() => {
     void loadLogs()
   }, [loadLogs])
+
+  // 趋势分析
+  useEffect(() => {
+    void analyzeTrend()
+  }, [analyzeTrend])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -185,8 +347,8 @@ export default function Usage() {
                 {formatTokens(totalRequests)}
               </div>
               <div className="text-[12px] text-muted-foreground leading-relaxed">
-                <span className="text-[hsl(var(--success))]">● {t('usage.success')}: {formatTokens(successRequests)}</span>
-                <span className="ml-2 text-muted-foreground">● {t('usage.today')}: {formatTokens(todayRequests)}</span>
+                <span className="text-[hsl(var(--success))]">{t('usage.success')}: {formatTokens(successRequests)}</span>
+                <span className="ml-2 text-muted-foreground">{t('usage.today')}: {formatTokens(todayRequests)}</span>
               </div>
             </CardContent>
           </Card>
@@ -257,6 +419,78 @@ export default function Usage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* 趋势分析卡片 */}
+        {trendAnalysis && (
+          <Card className="py-0 mb-6">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-foreground">{t('usage.trendAnalysis')}</h3>
+                <div className="text-xs text-muted-foreground">{t('usage.basedOnTimeRange', { range: chartTimeRange })}</div>
+              </div>
+              <div className="grid grid-cols-3 gap-4 mt-4">
+                <div className="flex items-center gap-3">
+                  <div className="size-10 flex items-center justify-center rounded-xl bg-primary/10">
+                    {getTrendIcon(trendAnalysis.requestTrend)}
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium">{t('usage.requestTrend')}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {trendAnalysis.requestChange > 0 ? '+' : ''}{trendAnalysis.requestChange.toFixed(1)}%
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="size-10 flex items-center justify-center rounded-xl bg-[hsl(var(--info-bg))]">
+                    {getTrendIcon(trendAnalysis.tokenTrend)}
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium">{t('usage.tokenTrend')}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {trendAnalysis.tokenChange > 0 ? '+' : ''}{trendAnalysis.tokenChange.toFixed(1)}%
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="size-10 flex items-center justify-center rounded-xl bg-destructive/10">
+                    {getTrendIcon(trendAnalysis.errorTrend)}
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium">{t('usage.errorTrend')}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {trendAnalysis.errorChange > 0 ? '+' : ''}{trendAnalysis.errorChange.toFixed(1)}%
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* 详细用量图表 */}
+        <Card className="py-0 mb-6">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
+              <div>
+                <h3 className="text-base font-semibold text-foreground">{t('usage.detailedCharts')}</h3>
+                <p className="text-sm text-muted-foreground">{t('usage.detailedChartsDesc')}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={exporting}
+                  onClick={exportReport}
+                  className="gap-1"
+                >
+                  <Download className="size-4" />
+                  {exporting ? t('usage.exporting') : t('usage.exportReport')}
+                </Button>
+              </div>
+            </div>
+            <UsageTrendCharts timeRange={chartTimeRange} onTimeRangeChange={setChartTimeRange} />
+          </CardContent>
+        </Card>
 
         {/* Logs table */}
         <Card>
