@@ -42,8 +42,8 @@ export default function StateShell({
 
   if (loading) {
     return (
-      <div className={`flex flex-col items-center justify-center gap-3 p-10 border border-border rounded-3xl bg-white/40 text-center ${minH}`} role="status" aria-live="polite">
-        <div className="size-16 flex items-center justify-center rounded-full bg-white/60">
+      <div className={`flex flex-col items-center justify-center gap-3 p-10 border border-border rounded-3xl bg-card/50 backdrop-blur-sm text-center ${minH}`} role="status" aria-live="polite">
+        <div className="size-16 flex items-center justify-center rounded-full bg-muted/60">
           <div className="spinner" />
         </div>
         <strong className="text-lg font-bold text-foreground">{resolvedLoadingTitle}</strong>
@@ -54,7 +54,7 @@ export default function StateShell({
 
   if (error) {
     return (
-      <div className={`flex flex-col items-center justify-center gap-3 p-10 border border-border rounded-3xl bg-white/40 text-center ${minH}`} role="alert">
+      <div className={`flex flex-col items-center justify-center gap-3 p-10 border border-border rounded-3xl bg-card/50 backdrop-blur-sm text-center ${minH}`} role="alert">
         <div className="size-16 flex items-center justify-center rounded-full bg-destructive/12 text-destructive">
           <AlertCircle className="size-6" />
         </div>
@@ -72,7 +72,7 @@ export default function StateShell({
 
   if (isEmpty) {
     return (
-      <div className={`flex flex-col items-center justify-center gap-3 p-10 border border-border rounded-3xl bg-white/40 text-center ${minH}`}>
+      <div className={`flex flex-col items-center justify-center gap-3 p-10 border border-border rounded-3xl bg-card/50 backdrop-blur-sm text-center ${minH}`}>
         <div className="size-16 flex items-center justify-center rounded-full bg-[hsl(var(--info-bg))] text-[hsl(var(--info))]">
           <Inbox className="size-6" />
         </div>
