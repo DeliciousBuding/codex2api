@@ -24,18 +24,35 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, RefreshCw, Trash2, Zap, FlaskConical, Ban, Timer, AlertTriangle, Upload, Download, ArrowDownToLine, KeyRound, ExternalLink, FileText, FileJson, BarChart3, Search } from 'lucide-react'
+import { Plus, RefreshCw, Trash2, Zap, FlaskConical, Ban, Timer, AlertTriangle, Upload, Download, ArrowDownToLine, KeyRound, ExternalLink, FileText, FileJson, BarChart3, Search, Power, PowerOff, FileSpreadsheet, History, Filter, ChevronDown } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import AccountUsageModal from '../components/AccountUsageModal'
+
+interface OperationLog {
+  id: string
+  type: 'delete' | 'refresh' | 'enable' | 'disable' | 'import' | 'export' | 'test' | 'clean'
+  target: string
+  details: string
+  success: boolean
+  timestamp: Date
+}
+
+interface FilterState {
+  status: typeof statusFilter
+  plan: typeof planFilter
+  proxy: string
+  search: string
+}
 
 export default function Accounts() {
   const { t } = useTranslation()
   const [showAdd, setShowAdd] = useState(false)
   const [page, setPage] = useState(1)
-  const [statusFilter, setStatusFilter] = useState<'all' | 'normal' | 'rate_limited' | 'banned'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'normal' | 'rate_limited' | 'banned' | 'error' | 'paused'>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [planFilter, setPlanFilter] = useState<'all' | 'pro' | 'team' | 'free'>('all')
-  const [sortKey, setSortKey] = useState<'requests' | 'usage' | 'importTime' | null>(null)
+  const [proxyFilter, setProxyFilter] = useState<string>('all')
+  const [sortKey, setSortKey] = useState<'requests' | 'usage' | 'importTime' | 'healthScore' | null>(null)
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   const PAGE_SIZE = 20
@@ -48,9 +65,13 @@ export default function Accounts() {
   const [refreshingIds, setRefreshingIds] = useState<Set<number>>(new Set())
   const [batchLoading, setBatchLoading] = useState(false)
   const [batchTesting, setBatchTesting] = useState(false)
+  const [batchEnabling, setBatchEnabling] = useState(false)
+  const [batchDisabling, setBatchDisabling] = useState(false)
   const [cleaningBanned, setCleaningBanned] = useState(false)
   const [cleaningRateLimited, setCleaningRateLimited] = useState(false)
   const [cleaningError, setCleaningError] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [showFilterPanel, setShowFilterPanel] = useState(false)
   const [testingAccount, setTestingAccount] = useState<AccountRow | null>(null)
   const [usageAccount, setUsageAccount] = useState<AccountRow | null>(null)
   const [importing, setImporting] = useState(false)
