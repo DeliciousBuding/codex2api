@@ -1621,6 +1621,123 @@ func (s *Store) MarkCooldown(acc *Account, duration time.Duration, reason string
 	}
 }
 
+// ApplyModelCooldown Phase 2: Apply model-level cooldown
+// 应用模型级冷却 (429/capacity)，不影响账号其他模型
+func (s *Store) ApplyModelCooldown(acc *Account, model string, duration time.Duration, reason string) {
+	if acc == nil || model == "" {
+		return
+	}
+
+	// 规范化模型名称
+	canonicalModel := canonicalModelKey(model)
+	if canonicalModel == "" {
+		return
+	}
+
+	acc.mu.Lock()
+
+	// 确保ModelStates已初始化
+	if acc.ModelStates == nil {
+		acc.ModelStates = make(map[string]*ModelState)
+	}
+
+	// 获取或创建ModelState
+	ms, exists := acc.ModelStates[canonicalModel]
+	if !exists || ms == nil {
+		ms = NewModelState()
+		acc.ModelStates[canonicalModel] = ms
+	}
+
+	// 应用模型级冷却
+	ms.ApplyCooldown(reason, duration)
+
+	// 更新健康信号
+	now := time.Now()
+	acc.LastRateLimitedAt = now
+	acc.LastFailureAt = now
+	acc.FailureStreak++
+	acc.SuccessStreak = 0
+
+	acc.mu.Unlock()
+
+	// 聚合推导账号级状态
+	acc.RecomputeAggregatedAccountState()
+
+	// 更新FastScheduler
+	s.fastSchedulerUpdate(acc)
+
+	// TODO: Phase 3 持久化 model_states
+	log.Printf("[账号 %d] 模型 %s 进入冷却 %v (reason=%s)", acc.DBID, canonicalModel, duration, reason)
+}
+
+// ApplyAccountHardFailure Phase 2: Apply account-level hard failure
+// 应用账号级硬故障 (401/terminal)，整个账号不可调度
+func (s *Store) ApplyAccountHardFailure(acc *Account, reason string) {
+	if acc == nil {
+		return
+	}
+
+	// 原子标志瞬间置位
+	atomic.StoreInt32(&acc.Disabled, 1)
+
+	acc.mu.Lock()
+	now := time.Now()
+
+	switch reason {
+	case "unauthorized":
+		// 401 认证失败
+		if !acc.LastUnauthorizedAt.IsZero() && now.Sub(acc.LastUnauthorizedAt) < 24*time.Hour {
+			// 24h内重复401，延长到24h
+			acc.SetCooldownUntil(now.Add(24*time.Hour), reason)
+		} else {
+			// 首次401，6h冷却
+			acc.SetCooldownUntil(now.Add(6*time.Hour), reason)
+		}
+		acc.LastUnauthorizedAt = now
+		acc.HealthTier = HealthTierBanned
+	case "terminal_auth":
+		// 其他终端认证错误
+		acc.SetCooldownUntil(now.Add(24*time.Hour), reason)
+		acc.HealthTier = HealthTierBanned
+	default:
+		// 其他硬故障
+		acc.SetCooldownUntil(now.Add(6*time.Hour), reason)
+	}
+
+	acc.LastFailureAt = now
+	acc.FailureStreak++
+	acc.SuccessStreak = 0
+	acc.Status = StatusError
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.mu.Unlock()
+
+	s.fastSchedulerUpdate(acc)
+
+	// 持久化账号级状态
+	if s.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := s.db.SetError(ctx, acc.DBID, reason); err != nil {
+			log.Printf("[账号 %d] 持久化错误状态失败: %v", acc.DBID, err)
+		}
+	}
+
+	log.Printf("[账号 %d] 硬故障: %s", acc.DBID, reason)
+}
+
+// RecordFailure Phase 2: 记录失败（不写冷却）
+// 用于非 429/401 的错误，仅更新健康信号
+func (acc *Account) RecordFailure() {
+	if acc == nil {
+		return
+	}
+	acc.mu.Lock()
+	acc.LastFailureAt = time.Now()
+	acc.FailureStreak++
+	acc.SuccessStreak = 0
+	acc.mu.Unlock()
+}
+
 // ClearCooldown 清除账号冷却状态，并同步清理数据库
 func (s *Store) ClearCooldown(acc *Account) {
 	if acc == nil {

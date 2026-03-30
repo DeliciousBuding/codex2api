@@ -1283,11 +1283,59 @@ func (h *Handler) applyCooldown(account *auth.Account, statusCode int, body []by
 	}
 }
 
+// applyFailureState Phase 2: 统一失败状态处理
+// 根据 statusCode 和 body 内容，路由到正确的模型级或账号级状态更新
+func (h *Handler) applyFailureState(account *auth.Account, model string, statusCode int, body []byte, resp *http.Response) {
+	// 规范化模型名称（直接使用，canonicalModelKey 已在 auth 包中）
+	canonicalModel := model
+	if canonicalModel == "" {
+		// 无模型参数时，无法应用模型级冷却，回退到账号级
+		h.applyCooldown(account, statusCode, body, resp)
+		return
+	}
+
+	switch statusCode {
+	case http.StatusTooManyRequests:
+		// 429: 模型级冷却
+		cooldown := h.compute429Cooldown(account, body, resp)
+		log.Printf("[账号 %d] 模型 %s 被限速 (plan=%s)，冷却 %v", account.ID(), canonicalModel, account.GetPlanType(), cooldown)
+		h.store.ApplyModelCooldown(account, canonicalModel, cooldown, "rate_limited")
+
+	case http.StatusUnauthorized:
+		// 401: 账号级硬故障
+		if h.store.GetAutoCleanUnauthorized() {
+			// 开启自动清理时，401 立即删除
+			log.Printf("[账号 %d] 收到 401，立即清理", account.ID())
+			if h.db != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				_ = h.db.SetError(ctx, account.ID(), "deleted")
+				cancel()
+				h.db.InsertAccountEventAsync(account.ID(), "deleted", "auto_clean_401")
+			}
+			h.store.RemoveAccount(account.ID())
+		} else {
+			h.store.ApplyAccountHardFailure(account, "unauthorized")
+		}
+
+	default:
+		// 其他错误：仅更新健康信号，不写冷却
+		account.RecordFailure()
+	}
+}
+
 // compute429Cooldown 根据计划类型和 Codex 响应精确计算 429 冷却时间
 func (h *Handler) compute429Cooldown(account *auth.Account, body []byte, resp *http.Response) time.Duration {
 	// 1. 优先使用 Codex 响应体中的精确重置时间
-	if resetDuration := parseRetryAfter(body); resetDuration > 2*time.Minute {
-		// parseRetryAfter 默认返回 2min（无数据），超过 2min 说明解析到了真实的 resets_at/resets_in_seconds
+	resetDuration := parseRetryAfter(body)
+
+	// Phase 2: 修复 retry-after 误判
+	// parseRetryAfter 默认返回 2min（无数据时）
+	// 只要是真实上游值（非默认），无条件采纳
+	const defaultRetryAfter = 2 * time.Minute
+	isDefaultValue := resetDuration == defaultRetryAfter && len(body) == 0
+
+	if !isDefaultValue && resetDuration > 0 {
+		// 有真实上游数据，无条件采纳
 		if resetDuration > 7*24*time.Hour {
 			resetDuration = 7 * 24 * time.Hour // 最多 7 天
 		}
