@@ -1666,8 +1666,76 @@ func (s *Store) ApplyModelCooldown(acc *Account, model string, duration time.Dur
 	// 更新FastScheduler
 	s.fastSchedulerUpdate(acc)
 
-	// TODO: Phase 3 持久化 model_states
+	// Phase 3: 持久化 model_states
+	if s.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if ms, ok := acc.ModelStates[canonicalModel]; ok && ms != nil {
+			// 类型转换：auth.ModelState -> database.ModelState
+			dbState := &database.ModelState{
+				Status:         database.ModelStatus(ms.Status),
+				Unavailable:    ms.Unavailable,
+				NextRetryAfter: ms.NextRetryAfter,
+				LastError:      ms.LastError,
+				StrikeCount:    ms.StrikeCount,
+				BackoffLevel:   ms.BackoffLevel,
+				UpdatedAt:      ms.UpdatedAt,
+			}
+			if err := s.db.UpdateModelState(ctx, acc.DBID, canonicalModel, dbState); err != nil {
+				log.Printf("[账号 %d] 持久化模型状态失败: %v", acc.DBID, err)
+			}
+		}
+	}
 	log.Printf("[账号 %d] 模型 %s 进入冷却 %v (reason=%s)", acc.DBID, canonicalModel, duration, reason)
+}
+
+// ClearModelCooldown Phase 2: Clear model-level cooldown
+// 清除模型级冷却状态（请求成功后调用）
+func (s *Store) ClearModelCooldown(acc *Account, model string) {
+	if acc == nil || model == "" {
+		return
+	}
+
+	// 规范化模型名称
+	canonicalModel := canonicalModelKey(model)
+	if canonicalModel == "" {
+		return
+	}
+
+	acc.mu.Lock()
+
+	// 检查模型状态是否存在
+	if acc.ModelStates == nil {
+		acc.mu.Unlock()
+		return
+	}
+
+	ms, exists := acc.ModelStates[canonicalModel]
+	if !exists || ms == nil {
+		acc.mu.Unlock()
+		return
+	}
+
+	// 清除模型级冷却
+	ms.ClearCooldown()
+
+	acc.mu.Unlock()
+
+	// 聚合推导账号级状态
+	acc.RecomputeAggregatedAccountState()
+
+	// 更新FastScheduler
+	s.fastSchedulerUpdate(acc)
+
+	// Phase 3: 清除持久化的模型状态
+	if s.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := s.db.ClearModelState(ctx, acc.DBID, canonicalModel); err != nil {
+			log.Printf("[账号 %d] 清除模型状态失败: %v", acc.DBID, err)
+		}
+	}
+	log.Printf("[账号 %d] 模型 %s 冷却已清除", acc.DBID, canonicalModel)
 }
 
 // ApplyAccountHardFailure Phase 2: Apply account-level hard failure

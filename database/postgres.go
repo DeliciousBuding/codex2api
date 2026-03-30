@@ -14,6 +14,30 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ==================== ModelState 类型定义 ====================
+// 注意：这些类型在 auth 包中也有定义，这里重新定义以避免循环导入
+// database 包和 auth 包使用相同的 JSON 序列化格式
+
+type ModelStatus string
+
+const (
+	ModelStatusReady       ModelStatus = "ready"
+	ModelStatusCooldown    ModelStatus = "cooldown"
+	ModelStatusUnavailable ModelStatus = "unavailable"
+)
+
+// ModelState per-model 状态隔离核心结构
+// 每个账号对每个模型独立维护状态，429/model_capacity 只影响该模型
+type ModelState struct {
+	Status         ModelStatus `json:"status"`
+	Unavailable    bool        `json:"unavailable"`
+	NextRetryAfter time.Time   `json:"next_retry_after,omitempty"`
+	LastError      string      `json:"last_error,omitempty"`
+	StrikeCount    int         `json:"strike_count"`
+	BackoffLevel   int         `json:"backoff_level"`
+	UpdatedAt      time.Time   `json:"updated_at"`
+}
+
 // AccountRow 数据库中的账号行
 type AccountRow struct {
 	ID             int64
@@ -1322,6 +1346,219 @@ func (db *DB) ClearUsageLogs(ctx context.Context) error {
 	}
 	_, err = db.conn.ExecContext(ctx, `TRUNCATE TABLE usage_logs RESTART IDENTITY`)
 	return err
+}
+
+// ==================== Model States (Per-Model 状态持久化) ====================
+
+// UpdateModelState 更新指定账号的单个模型状态
+// 使用 FOR UPDATE 行锁保证并发安全，自动合并 JSONB 数据
+func (db *DB) UpdateModelState(ctx context.Context, accountID int64, modelKey string, state *ModelState) error {
+	if state == nil {
+		return fmt.Errorf("state cannot be nil")
+	}
+	if modelKey == "" {
+		return fmt.Errorf("modelKey cannot be empty")
+	}
+	if db.isSQLite() {
+		return db.updateModelStateSQLite(ctx, accountID, modelKey, state)
+	}
+
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 使用 FOR UPDATE 锁定行，防止并发更新丢失
+	var currentRaw interface{}
+	if err := tx.QueryRowContext(ctx,
+		`SELECT model_states FROM accounts WHERE id = $1 FOR UPDATE`,
+		accountID).Scan(&currentRaw); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("账号 %d 不存在", accountID)
+		}
+		return fmt.Errorf("查询 model_states 失败: %w", err)
+	}
+
+	// 解析现有 model_states
+	states, err := parseModelStates(currentRaw)
+	if err != nil {
+		// 如果解析失败，记录警告并创建新的 map
+		log.Printf("[警告] 解析账号 %d 的 model_states 失败: %v，将创建新的状态映射", accountID, err)
+		states = make(map[string]*ModelState)
+	}
+
+	// 更新指定模型状态
+	states[modelKey] = state
+
+	// 序列化整个 map
+	statesJSON, err := json.Marshal(states)
+	if err != nil {
+		return fmt.Errorf("序列化 model_states 失败: %w", err)
+	}
+
+	// 使用 jsonb_set 或完整替换更新
+	_, err = tx.ExecContext(ctx,
+		`UPDATE accounts SET model_states = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+		statesJSON, accountID)
+	if err != nil {
+		return fmt.Errorf("更新 model_states 失败: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// LoadModelStates 加载指定账号的所有模型状态
+func (db *DB) LoadModelStates(ctx context.Context, accountID int64) (map[string]*ModelState, error) {
+	if db.isSQLite() {
+		return db.loadModelStatesSQLite(ctx, accountID)
+	}
+
+	var raw interface{}
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT model_states FROM accounts WHERE id = $1`, accountID).Scan(&raw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("账号 %d 不存在", accountID)
+		}
+		return nil, err
+	}
+
+	return parseModelStates(raw)
+}
+
+// UpdateModelStates 批量更新指定账号的所有模型状态
+// 用于批量保存或完整替换 model_states
+func (db *DB) UpdateModelStates(ctx context.Context, accountID int64, states map[string]*ModelState) error {
+	if db.isSQLite() {
+		return db.updateModelStatesSQLite(ctx, accountID, states)
+	}
+
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 验证账号存在并锁定行
+	var dummy int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&dummy); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("账号 %d 不存在", accountID)
+		}
+		return fmt.Errorf("锁定账号行失败: %w", err)
+	}
+
+	// 序列化 states
+	statesJSON, err := json.Marshal(states)
+	if err != nil {
+		return fmt.Errorf("序列化 model_states 失败: %w", err)
+	}
+
+	// 更新整个 model_states 字段
+	_, err = tx.ExecContext(ctx,
+		`UPDATE accounts SET model_states = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+		statesJSON, accountID)
+	if err != nil {
+		return fmt.Errorf("更新 model_states 失败: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// ClearModelState 清除指定账号的指定模型状态
+func (db *DB) ClearModelState(ctx context.Context, accountID int64, modelKey string) error {
+	if db.isSQLite() {
+		return db.clearModelStateSQLite(ctx, accountID, modelKey)
+	}
+
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 读取现有 model_states
+	var currentRaw interface{}
+	if err := tx.QueryRowContext(ctx,
+		`SELECT model_states FROM accounts WHERE id = $1 FOR UPDATE`,
+		accountID).Scan(&currentRaw); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("账号 %d 不存在", accountID)
+		}
+		return fmt.Errorf("查询 model_states 失败: %w", err)
+	}
+
+	// 解析并删除指定 key
+	states, _ := parseModelStates(currentRaw)
+	if states == nil {
+		return nil // 没有数据，无需处理
+	}
+
+	delete(states, modelKey)
+
+	// 序列化并更新
+	statesJSON, err := json.Marshal(states)
+	if err != nil {
+		return fmt.Errorf("序列化 model_states 失败: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE accounts SET model_states = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+		statesJSON, accountID)
+	if err != nil {
+		return fmt.Errorf("更新 model_states 失败: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// parseModelStates 辅助函数：解析 model_states JSON 数据
+func parseModelStates(raw interface{}) (map[string]*ModelState, error) {
+	states := make(map[string]*ModelState)
+
+	if raw == nil {
+		return states, nil
+	}
+
+	var data []byte
+	switch v := raw.(type) {
+	case []byte:
+		data = v
+	case string:
+		data = []byte(v)
+	default:
+		return states, nil
+	}
+
+	if len(data) == 0 || (len(data) == 2 && data[0] == '{' && data[1] == '}') {
+		return states, nil
+	}
+
+	// 先解析为通用 map
+	tempMap := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(data, &tempMap); err != nil {
+		// 可能是旧格式，尝试直接解析
+		var oldStates map[string]*ModelState
+		if err := json.Unmarshal(data, &oldStates); err != nil {
+			return states, fmt.Errorf("解析 model_states JSON 失败: %w", err)
+		}
+		return oldStates, nil
+	}
+
+	// 逐个解析 ModelState
+	for k, v := range tempMap {
+		ms := &ModelState{}
+		if err := json.Unmarshal(v, ms); err != nil {
+			// 记录解析单个模型失败的警告，但不中断整体解析
+			log.Printf("[警告] 解析模型状态 '%s' 失败: %v", k, err)
+			continue
+		}
+		states[k] = ms
+	}
+
+	return states, nil
 }
 
 // Ping 检查 PostgreSQL 连通性

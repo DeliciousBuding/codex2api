@@ -519,16 +519,19 @@ func (h *Handler) Responses(c *gin.Context) {
 				Stream:           isStream,
 				ServiceTier:      serviceTier,
 			})
-			h.applyCooldown(account, resp.StatusCode, errBody, resp)
+			h.applyFailureState(account, model, resp.StatusCode, errBody, resp)
 
 			// 判断是否应该重试：可重试状态码 或 模型容量不足错误
 			capErr := isCodexModelCapacityError(errBody)
 			shouldRetry := (isRetryableStatus(resp.StatusCode) || capErr) && attempt < maxRetries
 			if shouldRetry {
-				// Capacity error 视为 429 处理，设置短期冷却
+				// Capacity error 视为 429 处理，使用 applyFailureState 统一处理
 				if capErr && resp.StatusCode != http.StatusTooManyRequests {
-					h.store.MarkCooldown(account, 30*time.Second, "model_capacity")
-					log.Printf("检测到模型容量不足 (account %d)，设置 30s 冷却后重试", account.ID())
+					h.applyFailureState(account, model, http.StatusTooManyRequests, errBody, resp)
+					log.Printf("检测到模型容量不足 (account %d, model %s)，触发模型级冷却", account.ID(), model)
+				} else {
+					// 标准 429 错误走统一失败状态处理
+					h.applyFailureState(account, model, resp.StatusCode, errBody, resp)
 				}
 				lastStatusCode = resp.StatusCode
 				lastBody = errBody
@@ -889,16 +892,19 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				Stream:           isStream,
 				ServiceTier:      serviceTier,
 			})
-			h.applyCooldown(account, resp.StatusCode, errBody, resp)
+			h.applyFailureState(account, model, resp.StatusCode, errBody, resp)
 
 			// 判断是否应该重试：可重试状态码 或 模型容量不足错误
 			capErr := isCodexModelCapacityError(errBody)
 			shouldRetry := (isRetryableStatus(resp.StatusCode) || capErr) && attempt < maxRetries
 			if shouldRetry {
-				// Capacity error 视为 429 处理，设置短期冷却
+				// Capacity error 视为 429 处理，使用 applyFailureState 统一处理
 				if capErr && resp.StatusCode != http.StatusTooManyRequests {
-					h.store.MarkCooldown(account, 30*time.Second, "model_capacity")
-					log.Printf("检测到模型容量不足 (account %d)，设置 30s 冷却后重试", account.ID())
+					h.applyFailureState(account, model, http.StatusTooManyRequests, errBody, resp)
+					log.Printf("检测到模型容量不足 (account %d, model %s)，触发模型级冷却", account.ID(), model)
+				} else {
+					// 标准 429 错误走统一失败状态处理
+					h.applyFailureState(account, model, resp.StatusCode, errBody, resp)
 				}
 				lastStatusCode = resp.StatusCode
 				lastBody = errBody
@@ -1544,8 +1550,9 @@ func (h *Handler) sendFinalUpstreamError(c *gin.Context, statusCode int, body []
 }
 
 // handleUpstreamError 统一处理上游错误（兼容旧调用）
-func (h *Handler) handleUpstreamError(c *gin.Context, account *auth.Account, statusCode int, body []byte) {
-	h.applyCooldown(account, statusCode, body, nil)
+// Phase 2: 现在需要传递 model 参数以支持模型级状态隔离
+func (h *Handler) handleUpstreamError(c *gin.Context, account *auth.Account, model string, statusCode int, body []byte) {
+	h.applyFailureState(account, model, statusCode, body, nil)
 	h.sendUpstreamError(c, statusCode, body)
 }
 

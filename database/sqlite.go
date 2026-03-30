@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -458,4 +459,193 @@ func (db *DB) getAccountEventTrendSQLite(ctx context.Context, start, end time.Ti
 		result = append(result, AccountEventPoint{Bucket: k, Added: agg.added, Deleted: agg.deleted})
 	}
 	return result, nil
+}
+
+// ==================== Model States SQLite 实现 ====================
+
+// updateModelStateSQLite SQLite 版本：更新单个模型状态
+func (db *DB) updateModelStateSQLite(ctx context.Context, accountID int64, modelKey string, state *ModelState) error {
+	if state == nil {
+		return fmt.Errorf("state cannot be nil")
+	}
+	if modelKey == "" {
+		return fmt.Errorf("modelKey cannot be empty")
+	}
+
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	// SQLite 不支持 FOR UPDATE，使用事务隔离
+	var currentRaw interface{}
+	if err := tx.QueryRowContext(ctx,
+		`SELECT model_states FROM accounts WHERE id = $1`, accountID).Scan(&currentRaw); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("账号 %d 不存在", accountID)
+		}
+		return fmt.Errorf("查询 model_states 失败: %w", err)
+	}
+
+	// 解析现有 model_states
+	states, err := parseModelStatesSQLite(currentRaw)
+	if err != nil {
+		states = make(map[string]*ModelState)
+	}
+
+	// 更新指定模型状态
+	states[modelKey] = state
+
+	// 序列化整个 map
+	statesJSON, err := json.Marshal(states)
+	if err != nil {
+		return fmt.Errorf("序列化 model_states 失败: %w", err)
+	}
+
+	// 更新（SQLite 使用 TEXT 存储 JSON）
+	_, err = tx.ExecContext(ctx,
+		`UPDATE accounts SET model_states = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+		string(statesJSON), accountID)
+	if err != nil {
+		return fmt.Errorf("更新 model_states 失败: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// loadModelStatesSQLite SQLite 版本：加载所有模型状态
+func (db *DB) loadModelStatesSQLite(ctx context.Context, accountID int64) (map[string]*ModelState, error) {
+	var raw interface{}
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT model_states FROM accounts WHERE id = $1`, accountID).Scan(&raw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("账号 %d 不存在", accountID)
+		}
+		return nil, err
+	}
+
+	return parseModelStatesSQLite(raw)
+}
+
+// updateModelStatesSQLite SQLite 版本：批量更新模型状态
+func (db *DB) updateModelStatesSQLite(ctx context.Context, accountID int64, states map[string]*ModelState) error {
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 验证账号存在
+	var dummy int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT 1 FROM accounts WHERE id = $1`, accountID).Scan(&dummy); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("账号 %d 不存在", accountID)
+		}
+		return fmt.Errorf("查询账号失败: %w", err)
+	}
+
+	// 序列化 states
+	statesJSON, err := json.Marshal(states)
+	if err != nil {
+		return fmt.Errorf("序列化 model_states 失败: %w", err)
+	}
+
+	// 更新
+	_, err = tx.ExecContext(ctx,
+		`UPDATE accounts SET model_states = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+		string(statesJSON), accountID)
+	if err != nil {
+		return fmt.Errorf("更新 model_states 失败: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// clearModelStateSQLite SQLite 版本：清除指定模型状态
+func (db *DB) clearModelStateSQLite(ctx context.Context, accountID int64, modelKey string) error {
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	var currentRaw interface{}
+	if err := tx.QueryRowContext(ctx,
+		`SELECT model_states FROM accounts WHERE id = $1`, accountID).Scan(&currentRaw); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("账号 %d 不存在", accountID)
+		}
+		return fmt.Errorf("查询 model_states 失败: %w", err)
+	}
+
+	// 解析并删除指定 key
+	states, _ := parseModelStatesSQLite(currentRaw)
+	if states == nil {
+		return nil
+	}
+
+	delete(states, modelKey)
+
+	// 序列化并更新
+	statesJSON, err := json.Marshal(states)
+	if err != nil {
+		return fmt.Errorf("序列化 model_states 失败: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE accounts SET model_states = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+		string(statesJSON), accountID)
+	if err != nil {
+		return fmt.Errorf("更新 model_states 失败: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// parseModelStatesSQLite 辅助函数：解析 model_states JSON 数据 (SQLite)
+func parseModelStatesSQLite(raw interface{}) (map[string]*ModelState, error) {
+	states := make(map[string]*ModelState)
+
+	if raw == nil {
+		return states, nil
+	}
+
+	var data []byte
+	switch v := raw.(type) {
+	case []byte:
+		data = v
+	case string:
+		data = []byte(v)
+	default:
+		return states, nil
+	}
+
+	if len(data) == 0 || (len(data) == 2 && data[0] == '{' && data[1] == '}') {
+		return states, nil
+	}
+
+	// 先解析为通用 map
+	tempMap := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(data, &tempMap); err != nil {
+		// 可能是旧格式，尝试直接解析
+		var oldStates map[string]*ModelState
+		if err := json.Unmarshal(data, &oldStates); err != nil {
+			return states, fmt.Errorf("解析 model_states JSON 失败: %w", err)
+		}
+		return oldStates, nil
+	}
+
+	// 逐个解析 ModelState
+	for k, v := range tempMap {
+		ms := &ModelState{}
+		if err := json.Unmarshal(v, ms); err != nil {
+			continue
+		}
+		states[k] = ms
+	}
+
+	return states, nil
 }
