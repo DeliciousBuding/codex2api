@@ -30,6 +30,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			platform TEXT DEFAULT 'openai',
 			type TEXT DEFAULT 'oauth',
 			credentials TEXT NOT NULL DEFAULT '{}',
+			model_states TEXT DEFAULT '{}',
 			proxy_url TEXT DEFAULT '',
 			status TEXT DEFAULT 'active',
 			cooldown_reason TEXT DEFAULT '',
@@ -117,6 +118,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 	}{
 		{"accounts", "cooldown_reason", "TEXT DEFAULT ''"},
 		{"accounts", "cooldown_until", "TIMESTAMP NULL"},
+		{"accounts", "model_states", "TEXT DEFAULT '{}'"},
 		{"usage_logs", "input_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "output_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "reasoning_tokens", "INTEGER DEFAULT 0"},

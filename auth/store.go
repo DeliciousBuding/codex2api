@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -51,6 +52,7 @@ type Account struct {
 	CooldownUtil   time.Time
 	CooldownReason string // rate_limited / unauthorized / 空
 	ErrorMsg       string
+	ModelStates    map[string]*ModelState
 
 	// 用量进度（从 Codex 响应头被动解析）
 	UsagePercent7d        float64 // 7d 窗口使用率 0-100+
@@ -1055,6 +1057,12 @@ func (s *Store) loadFromDB(ctx context.Context) error {
 				}
 			}
 		}
+		if row.ModelStatesRaw != "" {
+			if err := json.Unmarshal([]byte(row.ModelStatesRaw), &account.ModelStates); err != nil {
+				log.Printf("[账号 %d] 解析 model_states 失败: %v", row.ID, err)
+			}
+		}
+		account.RecomputeAggregatedAccountState(time.Now())
 		if usagePct := row.GetCredential("codex_7d_used_percent"); usagePct != "" {
 			if parsed, err := strconv.ParseFloat(usagePct, 64); err == nil {
 				updatedAt := time.Time{}

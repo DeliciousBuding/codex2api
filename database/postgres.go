@@ -21,6 +21,7 @@ type AccountRow struct {
 	Platform       string
 	Type           string
 	Credentials    map[string]interface{}
+	ModelStatesRaw string
 	ProxyURL       string
 	Status         string
 	CooldownReason string
@@ -196,6 +197,7 @@ func (db *DB) migrate(ctx context.Context) error {
 
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cooldown_reason VARCHAR(50) DEFAULT '';
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMP NULL;
+	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_states JSONB DEFAULT '{}'::jsonb;
 
 	CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
 	CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
@@ -1370,7 +1372,7 @@ func (db *DB) GetAccountRequestCounts(ctx context.Context) (map[int64]*AccountRe
 // ListActive 获取所有状态为 active 的账号
 func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 	query := `
-		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, created_at, updated_at
+		SELECT id, name, platform, type, credentials, COALESCE(CAST(model_states AS TEXT), '{}'), proxy_url, status, cooldown_reason, cooldown_until, error_message, created_at, updated_at
 		FROM accounts
 		WHERE status = 'active'
 		ORDER BY id
@@ -1385,6 +1387,7 @@ func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 	for rows.Next() {
 		a := &AccountRow{}
 		var credRaw interface{}
+		var modelStatesRaw interface{}
 		var cooldownUntilRaw interface{}
 		var createdAtRaw interface{}
 		var updatedAtRaw interface{}
@@ -1394,6 +1397,7 @@ func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 			&a.Platform,
 			&a.Type,
 			&credRaw,
+			&modelStatesRaw,
 			&a.ProxyURL,
 			&a.Status,
 			&a.CooldownReason,
@@ -1405,6 +1409,7 @@ func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 			return nil, fmt.Errorf("扫描账号行失败: %w", err)
 		}
 		a.Credentials = decodeCredentials(credRaw)
+		a.ModelStatesRaw = string(bytesFromDBValue(modelStatesRaw))
 		a.CooldownUntil, err = parseDBNullTimeValue(cooldownUntilRaw)
 		if err != nil {
 			return nil, fmt.Errorf("解析 cooldown_until 失败: %w", err)
