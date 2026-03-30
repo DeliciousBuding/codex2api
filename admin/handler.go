@@ -15,11 +15,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/cache"
 	"github.com/codex2api/database"
 	"github.com/codex2api/proxy"
+	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -84,6 +86,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/stats", h.GetStats)
 	api.GET("/accounts", h.ListAccounts)
 	api.POST("/accounts", h.AddAccount)
+	api.POST("/accounts/at", h.AddATAccount)
 	api.POST("/accounts/import", h.ImportAccounts)
 	api.DELETE("/accounts/:id", h.DeleteAccount)
 	api.POST("/accounts/:id/refresh", h.RefreshAccount)
@@ -120,10 +123,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/oauth/exchange-code", h.ExchangeOAuthCode)
 }
 
-// adminAuthMiddleware 管理接口鉴权中间件
+// adminAuthMiddleware 管理接口鉴权中间件（增强版，增加安全审计日志）
 func (h *Handler) adminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		adminSecret, _ := h.resolveAdminSecret(c.Request.Context())
+		adminSecret, source := h.resolveAdminSecret(c.Request.Context())
 		if adminSecret == "" {
 			// 未配置管理密钥，跳过鉴权
 			c.Next()
@@ -139,13 +142,25 @@ func (h *Handler) adminAuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		if adminKey != adminSecret {
+		// 清理输入
+		adminKey = security.SanitizeInput(adminKey)
+
+		// 使用安全比较防止时序攻击
+		if !security.SecureCompare(adminKey, adminSecret) {
+			// 记录安全审计日志
+			security.SecurityAuditLog("ADMIN_AUTH_FAILED", fmt.Sprintf("path=%s ip=%s source=%s", c.Request.URL.Path, c.ClientIP(), source))
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "管理密钥无效或缺失",
 			})
 			c.Abort()
 			return
 		}
+
+		// 成功认证，记录审计日志
+		if security.IsSensitiveEndpoint(c.Request.URL.Path) {
+			security.SecurityAuditLog("ADMIN_ACCESS", fmt.Sprintf("path=%s ip=%s method=%s", c.Request.URL.Path, c.ClientIP(), c.Request.Method))
+		}
+
 		c.Next()
 	}
 }
@@ -213,6 +228,7 @@ type accountResponse struct {
 	Email              string                     `json:"email"`
 	PlanType           string                     `json:"plan_type"`
 	Status             string                     `json:"status"`
+	ATOnly             bool                       `json:"at_only"`
 	HealthTier         string                     `json:"health_tier"`
 	SchedulerScore     float64                    `json:"scheduler_score"`
 	ConcurrencyCap     int64                      `json:"dynamic_concurrency_limit"`
@@ -278,6 +294,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			Email:     row.GetCredential("email"),
 			PlanType:  row.GetCredential("plan_type"),
 			Status:    row.Status,
+			ATOnly:    row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",
 			ProxyURL:  row.ProxyURL,
 			CreatedAt: row.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
@@ -354,8 +371,30 @@ func (h *Handler) AddAccount(c *gin.Context) {
 		return
 	}
 
+	// 输入验证和清理
+	req.Name = security.SanitizeInput(req.Name)
+	req.ProxyURL = security.SanitizeInput(req.ProxyURL)
+
 	if req.RefreshToken == "" {
 		writeError(c, http.StatusBadRequest, "refresh_token 是必填字段")
+		return
+	}
+
+	// 检查XSS和SQL注入
+	if security.ContainsXSS(req.Name) || security.ContainsSQLInjection(req.Name) {
+		writeError(c, http.StatusBadRequest, "名称包含非法字符")
+		return
+	}
+
+	// 验证名称长度
+	if utf8.RuneCountInString(req.Name) > 100 {
+		writeError(c, http.StatusBadRequest, "名称长度不能超过100字符")
+		return
+	}
+
+	// 验证代理URL
+	if err := security.ValidateProxyURL(req.ProxyURL); err != nil {
+		writeError(c, http.StatusBadRequest, "代理URL无效")
 		return
 	}
 
@@ -363,7 +402,7 @@ func (h *Handler) AddAccount(c *gin.Context) {
 	lines := strings.Split(req.RefreshToken, "\n")
 	var tokens []string
 	for _, line := range lines {
-		t := strings.TrimSpace(line)
+		t := strings.TrimSpace(security.SanitizeInput(line))
 		if t != "" {
 			tokens = append(tokens, t)
 		}
@@ -371,6 +410,12 @@ func (h *Handler) AddAccount(c *gin.Context) {
 
 	if len(tokens) == 0 {
 		writeError(c, http.StatusBadRequest, "未找到有效的 Refresh Token")
+		return
+	}
+
+	// 限制批量添加数量
+	if len(tokens) > 100 {
+		writeError(c, http.StatusBadRequest, "单次最多添加100个账号")
 		return
 	}
 
@@ -418,7 +463,141 @@ func (h *Handler) AddAccount(c *gin.Context) {
 		}(id)
 	}
 
+	// 记录安全审计日志
+	security.SecurityAuditLog("ACCOUNTS_ADDED", fmt.Sprintf("success=%d failed=%d ip=%s", successCount, failCount, c.ClientIP()))
+
 	msg := fmt.Sprintf("成功添加 %d 个账号", successCount)
+	if failCount > 0 {
+		msg += fmt.Sprintf("，%d 个失败", failCount)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": msg,
+		"success": successCount,
+		"failed":  failCount,
+	})
+}
+
+// addATAccountReq AT 模式添加账号请求
+type addATAccountReq struct {
+	Name        string `json:"name"`
+	AccessToken string `json:"access_token"`
+	ProxyURL    string `json:"proxy_url"`
+}
+
+// AddATAccount 添加 AT-only 账号（支持批量：access_token 按行分割）
+func (h *Handler) AddATAccount(c *gin.Context) {
+	var req addATAccountReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+
+	req.Name = security.SanitizeInput(req.Name)
+	req.ProxyURL = security.SanitizeInput(req.ProxyURL)
+
+	if req.AccessToken == "" {
+		writeError(c, http.StatusBadRequest, "access_token 是必填字段")
+		return
+	}
+
+	if security.ContainsXSS(req.Name) || security.ContainsSQLInjection(req.Name) {
+		writeError(c, http.StatusBadRequest, "名称包含非法字符")
+		return
+	}
+
+	if utf8.RuneCountInString(req.Name) > 100 {
+		writeError(c, http.StatusBadRequest, "名称长度不能超过100字符")
+		return
+	}
+
+	if err := security.ValidateProxyURL(req.ProxyURL); err != nil {
+		writeError(c, http.StatusBadRequest, "代理URL无效")
+		return
+	}
+
+	// 按行分割，支持批量添加
+	lines := strings.Split(req.AccessToken, "\n")
+	var tokens []string
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t != "" {
+			tokens = append(tokens, t)
+		}
+	}
+
+	if len(tokens) == 0 {
+		writeError(c, http.StatusBadRequest, "未找到有效的 Access Token")
+		return
+	}
+
+	if len(tokens) > 100 {
+		writeError(c, http.StatusBadRequest, "单次最多添加100个账号")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	successCount := 0
+	failCount := 0
+
+	for i, at := range tokens {
+		name := req.Name
+		if name == "" {
+			name = fmt.Sprintf("at-account-%d", i+1)
+		} else if len(tokens) > 1 {
+			name = fmt.Sprintf("%s-%d", req.Name, i+1)
+		}
+
+		id, err := h.db.InsertATAccount(ctx, name, at, req.ProxyURL)
+		if err != nil {
+			log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
+			failCount++
+			continue
+		}
+
+		successCount++
+		h.db.InsertAccountEventAsync(id, "added", "manual_at")
+
+		// 解析 AT JWT 提取账号信息（email、plan_type、account_id、过期时间）
+		atInfo := auth.ParseAccessToken(at)
+
+		// 热加载到内存池（AT-only，无 RT）
+		newAcc := &auth.Account{
+			DBID:        id,
+			AccessToken: at,
+			ExpiresAt:   time.Now().Add(1 * time.Hour),
+			ProxyURL:    req.ProxyURL,
+		}
+		if atInfo != nil {
+			newAcc.Email = atInfo.Email
+			newAcc.AccountID = atInfo.ChatGPTAccountID
+			newAcc.PlanType = atInfo.PlanType
+			if !atInfo.ExpiresAt.IsZero() {
+				newAcc.ExpiresAt = atInfo.ExpiresAt
+			}
+		}
+		h.store.AddAccount(newAcc)
+
+		// 将解析到的信息持久化到数据库
+		if atInfo != nil {
+			creds := map[string]interface{}{
+				"email":      atInfo.Email,
+				"account_id": atInfo.ChatGPTAccountID,
+				"plan_type":  atInfo.PlanType,
+				"expires_at": newAcc.ExpiresAt.Format(time.RFC3339),
+			}
+			if err := h.db.UpdateCredentials(ctx, id, creds); err != nil {
+				log.Printf("AT 账号 %d 更新 credentials 失败: %v", id, err)
+			}
+		}
+		log.Printf("AT 账号 %d 已加入号池 (id=%d, email=%s)", i+1, id, newAcc.Email)
+	}
+
+	security.SecurityAuditLog("AT_ACCOUNTS_ADDED", fmt.Sprintf("success=%d failed=%d ip=%s", successCount, failCount, c.ClientIP()))
+
+	msg := fmt.Sprintf("成功添加 %d 个 AT 账号", successCount)
 	if failCount > 0 {
 		msg += fmt.Sprintf("，%d 个失败", failCount)
 	}
@@ -450,6 +629,8 @@ func (h *Handler) ImportAccounts(c *gin.Context) {
 	switch format {
 	case "json":
 		h.importAccountsJSON(c, proxyURL)
+	case "at_txt":
+		h.importAccountsATTXT(c, proxyURL)
 	default:
 		h.importAccountsTXT(c, proxyURL)
 	}
@@ -722,6 +903,177 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 	log.Printf("导入完成: success=%d, duplicate=%d, failed=%d, total=%d", suc, duplicateCount, fai, total)
 }
 
+// importAccountsATTXT 通过 TXT 文件导入 AT-only 账号（每行一个 Access Token）
+func (h *Handler) importAccountsATTXT(c *gin.Context, proxyURL string) {
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "请上传文件（字段名: file）")
+		return
+	}
+	defer file.Close()
+
+	if header.Size > 2*1024*1024 {
+		writeError(c, http.StatusBadRequest, "文件大小不能超过 2MB")
+		return
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "读取文件失败")
+		return
+	}
+
+	// 按行分割，文件内去重
+	lines := strings.Split(string(data), "\n")
+	seen := make(map[string]bool)
+	var atTokens []string
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		t = strings.TrimPrefix(t, "\xef\xbb\xbf")
+		if t != "" && !seen[t] {
+			seen[t] = true
+			atTokens = append(atTokens, t)
+		}
+	}
+
+	if len(atTokens) == 0 {
+		writeError(c, http.StatusBadRequest, "文件中未找到有效的 Access Token")
+		return
+	}
+
+	// 数据库去重
+	dedupeCtx, dedupeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dedupeCancel()
+	existingATs, err := h.db.GetAllAccessTokens(dedupeCtx)
+	if err != nil {
+		log.Printf("查询已有 AT 失败: %v", err)
+		existingATs = make(map[string]bool)
+	}
+
+	var newTokens []string
+	duplicateCount := 0
+	for _, at := range atTokens {
+		if existingATs[at] {
+			duplicateCount++
+		} else {
+			newTokens = append(newTokens, at)
+		}
+	}
+
+	total := len(atTokens)
+
+	if len(newTokens) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message":   fmt.Sprintf("所有 %d 个 AT 已存在，无需导入", total),
+			"success":   0,
+			"duplicate": duplicateCount,
+			"failed":    0,
+			"total":     total,
+		})
+		return
+	}
+
+	// SSE 流式响应
+	setupSSE(c)
+
+	var successCount int64
+	var failCount int64
+	var current int64
+	sem := make(chan struct{}, 20)
+	var wg sync.WaitGroup
+
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				cur := int(atomic.LoadInt64(&current))
+				suc := int(atomic.LoadInt64(&successCount))
+				fai := int(atomic.LoadInt64(&failCount))
+				sendImportEvent(c, importEvent{
+					Type: "progress", Current: cur + duplicateCount, Total: total,
+					Success: suc, Duplicate: duplicateCount, Failed: fai,
+				})
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	for i, at := range newTokens {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(idx int, accessToken string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			name := fmt.Sprintf("at-import-%d", idx+1)
+
+			insertCtx, insertCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			id, err := h.db.InsertATAccount(insertCtx, name, accessToken, proxyURL)
+			insertCancel()
+
+			if err != nil {
+				log.Printf("导入 AT 账号 %d/%d 失败: %v", idx+1, len(newTokens), err)
+				atomic.AddInt64(&failCount, 1)
+				atomic.AddInt64(&current, 1)
+				return
+			}
+
+			atomic.AddInt64(&successCount, 1)
+			atomic.AddInt64(&current, 1)
+			h.db.InsertAccountEventAsync(id, "added", "import_at")
+
+			// 解析 AT JWT 提取账号信息
+			atInfo := auth.ParseAccessToken(accessToken)
+
+			newAcc := &auth.Account{
+				DBID:        id,
+				AccessToken: accessToken,
+				ExpiresAt:   time.Now().Add(1 * time.Hour),
+				ProxyURL:    proxyURL,
+			}
+			if atInfo != nil {
+				newAcc.Email = atInfo.Email
+				newAcc.AccountID = atInfo.ChatGPTAccountID
+				newAcc.PlanType = atInfo.PlanType
+				if !atInfo.ExpiresAt.IsZero() {
+					newAcc.ExpiresAt = atInfo.ExpiresAt
+				}
+				// 持久化解析到的账号信息
+				credCtx, credCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				_ = h.db.UpdateCredentials(credCtx, id, map[string]interface{}{
+					"email":      atInfo.Email,
+					"account_id": atInfo.ChatGPTAccountID,
+					"plan_type":  atInfo.PlanType,
+					"expires_at": newAcc.ExpiresAt.Format(time.RFC3339),
+				})
+				credCancel()
+
+				// 如果解析到邮箱，用邮箱替换默认名称
+				if atInfo.Email != "" {
+					name = atInfo.Email
+				}
+			}
+			h.store.AddAccount(newAcc)
+		}(i, at)
+	}
+
+	wg.Wait()
+	close(done)
+
+	suc := int(atomic.LoadInt64(&successCount))
+	fai := int(atomic.LoadInt64(&failCount))
+	sendImportEvent(c, importEvent{
+		Type: "complete", Current: total, Total: total,
+		Success: suc, Duplicate: duplicateCount, Failed: fai,
+	})
+
+	log.Printf("AT 导入完成: success=%d, duplicate=%d, failed=%d, total=%d", suc, duplicateCount, fai, total)
+}
+
 // GetAccountUsage 查询单个账号的用量统计
 func (h *Handler) GetAccountUsage(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -978,7 +1330,7 @@ func (h *Handler) ClearUsageLogs(c *gin.Context) {
 
 // ==================== API Keys ====================
 
-// ListAPIKeys 获取所有 API 密钥
+// ListAPIKeys 获取所有 API 密钥（脱敏版本）
 func (h *Handler) ListAPIKeys(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -988,10 +1340,14 @@ func (h *Handler) ListAPIKeys(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	if keys == nil {
-		keys = []*database.APIKeyRow{}
+
+	// 转换为脱敏响应
+	maskedKeys := make([]*MaskedAPIKeyRow, 0, len(keys))
+	for _, k := range keys {
+		maskedKeys = append(maskedKeys, NewMaskedAPIKeyRow(k))
 	}
-	c.JSON(http.StatusOK, apiKeysResponse{Keys: keys})
+
+	c.JSON(http.StatusOK, apiKeysResponse{Keys: maskedKeys})
 }
 
 type createKeyReq struct {
@@ -1006,19 +1362,41 @@ func generateKey() string {
 	return "sk-" + hex.EncodeToString(b)
 }
 
-// CreateAPIKey 创建新 API 密钥
+// CreateAPIKey 创建新 API 密钥（增强版，带输入验证）
 func (h *Handler) CreateAPIKey(c *gin.Context) {
 	var req createKeyReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		req.Name = ""
 	}
+
+	// 输入验证和清理
+	req.Name = security.SanitizeInput(req.Name)
 	if req.Name == "" {
 		req.Name = "default"
+	}
+
+	// 验证名称长度
+	if utf8.RuneCountInString(req.Name) > 100 {
+		writeError(c, http.StatusBadRequest, "名称长度不能超过100字符")
+		return
+	}
+
+	// 检查XSS
+	if security.ContainsXSS(req.Name) {
+		writeError(c, http.StatusBadRequest, "名称包含非法字符")
+		return
 	}
 
 	key := req.Key
 	if key == "" {
 		key = generateKey()
+	} else {
+		// 验证用户提供的key格式
+		key = security.SanitizeInput(key)
+		if !strings.HasPrefix(key, "sk-") || len(key) < 20 {
+			writeError(c, http.StatusBadRequest, "API Key格式无效")
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
@@ -1029,6 +1407,9 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "创建失败: "+err.Error())
 		return
 	}
+
+	// 记录安全审计日志
+	security.SecurityAuditLog("API_KEY_CREATED", fmt.Sprintf("id=%d name=%s ip=%s", id, security.SanitizeLog(req.Name), c.ClientIP()))
 
 	c.JSON(http.StatusOK, createAPIKeyResponse{
 		ID:   id,
@@ -1071,6 +1452,7 @@ type settingsResponse struct {
 	AdminAuthSource       string `json:"admin_auth_source"`
 	AutoCleanFullUsage    bool   `json:"auto_clean_full_usage"`
 	AutoCleanError        bool   `json:"auto_clean_error"`
+	AutoCleanExpired      bool   `json:"auto_clean_expired"`
 	ProxyPoolEnabled      bool   `json:"proxy_pool_enabled"`
 	FastSchedulerEnabled  bool   `json:"fast_scheduler_enabled"`
 	MaxRetries            int    `json:"max_retries"`
@@ -1079,6 +1461,7 @@ type settingsResponse struct {
 	DatabaseLabel         string `json:"database_label"`
 	CacheDriver           string `json:"cache_driver"`
 	CacheLabel            string `json:"cache_label"`
+	ExpiredCleaned        int    `json:"expired_cleaned,omitempty"`
 }
 
 type updateSettingsReq struct {
@@ -1094,6 +1477,7 @@ type updateSettingsReq struct {
 	AdminSecret           *string `json:"admin_secret"`
 	AutoCleanFullUsage    *bool   `json:"auto_clean_full_usage"`
 	AutoCleanError        *bool   `json:"auto_clean_error"`
+	AutoCleanExpired      *bool   `json:"auto_clean_expired"`
 	ProxyPoolEnabled      *bool   `json:"proxy_pool_enabled"`
 	FastSchedulerEnabled  *bool   `json:"fast_scheduler_enabled"`
 	MaxRetries            *int    `json:"max_retries"`
@@ -1124,6 +1508,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		AdminAuthSource:       adminAuthSource,
 		AutoCleanFullUsage:    h.store.GetAutoCleanFullUsage(),
 		AutoCleanError:        h.store.GetAutoCleanError(),
+		AutoCleanExpired:      h.store.GetAutoCleanExpired(),
 		ProxyPoolEnabled:      h.store.GetProxyPoolEnabled(),
 		FastSchedulerEnabled:  h.store.FastSchedulerEnabled(),
 		MaxRetries:            h.store.GetMaxRetries(),
@@ -1246,6 +1631,16 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: auto_clean_error = %t", *req.AutoCleanError)
 	}
 
+	var expiredCleaned int
+	if req.AutoCleanExpired != nil {
+		h.store.SetAutoCleanExpired(*req.AutoCleanExpired)
+		log.Printf("设置已更新: auto_clean_expired = %t", *req.AutoCleanExpired)
+		// 开启时立即同步执行一次清理
+		if *req.AutoCleanExpired {
+			expiredCleaned = h.store.CleanExpiredNow()
+		}
+	}
+
 	if req.ProxyPoolEnabled != nil {
 		h.store.SetProxyPoolEnabled(*req.ProxyPoolEnabled)
 		if *req.ProxyPoolEnabled {
@@ -1296,6 +1691,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		AdminSecret:           currentAdminSecret,
 		AutoCleanFullUsage:    h.store.GetAutoCleanFullUsage(),
 		AutoCleanError:        h.store.GetAutoCleanError(),
+		AutoCleanExpired:      h.store.GetAutoCleanExpired(),
 		ProxyPoolEnabled:      h.store.GetProxyPoolEnabled(),
 		FastSchedulerEnabled:  h.store.FastSchedulerEnabled(),
 		MaxRetries:            h.store.GetMaxRetries(),
@@ -1332,6 +1728,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		AdminAuthSource:       adminAuthSource,
 		AutoCleanFullUsage:    h.store.GetAutoCleanFullUsage(),
 		AutoCleanError:        h.store.GetAutoCleanError(),
+		AutoCleanExpired:      h.store.GetAutoCleanExpired(),
 		ProxyPoolEnabled:      h.store.GetProxyPoolEnabled(),
 		FastSchedulerEnabled:  h.store.FastSchedulerEnabled(),
 		MaxRetries:            h.store.GetMaxRetries(),
@@ -1340,6 +1737,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		DatabaseLabel:         h.databaseLabel,
 		CacheDriver:           h.cacheDriver,
 		CacheLabel:            h.cacheLabel,
+		ExpiredCleaned:        expiredCleaned,
 	})
 }
 
