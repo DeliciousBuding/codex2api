@@ -96,6 +96,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/clean-banned", h.CleanBanned)
 	api.POST("/accounts/clean-rate-limited", h.CleanRateLimited)
 	api.POST("/accounts/clean-error", h.CleanError)
+	api.POST("/accounts/:id/lock", h.LockAccount)
+	api.POST("/accounts/:id/unlock", h.UnlockAccount)
+	api.POST("/accounts/batch-lock", h.BatchLockAccount)
 	api.GET("/accounts/export", h.ExportAccounts)
 	api.POST("/accounts/migrate", h.MigrateAccounts)
 	api.GET("/accounts/event-trend", h.GetAccountEventTrend)
@@ -249,6 +252,7 @@ type accountResponse struct {
 	LastRateLimitedAt  string                     `json:"last_rate_limited_at,omitempty"`
 	LastTimeoutAt      string                     `json:"last_timeout_at,omitempty"`
 	LastServerErrorAt  string                     `json:"last_server_error_at,omitempty"`
+	Locked             int                        `json:"locked"` // 0=未锁定, 1=锁定
 }
 
 type schedulerBreakdownResponse struct {
@@ -346,6 +350,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			}
 			// 使用运行时状态（优先于 DB 状态）
 			resp.Status = acc.RuntimeStatus()
+			resp.Locked = int(atomic.LoadInt32(&acc.Locked))
 		}
 		if rc, ok := reqCounts[row.ID]; ok {
 			resp.SuccessRequests = rc.SuccessCount
@@ -2192,6 +2197,80 @@ func (h *Handler) TestProxy(c *gin.Context) {
 		"isp":        isp,
 		"latency_ms": latencyMs,
 		"location":   location,
+	})
+}
+
+// LockAccount 锁定账号（不会被自动删除）
+func (h *Handler) LockAccount(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account id"})
+		return
+	}
+
+	if err := h.store.SetLocked(id, true); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "账号已锁定，不会被自动删除",
+	})
+}
+
+// UnlockAccount 解锁账号
+func (h *Handler) UnlockAccount(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account id"})
+		return
+	}
+
+	if err := h.store.SetLocked(id, false); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "账号已解锁，可以被自动删除",
+	})
+}
+
+// BatchLockAccount 批量锁定/解锁账号
+func (h *Handler) BatchLockAccount(c *gin.Context) {
+	var req struct {
+		AccountIDs []int64 `json:"account_ids"`
+		Locked     bool    `json:"locked"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	if len(req.AccountIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "account_ids is required"})
+		return
+	}
+
+	success := 0
+	failed := 0
+	for _, id := range req.AccountIDs {
+		if err := h.store.SetLocked(id, req.Locked); err != nil {
+			failed++
+		} else {
+			success++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": success,
+		"failed":  failed,
+		"total":   len(req.AccountIDs),
 	})
 }
 

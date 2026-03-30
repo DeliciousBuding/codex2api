@@ -119,6 +119,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"accounts", "cooldown_reason", "TEXT DEFAULT ''"},
 		{"accounts", "cooldown_until", "TIMESTAMP NULL"},
 		{"accounts", "model_states", "TEXT DEFAULT '{}'"},
+		{"accounts", "locked", "INTEGER DEFAULT 0"},
 		{"usage_logs", "input_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "output_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "reasoning_tokens", "INTEGER DEFAULT 0"},
@@ -648,4 +649,16 @@ func parseModelStatesSQLite(raw interface{}) (map[string]*ModelState, error) {
 	}
 
 	return states, nil
+}
+
+// setAccountLockedSQLite SQLite 版本：设置账号锁定状态
+func (db *DB) setAccountLockedSQLite(ctx context.Context, accountID int64, locked bool) error {
+	var lockedVal int
+	if locked {
+		lockedVal = 1
+	}
+	_, err := db.conn.ExecContext(ctx,
+		`UPDATE accounts SET locked = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+		lockedVal, accountID)
+	return err
 }

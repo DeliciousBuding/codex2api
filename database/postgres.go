@@ -221,6 +221,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cooldown_reason VARCHAR(50) DEFAULT '';
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMP NULL;
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_states JSONB DEFAULT '{}';
+	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS locked INTEGER DEFAULT 0;
 
 	CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
 	CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
@@ -1957,4 +1958,21 @@ func (db *DB) GetAccountEventTrend(ctx context.Context, start, end time.Time, bu
 		result = []AccountEventPoint{}
 	}
 	return result, rows.Err()
+}
+
+// SetAccountLocked 设置账号锁定状态
+// 锁定后的账号不会被自动删除（auto_clean 相关功能）
+func (db *DB) SetAccountLocked(ctx context.Context, accountID int64, locked bool) error {
+	if db.isSQLite() {
+		return db.setAccountLockedSQLite(ctx, accountID, locked)
+	}
+
+	var lockedVal int
+	if locked {
+		lockedVal = 1
+	}
+	_, err := db.conn.ExecContext(ctx,
+		`UPDATE accounts SET locked = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+		lockedVal, accountID)
+	return err
 }
