@@ -92,6 +92,9 @@ type Account struct {
 
 	// Per-Model 状态隔离（Phase 0）
 	ModelStates map[string]*ModelState `json:"model_states,omitempty"` // key: canonical model name
+
+	// 账号锁定保护
+	Locked int32 // 1=锁定，0=未锁定（原子操作）
 }
 
 // SchedulerBreakdown 调度评分拆解
@@ -2067,7 +2070,7 @@ func (s *Store) CleanExpiredAccounts(ctx context.Context, maxAge time.Duration) 
 
 	// 1. 收集所有需要清理的账号 ID
 	var expiredIDs []int64
-	var skipNoAddedAt, skipNotExpired, skipActive, skipProven int
+	var skipNoAddedAt, skipNotExpired, skipActive, skipLocked, skipProven int
 	for _, acc := range accounts {
 		if acc == nil {
 			continue
@@ -2085,6 +2088,11 @@ func (s *Store) CleanExpiredAccounts(ctx context.Context, maxAge time.Duration) 
 			skipActive++
 			continue
 		}
+		// 锁定的账号不做过期清理
+		if acc.IsLocked() {
+			skipLocked++
+			continue
+		}
 		// 成功请求超过 10 次的账号保留，不做过期清理
 		if atomic.LoadInt64(&acc.TotalRequests) > 10 {
 			skipProven++
@@ -2093,8 +2101,8 @@ func (s *Store) CleanExpiredAccounts(ctx context.Context, maxAge time.Duration) 
 		expiredIDs = append(expiredIDs, acc.DBID)
 	}
 
-	log.Printf("过期清理扫描: 总数=%d, 待清理=%d, 跳过(无时间=%d, 未过期=%d, 处理中=%d, 已验证=%d)",
-		len(accounts), len(expiredIDs), skipNoAddedAt, skipNotExpired, skipActive, skipProven)
+	log.Printf("过期清理扫描: 总数=%d, 待清理=%d, 跳过(无时间=%d, 未过期=%d, 处理中=%d, 锁定=%d, 已验证=%d)",
+		len(accounts), len(expiredIDs), skipNoAddedAt, skipNotExpired, skipActive, skipLocked, skipProven)
 
 	if len(expiredIDs) == 0 {
 		return 0
@@ -2153,18 +2161,31 @@ func (s *Store) RemoveAccounts(dbIDs []int64) {
 
 	s.mu.Lock()
 	kept := s.accounts[:0]
+	removedCount := 0
+	skippedLocked := 0
 	for _, acc := range s.accounts {
 		if _, remove := removeSet[acc.DBID]; remove {
+			// 检查锁定标志：锁定的账号不能被删除
+			if acc.IsLocked() {
+				kept = append(kept, acc)
+				skippedLocked++
+				continue
+			}
 			s.fastSchedulerRemove(acc.DBID)
 			if scheduler := s.GetRefreshScheduler(); scheduler != nil {
 				scheduler.CancelTask(acc.DBID)
 			}
+			removedCount++
 		} else {
 			kept = append(kept, acc)
 		}
 	}
 	s.accounts = kept
 	s.mu.Unlock()
+
+	if skippedLocked > 0 {
+		log.Printf("RemoveAccounts: 跳过 %d 个锁定账号（无法被自动删除）", skippedLocked)
+	}
 }
 
 func (s *Store) parallelProbeUsage(ctx context.Context) {
@@ -2515,4 +2536,42 @@ func (s *Store) refreshAccount(ctx context.Context, acc *Account) error {
 	}
 
 	return nil
+}
+
+// ==================== Account Lock ====================
+
+// SetLocked 设置账号锁定状态
+func (s *Store) SetLocked(dbID int64, locked bool) error {
+	s.mu.RLock()
+	var acc *Account
+	for _, a := range s.accounts {
+		if a.DBID == dbID {
+			acc = a
+			break
+		}
+	}
+	s.mu.RUnlock()
+
+	if acc == nil {
+		return fmt.Errorf("账号 %d 不存在", dbID)
+	}
+
+	var lockedVal int32
+	if locked {
+		lockedVal = 1
+	}
+	atomic.StoreInt32(&acc.Locked, lockedVal)
+
+	// 持久化到数据库
+	if s.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		return s.db.SetAccountLocked(ctx, dbID, locked)
+	}
+	return nil
+}
+
+// IsLocked 检查账号是否锁定（原子读取）
+func (acc *Account) IsLocked() bool {
+	return atomic.LoadInt32(&acc.Locked) == 1
 }
