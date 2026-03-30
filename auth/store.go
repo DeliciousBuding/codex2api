@@ -1188,6 +1188,132 @@ func (s *Store) Next() *Account {
 	return s.NextExcluding(nil)
 }
 
+// NextForModel Phase 1: Model-aware account selection
+// 获取对特定模型可用的账号
+func (s *Store) NextForModel(model string, exclude map[int64]bool) *Account {
+	// 规范化模型名称
+	canonicalModel := canonicalModelKey(model)
+	if canonicalModel == "" {
+		return s.NextExcluding(exclude) // 无模型参数时回退到旧逻辑
+	}
+
+	if scheduler := s.getFastScheduler(); scheduler != nil {
+		return scheduler.AcquireForModel(canonicalModel, exclude)
+	}
+
+	// 若无 FastScheduler，使用传统逻辑 + 模型级过滤
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now()
+	var best *Account
+	bestPriority := -1
+	bestScore := -math.MaxFloat64
+	var bestLoad int64 = math.MaxInt64
+	maxConcurrency := atomic.LoadInt64(&s.maxConcurrency)
+
+	for _, acc := range s.accounts {
+		if exclude != nil && exclude[acc.DBID] {
+			continue
+		}
+
+		acc.mu.RLock()
+		tier := acc.healthTierLocked()
+		score := acc.SchedulerScore
+		limit := acc.DynamicConcurrencyLimit
+		if limit <= 0 {
+			limit = concurrencyLimitForTier(maxConcurrency, tier)
+		}
+
+		// 检查账号级硬故障
+		available := acc.Status != StatusError && tier != HealthTierBanned && acc.AccessToken != "" && atomic.LoadInt32(&acc.Disabled) == 0
+		if !available {
+			acc.mu.RUnlock()
+			continue
+		}
+
+		// Phase 1: 检查模型级状态
+		if acc.ModelStates != nil {
+			if ms, exists := acc.ModelStates[canonicalModel]; exists && ms != nil {
+				if !ms.IsAvailable(now) {
+					acc.mu.RUnlock()
+					continue // 该模型冷却中，跳过
+				}
+			}
+		}
+
+		// 检查账号级聚合冷却
+		if acc.Status == StatusCooldown && now.Before(acc.CooldownUtil) {
+			acc.mu.RUnlock()
+			continue
+		}
+
+		currentLoad := atomic.LoadInt64(&acc.ActiveRequests)
+		acc.mu.RUnlock()
+
+		if currentLoad >= limit {
+			continue
+		}
+
+		priority := tierPriority(tier)
+		if priority > bestPriority || (priority == bestPriority && score > bestScore) || (priority == bestPriority && score == bestScore && currentLoad < bestLoad) {
+			best = acc
+			bestPriority = priority
+			bestScore = score
+			bestLoad = currentLoad
+		}
+	}
+
+	if best != nil {
+		if tryAcquireAccount(best, atomic.LoadInt64(&best.DynamicConcurrencyLimit)) {
+			return best
+		}
+	}
+
+	// 第二轮：round-robin公平调度
+	for _, acc := range s.accounts {
+		if exclude != nil && exclude[acc.DBID] {
+			continue
+		}
+
+		acc.mu.RLock()
+		tier := acc.healthTierLocked()
+		limit := acc.DynamicConcurrencyLimit
+		if limit <= 0 {
+			limit = concurrencyLimitForTier(maxConcurrency, tier)
+		}
+
+		available := acc.Status != StatusError && tier != HealthTierBanned && acc.AccessToken != "" && atomic.LoadInt32(&acc.Disabled) == 0
+		if !available {
+			acc.mu.RUnlock()
+			continue
+		}
+
+		// Phase 1: 检查模型级状态
+		if acc.ModelStates != nil {
+			if ms, exists := acc.ModelStates[canonicalModel]; exists && ms != nil {
+				if !ms.IsAvailable(now) {
+					acc.mu.RUnlock()
+					continue
+				}
+			}
+		}
+
+		if acc.Status == StatusCooldown && now.Before(acc.CooldownUtil) {
+			acc.mu.RUnlock()
+			continue
+		}
+
+		acc.mu.RUnlock()
+
+		if tryAcquireAccount(acc, limit) {
+			return acc
+		}
+	}
+
+	return nil
+}
+
 // NextExcluding 获取下一个可用账号，排除指定的账号 ID 集合
 // 用于重试时避免再次选到已失败（如 401）的账号
 func (s *Store) NextExcluding(exclude map[int64]bool) *Account {
@@ -1273,16 +1399,51 @@ func (s *Store) WaitForAvailable(ctx context.Context, timeout time.Duration) *Ac
 			if acc != nil {
 				return acc
 			}
-			// 等待一下再重试（指数退避，最大 500ms）
+
+			// 指数退避等待
 			backoffTimer.Reset(backoff)
 			select {
 			case <-backoffTimer.C:
-				if backoff < 500*time.Millisecond {
-					backoff *= 2
-				}
+				backoff = min(backoff*2, 2*time.Second)
+			case <-deadline.C:
+				return nil
 			case <-ctx.Done():
 				return nil
+			}
+		}
+	}
+}
+
+// WaitForAvailableForModel Phase 1: Model-aware wait
+// 等待对特定模型可用的账号
+func (s *Store) WaitForAvailableForModel(ctx context.Context, model string, timeout time.Duration) *Account {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	backoff := 50 * time.Millisecond
+	backoffTimer := time.NewTimer(backoff)
+	defer backoffTimer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-deadline.C:
+			return nil
+		default:
+			acc := s.NextForModel(model, nil)
+			if acc != nil {
+				return acc
+			}
+
+			// 指数退避等待
+			backoffTimer.Reset(backoff)
+			select {
+			case <-backoffTimer.C:
+				backoff = min(backoff*2, 2*time.Second)
 			case <-deadline.C:
+				return nil
+			case <-ctx.Done():
 				return nil
 			}
 		}

@@ -165,6 +165,48 @@ func (s *FastScheduler) Acquire() *Account {
 	return s.AcquireExcluding(nil)
 }
 
+// AcquireForModel Phase 1: Model-aware account selection
+// 获取对特定模型可用的账号，排除指定的账号 ID 集合
+func (s *FastScheduler) AcquireForModel(model string, exclude map[int64]bool) *Account {
+	if s == nil {
+		return nil
+	}
+
+	// 规范化模型名称
+	canonicalModel := canonicalModelKey(model)
+	if canonicalModel == "" {
+		return s.AcquireExcluding(exclude) // 无模型参数时回退到旧逻辑
+	}
+
+	now := time.Now()
+
+	s.mu.RLock()
+	baseLimit := s.baseLimit
+	for tierIdx, tier := range fastSchedulerTierOrder {
+		bucket := s.buckets[tier]
+		if len(bucket) == 0 {
+			continue
+		}
+
+		// 阶段 1：优先在验证过的账号中选取
+		provenBound := s.provenBounds[tierIdx]
+		if provenBound > 0 {
+			if acc := s.scanRangeForModel(bucket, 0, provenBound, &s.provenCurs[tierIdx], baseLimit, now, exclude, canonicalModel); acc != nil {
+				s.mu.RUnlock()
+				return acc
+			}
+		}
+
+		// 阶段 2：回退到全量扫描
+		if acc := s.scanRangeForModel(bucket, 0, len(bucket), &s.cursors[tierIdx], baseLimit, now, exclude, canonicalModel); acc != nil {
+			s.mu.RUnlock()
+			return acc
+		}
+	}
+	s.mu.RUnlock()
+	return nil
+}
+
 // AcquireExcluding 获取下一个可用账号，排除指定的账号 ID 集合
 // 两阶段调度：优先在验证过的账号中选取，全忙时回退到全量扫描
 func (s *FastScheduler) AcquireExcluding(exclude map[int64]bool) *Account {
@@ -217,6 +259,35 @@ func (s *FastScheduler) scanRange(bucket []fastSchedulerEntry, rangeStart, range
 			continue
 		}
 		_, _, limit, available := entry.acc.fastSchedulerSnapshot(baseLimit, now)
+		if !available || limit <= 0 {
+			continue
+		}
+		if !tryAcquireAccount(entry.acc, limit) {
+			continue
+		}
+		return entry.acc
+	}
+	return nil
+}
+
+// scanRangeForModel Phase 1: Model-aware scan range
+// 在 bucket[start:end) 范围内 round-robin 扫描对指定模型可用的账号
+func (s *FastScheduler) scanRangeForModel(bucket []fastSchedulerEntry, rangeStart, rangeEnd int, cursor *atomic.Uint64, baseLimit int64, now time.Time, exclude map[int64]bool, model string) *Account {
+	rangeLen := rangeEnd - rangeStart
+	if rangeLen <= 0 {
+		return nil
+	}
+	start := int(cursor.Add(1)-1) % rangeLen
+	for offset := 0; offset < rangeLen; offset++ {
+		entry := bucket[rangeStart+(start+offset)%rangeLen]
+		if entry.acc == nil {
+			continue
+		}
+		if exclude != nil && exclude[entry.dbID] {
+			continue
+		}
+		// Phase 1: 单次 Account.mu.RLock 内完成账号级+模型级检查
+		_, _, limit, available := entry.acc.fastSchedulerSnapshotForModel(baseLimit, model, now)
 		if !available || limit <= 0 {
 			continue
 		}
@@ -346,6 +417,47 @@ func (a *Account) fastSchedulerSnapshot(baseLimit int64, now time.Time) (Account
 	}
 
 	available := a.Status != StatusError && tier != HealthTierBanned && a.AccessToken != ""
+	if a.Status == StatusCooldown && now.Before(a.CooldownUtil) {
+		available = false
+	}
+
+	return tier, score, limit, available
+}
+
+// fastSchedulerSnapshotForModel Phase 1: Model-aware snapshot
+// 单次 Account.mu.RLock 内完成账号级+模型级可用性检查
+func (a *Account) fastSchedulerSnapshotForModel(baseLimit int64, model string, now time.Time) (AccountHealthTier, float64, int64, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	tier := a.healthTierLocked()
+	score := a.SchedulerScore
+	limit := a.DynamicConcurrencyLimit
+
+	if score == 0 && tier != HealthTierBanned && a.AccessToken != "" && a.Status != StatusError {
+		score = 100
+	}
+	if limit <= 0 {
+		limit = concurrencyLimitForTier(baseLimit, tier)
+	}
+
+	// 1. 账号级硬故障检查
+	available := a.Status != StatusError && tier != HealthTierBanned && a.AccessToken != "" && atomic.LoadInt32(&a.Disabled) == 0
+	if !available {
+		return tier, score, limit, false
+	}
+
+	// 2. 模型级状态检查
+	if a.ModelStates != nil && model != "" {
+		if ms, exists := a.ModelStates[model]; exists && ms != nil {
+			if !ms.IsAvailable(now) {
+				// 该模型冷却中，跳过此账号
+				return tier, score, limit, false
+			}
+		}
+	}
+
+	// 3. 账号级聚合冷却检查（仅当所有模型都不可用时才会进入此状态）
 	if a.Status == StatusCooldown && now.Before(a.CooldownUtil) {
 		available = false
 	}
