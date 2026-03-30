@@ -21,6 +21,7 @@ export interface AccountRow {
   email: string
   plan_type: string
   status: AccountStatus
+  at_only?: boolean
   health_tier?: string
   scheduler_score?: number
   dynamic_concurrency_limit?: number
@@ -57,6 +58,12 @@ export type AccountsResponse = ApiListResponse<'accounts', AccountRow>
 export interface AddAccountRequest {
   name?: string
   refresh_token: string
+  proxy_url: string
+}
+
+export interface AddATAccountRequest {
+  name?: string
+  access_token: string
   proxy_url: string
 }
 
@@ -170,6 +177,7 @@ export interface SystemSettings {
   admin_auth_source: 'env' | 'database' | 'disabled' | string
   auto_clean_full_usage: boolean
   auto_clean_error: boolean
+  auto_clean_expired: boolean
   proxy_pool_enabled: boolean
   fast_scheduler_enabled: boolean
   max_retries: number
@@ -178,6 +186,7 @@ export interface SystemSettings {
   database_label: string
   cache_driver: string
   cache_label: string
+  expired_cleaned?: number
 }
 
 export interface CPAExportEntry {
