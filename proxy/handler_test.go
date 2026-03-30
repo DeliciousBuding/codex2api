@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/codex2api/auth"
 	"github.com/gin-gonic/gin"
 )
 
@@ -130,5 +132,18 @@ func TestSendFinalUpstreamError_Non429StatusPassthrough(t *testing.T) {
 	// 非 429 直接透传原状态码
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestCompute429CooldownUsesExactShortRetryAfter(t *testing.T) {
+	handler := &Handler{}
+	account := &auth.Account{PlanType: "team"}
+	body := []byte(`{"error":{"resets_in_seconds":30}}`)
+	resp := &http.Response{Header: make(http.Header)}
+
+	got := handler.compute429Cooldown(account, body, resp)
+
+	if got != 30*time.Second {
+		t.Fatalf("compute429Cooldown() = %v, want %v", got, 30*time.Second)
 	}
 }

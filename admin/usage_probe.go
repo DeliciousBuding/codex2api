@@ -40,15 +40,15 @@ func (h *Handler) ProbeUsageSnapshot(ctx context.Context, account *auth.Account)
 	switch resp.StatusCode {
 	case http.StatusOK:
 		h.store.ReportRequestSuccess(account, 0)
-		h.store.ClearCooldown(account)
+		h.store.ClearModelCooldown(account, h.store.GetTestModel())
 		return nil
 	case http.StatusUnauthorized:
 		h.store.ReportRequestFailure(account, "client", 0)
-		h.store.MarkCooldown(account, 24*time.Hour, "unauthorized")
+		h.store.ApplyAccountHardFailure(account, 24*time.Hour, "unauthorized")
 		return nil
 	case http.StatusTooManyRequests:
 		h.store.ReportRequestFailure(account, "client", 0)
-		h.store.MarkCooldown(account, 5*time.Minute, "rate_limited")
+		h.store.ApplyModelCooldown(account, h.store.GetTestModel(), time.Now().Add(5*time.Minute), "rate_limited")
 		return nil
 	default:
 		if resp.StatusCode >= 500 {

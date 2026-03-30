@@ -519,7 +519,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				Stream:           isStream,
 				ServiceTier:      serviceTier,
 			})
-			h.applyCooldown(account, resp.StatusCode, errBody, resp)
+			h.applyFailureState(account, model, resp.StatusCode, errBody, resp)
 
 			// 判断是否应该重试：可重试状态码 或 模型容量不足错误
 			capErr := isCodexModelCapacityError(errBody)
@@ -527,7 +527,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			if shouldRetry {
 				// Capacity error 视为 429 处理，设置短期冷却
 				if capErr && resp.StatusCode != http.StatusTooManyRequests {
-					h.store.MarkCooldown(account, 30*time.Second, "model_capacity")
+					h.store.ApplyModelCooldown(account, model, time.Now().Add(30*time.Second), "model_capacity")
 					log.Printf("检测到模型容量不足 (account %d)，设置 30s 冷却后重试", account.ID())
 				}
 				lastStatusCode = resp.StatusCode
@@ -728,6 +728,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			recyclePooledClientForAccount(account)
 			h.store.ReportRequestFailure(account, outcome.failureKind, time.Duration(totalDuration)*time.Millisecond)
 		} else if outcome.logStatusCode == http.StatusOK {
+			h.store.ClearModelCooldown(account, model)
 			h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 		}
 		h.store.Release(account)
@@ -889,7 +890,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				Stream:           isStream,
 				ServiceTier:      serviceTier,
 			})
-			h.applyCooldown(account, resp.StatusCode, errBody, resp)
+			h.applyFailureState(account, model, resp.StatusCode, errBody, resp)
 
 			// 判断是否应该重试：可重试状态码 或 模型容量不足错误
 			capErr := isCodexModelCapacityError(errBody)
@@ -897,7 +898,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if shouldRetry {
 				// Capacity error 视为 429 处理，设置短期冷却
 				if capErr && resp.StatusCode != http.StatusTooManyRequests {
-					h.store.MarkCooldown(account, 30*time.Second, "model_capacity")
+					h.store.ApplyModelCooldown(account, model, time.Now().Add(30*time.Second), "model_capacity")
 					log.Printf("检测到模型容量不足 (account %d)，设置 30s 冷却后重试", account.ID())
 				}
 				lastStatusCode = resp.StatusCode
@@ -1138,6 +1139,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			recyclePooledClientForAccount(account)
 			h.store.ReportRequestFailure(account, outcome.failureKind, time.Duration(totalDuration)*time.Millisecond)
 		} else if outcome.logStatusCode == http.StatusOK {
+			h.store.ClearModelCooldown(account, model)
 			h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 		}
 		h.store.Release(account)
@@ -1256,13 +1258,13 @@ func parseRetryAfter(body []byte) time.Duration {
 	return 2 * time.Minute
 }
 
-// applyCooldown 根据上游状态码设置智能冷却
-func (h *Handler) applyCooldown(account *auth.Account, statusCode int, body []byte, resp *http.Response) {
+// applyFailureState 根据上游状态和目标模型更新运行时状态。
+func (h *Handler) applyFailureState(account *auth.Account, model string, statusCode int, body []byte, resp *http.Response) {
 	switch statusCode {
 	case http.StatusTooManyRequests:
 		cooldown := h.compute429Cooldown(account, body, resp)
 		log.Printf("账号 %d 被限速 (plan=%s)，冷却 %v", account.ID(), account.GetPlanType(), cooldown)
-		h.store.MarkCooldown(account, cooldown, "rate_limited")
+		h.store.ApplyModelCooldown(account, model, time.Now().Add(cooldown), "rate_limited")
 	case http.StatusUnauthorized:
 		// 原子标志瞬间置位，阻止其他并发请求再选到该账号
 		atomic.StoreInt32(&account.Disabled, 1)
@@ -1278,7 +1280,7 @@ func (h *Handler) applyCooldown(account *auth.Account, statusCode int, body []by
 			}
 			h.store.RemoveAccount(account.ID())
 		} else {
-			h.store.MarkCooldown(account, 5*time.Minute, "unauthorized")
+			h.store.ApplyAccountHardFailure(account, 5*time.Minute, "unauthorized")
 		}
 	}
 }
@@ -1286,8 +1288,8 @@ func (h *Handler) applyCooldown(account *auth.Account, statusCode int, body []by
 // compute429Cooldown 根据计划类型和 Codex 响应精确计算 429 冷却时间
 func (h *Handler) compute429Cooldown(account *auth.Account, body []byte, resp *http.Response) time.Duration {
 	// 1. 优先使用 Codex 响应体中的精确重置时间
-	if resetDuration := parseRetryAfter(body); resetDuration > 2*time.Minute {
-		// parseRetryAfter 默认返回 2min（无数据），超过 2min 说明解析到了真实的 resets_at/resets_in_seconds
+	if hasExplicitRetryAfter(body) {
+		resetDuration := parseRetryAfter(body)
 		if resetDuration > 7*24*time.Hour {
 			resetDuration = 7 * 24 * time.Hour // 最多 7 天
 		}
@@ -1310,6 +1312,14 @@ func (h *Handler) compute429Cooldown(account *auth.Account, body []byte, resp *h
 		// 未知套餐，保守默认 5 小时
 		return 5 * time.Hour
 	}
+}
+
+func hasExplicitRetryAfter(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	return gjson.GetBytes(body, "error.resets_at").Int() > 0 ||
+		gjson.GetBytes(body, "error.resets_in_seconds").Int() > 0
 }
 
 // detectTeamCooldownWindow 通过响应头判断 Team/Pro 账号是哪个窗口触发的限制
@@ -1497,7 +1507,7 @@ func (h *Handler) sendFinalUpstreamError(c *gin.Context, statusCode int, body []
 
 // handleUpstreamError 统一处理上游错误（兼容旧调用）
 func (h *Handler) handleUpstreamError(c *gin.Context, account *auth.Account, statusCode int, body []byte) {
-	h.applyCooldown(account, statusCode, body, nil)
+	h.applyFailureState(account, "", statusCode, body, nil)
 	h.sendUpstreamError(c, statusCode, body)
 }
 

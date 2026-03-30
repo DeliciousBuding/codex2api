@@ -1461,6 +1461,75 @@ func (s *Store) MarkCooldown(acc *Account, duration time.Duration, reason string
 	}
 }
 
+// ApplyModelCooldown 标记单个模型进入冷却，不直接把整号打入 rate_limited。
+func (s *Store) ApplyModelCooldown(acc *Account, model string, until time.Time, reason string) {
+	if acc == nil {
+		return
+	}
+
+	model = canonicalModelKey(model)
+	if model == "" {
+		return
+	}
+
+	now := time.Now()
+	acc.mu.Lock()
+	if acc.ModelStates == nil {
+		acc.ModelStates = make(map[string]*ModelState)
+	}
+	state := acc.ModelStates[model]
+	if state == nil {
+		state = &ModelState{}
+		acc.ModelStates[model] = state
+	}
+	state.Status = ModelStatusCooldown
+	state.Unavailable = true
+	state.NextRetryAfter = until
+	state.LastError = reason
+	state.StrikeCount++
+	if state.StrikeCount > 0 {
+		state.BackoffLevel = state.StrikeCount - 1
+	}
+	state.UpdatedAt = now
+	acc.recomputeAggregatedAccountStateLocked(now)
+	acc.mu.Unlock()
+	s.fastSchedulerUpdate(acc)
+}
+
+// ClearModelCooldown 清理单个模型的临时冷却状态。
+func (s *Store) ClearModelCooldown(acc *Account, model string) {
+	if acc == nil {
+		return
+	}
+
+	model = canonicalModelKey(model)
+	if model == "" {
+		return
+	}
+
+	now := time.Now()
+	acc.mu.Lock()
+	if acc.ModelStates != nil {
+		if state := acc.ModelStates[model]; state != nil {
+			state.Status = ModelStatusActive
+			state.Unavailable = false
+			state.NextRetryAfter = time.Time{}
+			state.LastError = ""
+			state.StrikeCount = 0
+			state.BackoffLevel = 0
+			state.UpdatedAt = now
+		}
+	}
+	acc.recomputeAggregatedAccountStateLocked(now)
+	acc.mu.Unlock()
+	s.fastSchedulerUpdate(acc)
+}
+
+// ApplyAccountHardFailure 保持账号级硬故障语义，仅用于 unauthorized 等不可恢复故障。
+func (s *Store) ApplyAccountHardFailure(acc *Account, duration time.Duration, reason string) {
+	s.MarkCooldown(acc, duration, reason)
+}
+
 // ClearCooldown 清除账号冷却状态，并同步清理数据库
 func (s *Store) ClearCooldown(acc *Account) {
 	if acc == nil {

@@ -91,3 +91,57 @@ func TestRecomputeAggregatedAccountStateUsesRoutableModels(t *testing.T) {
 		t.Fatalf("仅一个已知模型冷却时账号不应整体进入 cooldown, got=%v", acc.Status)
 	}
 }
+
+func TestApplyModelCooldownDoesNotCooldownWholeAccount(t *testing.T) {
+	now := time.Now().UTC()
+	acc := &Account{
+		AccessToken: "token-1",
+		Status:      StatusReady,
+	}
+	store := &Store{maxConcurrency: 2}
+
+	store.ApplyModelCooldown(acc, "gpt-5", now.Add(15*time.Minute), "rate_limited")
+
+	state := acc.ModelStates["gpt-5"]
+	if state == nil {
+		t.Fatal("ApplyModelCooldown() 未写入模型状态")
+	}
+	if !state.Unavailable {
+		t.Fatal("ApplyModelCooldown() 应将目标模型标记为 unavailable")
+	}
+	if acc.Status != StatusReady {
+		t.Fatalf("ApplyModelCooldown() 不应把整号打入 cooldown, got=%v", acc.Status)
+	}
+}
+
+func TestClearModelCooldownOnlyClearsTargetModel(t *testing.T) {
+	now := time.Now().UTC()
+	acc := &Account{
+		AccessToken: "token-1",
+		Status:      StatusReady,
+		ModelStates: map[string]*ModelState{
+			"gpt-5": {
+				Status:         ModelStatusCooldown,
+				Unavailable:    true,
+				NextRetryAfter: now.Add(15 * time.Minute),
+				UpdatedAt:      now,
+			},
+			"gpt-5.1": {
+				Status:         ModelStatusCooldown,
+				Unavailable:    true,
+				NextRetryAfter: now.Add(25 * time.Minute),
+				UpdatedAt:      now,
+			},
+		},
+	}
+	store := &Store{maxConcurrency: 2}
+
+	store.ClearModelCooldown(acc, "gpt-5")
+
+	if acc.ModelStates["gpt-5"] == nil || acc.ModelStates["gpt-5"].Unavailable {
+		t.Fatal("ClearModelCooldown() 应清除目标模型冷却")
+	}
+	if acc.ModelStates["gpt-5.1"] == nil || !acc.ModelStates["gpt-5.1"].Unavailable {
+		t.Fatal("ClearModelCooldown() 不应影响其他模型")
+	}
+}
