@@ -334,11 +334,32 @@ export default function Accounts() {
     setImporting(true)
     setShowImportPicker(false)
     try {
+      // 在前端合并所有 JSON 文件为一个数组，避免 FormData 多文件传输的浏览器兼容问题
+      const allEntries: Record<string, unknown>[] = []
+      for (let i = 0; i < files.length; i++) {
+        const text = await files[i].text()
+        try {
+          const parsed = JSON.parse(text)
+          if (Array.isArray(parsed)) {
+            allEntries.push(...parsed)
+          } else {
+            allEntries.push(parsed)
+          }
+        } catch {
+          // 单个文件解析失败不影响其他文件
+          console.warn(`Failed to parse ${files[i].name}`)
+        }
+      }
+      if (allEntries.length === 0) {
+        showToast(t('accounts.importFailedWithReason', { error: 'No valid JSON entries' }), 'error')
+        setImporting(false)
+        return
+      }
+      // 创建合并后的 JSON Blob 并上传
+      const mergedBlob = new Blob([JSON.stringify(allEntries)], { type: 'application/json' })
       const formData = new FormData()
       formData.append('format', 'json')
-      for (let i = 0; i < files.length; i++) {
-        formData.append('file', files[i])
-      }
+      formData.append('file', mergedBlob, 'merged_import.json')
       const res = await fetch('/api/admin/accounts/import', { method: 'POST', body: formData, headers: getAdminKey() ? { 'X-Admin-Key': getAdminKey() } : {} })
       if (res.headers.get('content-type')?.includes('text/event-stream')) {
         await readImportSSE(res)
