@@ -194,6 +194,40 @@ function CostTooltipRow({ label, value, valueClassName = 'font-medium text-white
   )
 }
 
+function UsageCacheCell({ log }: { log: UsageLog }) {
+  const { t } = useTranslation()
+  const inputTokens = safeNumber(log.input_tokens)
+  const cachedTokens = safeNumber(log.cached_tokens)
+
+  if (cachedTokens <= 0 || inputTokens <= 0) {
+    return <span className={`${usageTableMonoClass} text-muted-foreground`}>-</span>
+  }
+
+  const cacheHitRate = Math.min(100, (cachedTokens / inputTokens) * 100)
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex cursor-help items-center gap-1.5 rounded-md border border-transparent bg-indigo-500/10 px-2 py-1 text-[12px] font-semibold text-indigo-600 transition-colors hover:bg-indigo-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-indigo-500/20 dark:text-indigo-400"
+        >
+          <DatabaseZap className="size-3.5" />
+          <span className="font-geist-mono tabular-nums">{formatPercent(cacheHitRate)}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="left" sideOffset={8} className="w-64 max-w-none whitespace-nowrap rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-xs text-slate-50 shadow-xl">
+        <div className="space-y-1.5">
+          <div className="mb-1 text-xs font-semibold text-slate-300">{t('usage.cacheHitRate')}</div>
+          <CostTooltipRow label={t('usage.cachedTokens')} value={formatTokens(cachedTokens)} valueClassName="text-indigo-300" />
+          <CostTooltipRow label={t('usage.inputTokens')} value={formatTokens(inputTokens)} valueClassName="text-sky-300" />
+          <CostTooltipRow label={t('usage.cacheReadCost')} value={formatUSD(log.cache_read_cost)} valueClassName="text-cyan-300" />
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 function ImageUsageBadge({ log }: { log: UsageLog }) {
   const { t } = useTranslation()
   const rows = [
@@ -832,14 +866,7 @@ export default function Usage() {
                           <UsageCostCell log={log} />
                         </TableCell>
                         <TableCell>
-                          {log.cached_tokens > 0 ? (
-                            <Badge variant="outline" className={`${usageTableBadgeClass} gap-1 border-transparent bg-indigo-500/10 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400`}>
-                              <DatabaseZap className="size-3.5" />
-                              {formatTokens(log.cached_tokens)}
-                            </Badge>
-                          ) : (
-                            <span className={`${usageTableMonoClass} text-muted-foreground`}>-</span>
-                          )}
+                          <UsageCacheCell log={log} />
                         </TableCell>
                         <TableCell>
                           {log.first_token_ms > 0 ? (
