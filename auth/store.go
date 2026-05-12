@@ -113,6 +113,7 @@ type Account struct {
 	BaseConcurrencyOverride *int64
 	AllowedAPIKeyIDs        []int64
 	allowedAPIKeySet        map[int64]struct{}
+	Tags                    []string // 自由文本标签，仅用于过滤和显示
 	ModelCooldowns          map[string]ModelCooldown
 }
 
@@ -2285,6 +2286,7 @@ func (s *Store) loadFromDB(ctx context.Context) error {
 		account.ScoreBiasOverride = reflectOptionalInt64Field(row, "ScoreBiasOverride")
 		account.BaseConcurrencyOverride = reflectOptionalInt64Field(row, "BaseConcurrencyOverride")
 		account.setAllowedAPIKeyIDsLocked(row.GetCredentialInt64Slice("allowed_api_key_ids"))
+		account.Tags = cloneStringSlice(row.Tags)
 		if row.Locked {
 			atomic.StoreInt32(&account.Locked, 1)
 		}
@@ -3055,6 +3057,19 @@ func (s *Store) ApplyAccountAllowedAPIKeys(dbID int64, allowedAPIKeyIDs []int64)
 	acc.setAllowedAPIKeyIDsLocked(allowedAPIKeyIDs)
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
+	return true
+}
+
+// ApplyAccountTags 替换运行时账号的标签集合。空切片表示清空。
+func (s *Store) ApplyAccountTags(dbID int64, tags []string) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+	cloned := cloneStringSlice(tags)
+	acc.mu.Lock()
+	acc.Tags = cloned
+	acc.mu.Unlock()
 	return true
 }
 

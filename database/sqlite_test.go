@@ -111,6 +111,61 @@ func TestSQLiteAPIKeyLookupAndCount(t *testing.T) {
 	}
 }
 
+func TestSQLiteAccountTagsRoundTrip(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) returned error: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	id, err := db.InsertAccount(ctx, "tagged", "rt-tagged", "")
+	if err != nil {
+		t.Fatalf("InsertAccount returned error: %v", err)
+	}
+
+	rows, err := db.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive returned error: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListActive returned %d rows, want 1", len(rows))
+	}
+	if len(rows[0].Tags) != 0 {
+		t.Fatalf("new account Tags = %v, want empty", rows[0].Tags)
+	}
+
+	want := []string{"vip", "cn"}
+	if err := db.UpdateAccountTags(ctx, id, want); err != nil {
+		t.Fatalf("UpdateAccountTags returned error: %v", err)
+	}
+
+	row, err := db.GetAccountByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetAccountByID returned error: %v", err)
+	}
+	if len(row.Tags) != 2 || row.Tags[0] != "vip" || row.Tags[1] != "cn" {
+		t.Fatalf("Tags after update = %v, want %v", row.Tags, want)
+	}
+
+	if err := db.UpdateAccountTags(ctx, id, nil); err != nil {
+		t.Fatalf("UpdateAccountTags(nil) returned error: %v", err)
+	}
+	row, err = db.GetAccountByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetAccountByID (after clear) returned error: %v", err)
+	}
+	if len(row.Tags) != 0 {
+		t.Fatalf("Tags after clear = %v, want empty", row.Tags)
+	}
+
+	if err := db.UpdateAccountTags(ctx, id+999, []string{"ghost"}); err != sql.ErrNoRows {
+		t.Fatalf("UpdateAccountTags on missing id error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestSQLiteAccountsEnabledDefaultsAndCanToggle(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 

@@ -308,6 +308,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"accounts", "image_quota_total", "INTEGER NULL"},
 		{"accounts", "today_used_count", "INTEGER DEFAULT 0"},
 		{"accounts", "image_quota_reset_at", "TEXT NULL"},
+		{"accounts", "tags", "TEXT DEFAULT '[]'"},
 		{"proxies", "test_ip", "TEXT DEFAULT ''"},
 		{"proxies", "test_location", "TEXT DEFAULT ''"},
 		{"proxies", "test_latency_ms", "INTEGER DEFAULT 0"},

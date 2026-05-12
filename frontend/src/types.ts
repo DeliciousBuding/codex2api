@@ -43,6 +43,7 @@ export interface AccountRow {
   base_concurrency_effective?: number
   dynamic_concurrency_limit?: number
   allowed_api_key_ids?: number[]
+  tags?: string[]
   scheduler_breakdown?: {
     unauthorized_penalty: number
     rate_limit_penalty: number
@@ -140,6 +141,7 @@ export interface UpdateAccountSchedulerRequest {
   base_concurrency_override: number | null
   allowed_api_key_ids?: number[] | null
   proxy_url?: string | null
+  tags?: string[] | null
 }
 
 export interface AccountModelStat {

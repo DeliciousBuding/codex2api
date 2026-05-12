@@ -422,6 +422,7 @@ type accountResponse struct {
 	Enabled                  bool                       `json:"enabled"`
 	Locked                   bool                       `json:"locked"`
 	AllowedAPIKeyIDs         []int64                    `json:"allowed_api_key_ids"`
+	Tags                     []string                   `json:"tags"`
 	// 图片配额信息
 	ImageQuotaRemaining *int   `json:"image_quota_remaining,omitempty"`
 	ImageQuotaTotal     *int   `json:"image_quota_total,omitempty"`
@@ -509,6 +510,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			Enabled:                  row.Enabled,
 			Locked:                   row.Locked,
 			AllowedAPIKeyIDs:         row.GetCredentialInt64Slice("allowed_api_key_ids"),
+			Tags:                     append([]string(nil), row.Tags...),
 			ScoreBiasOverride:        nullableInt64Pointer(row.ScoreBiasOverride),
 			ScoreBiasEffective:       effectiveScoreBias(planType, row.ScoreBiasOverride),
 			BaseConcurrencyOverride:  nullableInt64Pointer(row.BaseConcurrencyOverride),
@@ -629,6 +631,7 @@ type updateAccountSchedulerReq struct {
 	BaseConcurrencyOverride json.RawMessage `json:"base_concurrency_override"`
 	AllowedAPIKeyIDs        json.RawMessage `json:"allowed_api_key_ids"`
 	ProxyURL                *string         `json:"proxy_url"`
+	Tags                    *[]string       `json:"tags"`
 }
 
 // UpdateAccountScheduler 更新账号调度配置。
@@ -714,7 +717,60 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		}
 	}
 
+	if req.Tags != nil {
+		tags, err := sanitizeAccountTags(*req.Tags)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := h.db.UpdateAccountTags(ctx, id, tags); err != nil {
+			writeError(c, http.StatusInternalServerError, "更新账号标签失败: "+err.Error())
+			return
+		}
+		if h.store != nil {
+			h.store.ApplyAccountTags(id, tags)
+		}
+	}
+
 	writeMessage(c, http.StatusOK, "账号调度配置已更新")
+}
+
+const (
+	maxAccountTags        = 12
+	maxAccountTagRuneSize = 24
+)
+
+// sanitizeAccountTags normalizes tag input: trims whitespace, drops empty/blank,
+// deduplicates, validates rune lengths, rejects control characters.
+func sanitizeAccountTags(input []string) ([]string, error) {
+	if len(input) == 0 {
+		return []string{}, nil
+	}
+	seen := make(map[string]struct{}, len(input))
+	out := make([]string, 0, len(input))
+	for _, raw := range input {
+		tag := strings.TrimSpace(raw)
+		if tag == "" {
+			continue
+		}
+		if utf8.RuneCountInString(tag) > maxAccountTagRuneSize {
+			return nil, fmt.Errorf("标签 %q 长度超过 %d 个字符", tag, maxAccountTagRuneSize)
+		}
+		for _, r := range tag {
+			if r < 0x20 || r == 0x7f {
+				return nil, fmt.Errorf("标签 %q 包含非法控制字符", tag)
+			}
+		}
+		if _, dup := seen[tag]; dup {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+		if len(out) > maxAccountTags {
+			return nil, fmt.Errorf("标签数量超过上限 %d", maxAccountTags)
+		}
+	}
+	return out, nil
 }
 
 func parseOptionalIntegerField(raw json.RawMessage, field string, minValue, maxValue int64) (sql.NullInt64, error) {

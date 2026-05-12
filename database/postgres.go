@@ -32,6 +32,7 @@ type AccountRow struct {
 	Locked                  bool
 	ScoreBiasOverride       sql.NullInt64
 	BaseConcurrencyOverride sql.NullInt64
+	Tags                    []string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 }
@@ -454,6 +455,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS image_quota_total INT NULL;
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS today_used_count INT DEFAULT 0;
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS image_quota_reset_at TIMESTAMPTZ NULL;
+	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb;
 
 	UPDATE accounts
 	SET status = 'deleted',
@@ -2420,7 +2422,7 @@ func (db *DB) GetAccountTimeRangeUsage(ctx context.Context, since time.Time) (ma
 // ListActive 获取所有未删除账号。
 func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 	query := `
-		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), score_bias_override, base_concurrency_override, created_at, updated_at
+		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), score_bias_override, base_concurrency_override, tags, created_at, updated_at
 		FROM accounts
 		WHERE status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'
 		ORDER BY id
@@ -2438,6 +2440,7 @@ func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 		var cooldownUntilRaw interface{}
 		var createdAtRaw interface{}
 		var updatedAtRaw interface{}
+		var tagsRaw interface{}
 		if err := rows.Scan(
 			&a.ID,
 			&a.Name,
@@ -2453,12 +2456,14 @@ func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 			&a.Locked,
 			&a.ScoreBiasOverride,
 			&a.BaseConcurrencyOverride,
+			&tagsRaw,
 			&createdAtRaw,
 			&updatedAtRaw,
 		); err != nil {
 			return nil, fmt.Errorf("扫描账号行失败: %w", err)
 		}
 		a.Credentials = decodeCredentials(credRaw)
+		a.Tags = decodeTagsValue(tagsRaw)
 		a.CooldownUntil, err = parseDBNullTimeValue(cooldownUntilRaw)
 		if err != nil {
 			return nil, fmt.Errorf("解析 cooldown_until 失败: %w", err)
@@ -2566,7 +2571,7 @@ func (db *DB) ClearExpiredModelCooldowns(ctx context.Context) error {
 // GetAccountByID 获取未删除账号的完整数据库行。
 func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error) {
 	query := `
-		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), score_bias_override, base_concurrency_override, created_at, updated_at
+		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), score_bias_override, base_concurrency_override, tags, created_at, updated_at
 		FROM accounts
 		WHERE id = $1 AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'
 		LIMIT 1
@@ -2576,6 +2581,7 @@ func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error)
 	var cooldownUntilRaw interface{}
 	var createdAtRaw interface{}
 	var updatedAtRaw interface{}
+	var tagsRaw interface{}
 	err := db.conn.QueryRowContext(ctx, query, id).Scan(
 		&a.ID,
 		&a.Name,
@@ -2591,6 +2597,7 @@ func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error)
 		&a.Locked,
 		&a.ScoreBiasOverride,
 		&a.BaseConcurrencyOverride,
+		&tagsRaw,
 		&createdAtRaw,
 		&updatedAtRaw,
 	)
@@ -2601,6 +2608,7 @@ func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error)
 		return nil, fmt.Errorf("查询账号失败: %w", err)
 	}
 	a.Credentials = decodeCredentials(credRaw)
+	a.Tags = decodeTagsValue(tagsRaw)
 	a.CooldownUntil, err = parseDBNullTimeValue(cooldownUntilRaw)
 	if err != nil {
 		return nil, fmt.Errorf("解析 cooldown_until 失败: %w", err)
@@ -2696,6 +2704,58 @@ func (db *DB) UpdateAccountProxyURL(ctx context.Context, id int64, proxyURL stri
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// UpdateAccountTags replaces the account tags. Tags are stored as a JSON array string.
+// Empty slice persists as '[]'. Callers must validate tags before calling (dedup, length limits).
+func (db *DB) UpdateAccountTags(ctx context.Context, id int64, tags []string) error {
+	payload := encodeTagsJSON(tags)
+	var (
+		res sql.Result
+		err error
+	)
+	if db.isSQLite() {
+		res, err = db.conn.ExecContext(ctx, `UPDATE accounts SET tags = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, payload, id)
+	} else {
+		res, err = db.conn.ExecContext(ctx, `UPDATE accounts SET tags = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, payload, id)
+	}
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// decodeTagsValue parses a tags column value (from JSONB on PG, TEXT on SQLite) into []string.
+// Returns nil slice for null / empty / malformed input.
+func decodeTagsValue(raw interface{}) []string {
+	data := bytesFromDBValue(raw)
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// encodeTagsJSON marshals a []string to JSON array string. Returns "[]" for nil/empty.
+func encodeTagsJSON(tags []string) string {
+	if len(tags) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // SetAccountEnabled 设置账号是否参与调度选择
