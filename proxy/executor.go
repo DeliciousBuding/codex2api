@@ -376,6 +376,10 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	return resp, nil
 }
 
+func PrepareOpenAIResponsesAPIRequestBody(body []byte, sessionID string, apiKeyID int64) []byte {
+	return applyPromptCacheKey(body, IsolateCodexSessionID(apiKeyID, sessionID))
+}
+
 // ExecuteCompactRequest 向 Codex 上游发送 /responses/compact 请求（非流式压缩接口）
 func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header) (*http.Response, error) {
 	if ctx == nil {

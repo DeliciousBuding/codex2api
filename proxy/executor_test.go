@@ -427,3 +427,29 @@ func TestApplyPromptCacheKeyFallsBackToSessionID(t *testing.T) {
 		t.Fatalf("prompt_cache_key = %q, want session-key; body=%s", key, got)
 	}
 }
+
+func TestPrepareOpenAIResponsesAPIRequestBodyPreservesExplicitKey(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","prompt_cache_key":"explicit-key"}`)
+
+	got := PrepareOpenAIResponsesAPIRequestBody(body, "session-key", 9)
+
+	if key := gjson.GetBytes(got, "prompt_cache_key").String(); key != "explicit-key" {
+		t.Fatalf("prompt_cache_key = %q, want explicit-key; body=%s", key, got)
+	}
+}
+
+func TestPrepareOpenAIResponsesAPIRequestBodyScopesDerivedKeyByAPIKey(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4"}`)
+
+	first := PrepareOpenAIResponsesAPIRequestBody(body, "session-key", 1)
+	second := PrepareOpenAIResponsesAPIRequestBody(body, "session-key", 2)
+	firstKey := gjson.GetBytes(first, "prompt_cache_key").String()
+	secondKey := gjson.GetBytes(second, "prompt_cache_key").String()
+
+	if firstKey == "" || secondKey == "" {
+		t.Fatalf("expected prompt_cache_key to be injected, got first=%s second=%s", first, second)
+	}
+	if firstKey == "session-key" || secondKey == "session-key" || firstKey == secondKey {
+		t.Fatalf("expected API-key scoped prompt_cache_key values, got first=%q second=%q", firstKey, secondKey)
+	}
+}
