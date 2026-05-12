@@ -99,6 +99,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const res = await fetch(BASE + path, {
     ...options,
+    cache: options.cache ?? 'no-store',
     headers,
   })
 
