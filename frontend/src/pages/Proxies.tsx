@@ -3,6 +3,9 @@ import { useTranslation } from 'react-i18next'
 import { Globe, Plus, Trash2, Play, MapPin, Loader2, Zap, ChevronLeft, ChevronRight, Eye, EyeOff, AlertTriangle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { api, type ProxyRow, type ProxyTestResult } from '../api'
+import ToastNotice from '../components/ToastNotice'
+import { useToast } from '../hooks/useToast'
+import { getErrorMessage } from '../utils/error'
 
 const PAGE_SIZE = 10
 const SLOW_PROXY_MS = 1500
@@ -44,6 +47,7 @@ function validateProxyInput(url: string): boolean {
 
 export default function Proxies() {
   const { t, i18n } = useTranslation()
+  const { toast, showToast } = useToast()
   const [proxies, setProxies] = useState<ProxyRow[]>([])
   const [loading, setLoading] = useState(true)
   const [poolEnabled, setPoolEnabled] = useState(false)
@@ -107,8 +111,9 @@ export default function Proxies() {
     setPoolEnabled(next)
     try {
       await api.updateSettings({ proxy_pool_enabled: next })
-    } catch {
+    } catch (error) {
       setPoolEnabled(!next)
+      showToast(t('proxies.poolToggleFailed', { error: getErrorMessage(error) }), 'error')
     }
   }
 
@@ -138,7 +143,9 @@ export default function Proxies() {
     try {
       await api.deleteProxy(id)
       await reload()
-    } catch { /* ignore */ }
+    } catch (error) {
+      showToast(t('proxies.deleteFailed', { error: getErrorMessage(error) }), 'error')
+    }
   }
 
   const handleBatchDelete = async () => {
@@ -147,14 +154,18 @@ export default function Proxies() {
       await api.batchDeleteProxies([...selected])
       setSelected(new Set())
       await reload()
-    } catch { /* ignore */ }
+    } catch (error) {
+      showToast(t('proxies.batchDeleteFailed', { error: getErrorMessage(error) }), 'error')
+    }
   }
 
   const handleToggle = async (p: ProxyRow) => {
     try {
       await api.updateProxy(p.id, { enabled: !p.enabled })
       await reload()
-    } catch { /* ignore */ }
+    } catch (error) {
+      showToast(t('proxies.updateFailed', { error: getErrorMessage(error) }), 'error')
+    }
   }
 
   const handleTest = async (p: ProxyRow) => {
@@ -168,7 +179,9 @@ export default function Proxies() {
             : px
         ))
       }
-    } catch { /* ignore */ }
+    } catch (error) {
+      showToast(t('proxies.testFailed', { error: getErrorMessage(error) }), 'error')
+    }
     setTestingIds(prev => {
       const next = new Set(prev)
       next.delete(p.id)
@@ -178,6 +191,8 @@ export default function Proxies() {
 
   const handleTestAll = async () => {
     setTestAllLoading(true)
+    let failedCount = 0
+    let firstError = ''
     for (const p of proxies) {
       setTestingIds(prev => new Set(prev).add(p.id))
       try {
@@ -189,12 +204,18 @@ export default function Proxies() {
               : px
           ))
         }
-      } catch { /* ignore */ }
+      } catch (error) {
+        failedCount += 1
+        if (!firstError) firstError = getErrorMessage(error)
+      }
       setTestingIds(prev => {
         const next = new Set(prev)
         next.delete(p.id)
         return next
       })
+    }
+    if (failedCount > 0) {
+      showToast(t('proxies.testAllFailed', { count: failedCount, error: firstError }), 'error')
     }
     setTestAllLoading(false)
   }
@@ -227,6 +248,7 @@ export default function Proxies() {
 
   return (
     <div className="space-y-6">
+      <ToastNotice toast={toast} />
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
