@@ -133,6 +133,7 @@
     "series5xxErrors": "5xx Errors",
     "seriesAvgLatency": "Avg Latency",
     "seriesInputTokens": "Input Tokens",
+    "seriesUncachedInputTokens": "Uncached Input Tokens",
     "seriesOutputTokens": "Output Tokens",
     "seriesReasoningTokens": "Reasoning Tokens",
     "seriesCachedTokens": "Cached Tokens",

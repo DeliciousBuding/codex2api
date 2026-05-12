@@ -133,6 +133,7 @@
     "series5xxErrors": "5xx 错误",
     "seriesAvgLatency": "平均耗时",
     "seriesInputTokens": "输入 Token",
+    "seriesUncachedInputTokens": "未缓存输入 Token",
     "seriesOutputTokens": "输出 Token",
     "seriesReasoningTokens": "推理 Token",
     "seriesCachedTokens": "缓存 Token",

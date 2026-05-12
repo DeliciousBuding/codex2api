@@ -35,6 +35,7 @@ interface TimelinePoint {
   requests: number
   avgLatency: number | null
   inputTokens: number
+  uncachedInputTokens: number
   outputTokens: number
   reasoningTokens: number
   cachedTokens: number
@@ -94,6 +95,7 @@ export default function DashboardUsageCharts({
         requests: point.requests,
         avgLatency: point.avg_latency > 0 ? Math.round(point.avg_latency) : null,
         inputTokens: point.input_tokens,
+        uncachedInputTokens: Math.max(0, point.input_tokens - point.cached_tokens),
         outputTokens: point.output_tokens,
         reasoningTokens: point.reasoning_tokens,
         cachedTokens: point.cached_tokens,
@@ -293,10 +295,10 @@ export default function DashboardUsageCharts({
                   itemStyle={tooltipItemStyle}
                 />
                 <Legend wrapperStyle={{ paddingTop: 12, fontSize: 12, color: axisColor }} />
-                <Bar dataKey="inputTokens" stackId="tokens" name={t('dashboard.seriesInputTokens')} fill="hsl(var(--info))" radius={[0, 0, 4, 4]} />
+                <Bar dataKey="uncachedInputTokens" stackId="tokens" name={t('dashboard.seriesUncachedInputTokens')} fill="hsl(var(--info))" radius={[0, 0, 4, 4]} />
+                <Bar dataKey="cachedTokens" stackId="tokens" name={t('dashboard.seriesCachedTokens')} fill="hsl(262 83% 58%)" minPointSize={4} />
                 <Bar dataKey="outputTokens" stackId="tokens" name={t('dashboard.seriesOutputTokens')} fill="hsl(var(--success))" minPointSize={4} />
-                <Bar dataKey="reasoningTokens" stackId="tokens" name={t('dashboard.seriesReasoningTokens')} fill="hsl(36 90% 55%)" minPointSize={4} />
-                <Bar dataKey="cachedTokens" stackId="tokens" name={t('dashboard.seriesCachedTokens')} fill="hsl(262 83% 58%)" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="reasoningTokens" stackId="tokens" name={t('dashboard.seriesReasoningTokens')} fill="hsl(36 90% 55%)" radius={[4, 4, 0, 0]} minPointSize={4} />
               </BarChart>
             </ResponsiveContainer>
           </ChartCard>
