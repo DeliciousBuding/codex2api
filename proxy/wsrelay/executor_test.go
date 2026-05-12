@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/codex2api/proxy"
+	"github.com/tidwall/gjson"
 )
 
 func TestPrepareWebsocketHeadersUsesConfiguredDefaultsAndBetaFeatures(t *testing.T) {
@@ -84,5 +85,25 @@ func TestPrepareWebsocketHeadersOmitsUserAgentByDefault(t *testing.T) {
 	}
 	if got := headers.Get("Conversation_id"); got != "session-123" {
 		t.Fatalf("Conversation_id = %q", got)
+	}
+}
+
+func TestPrepareWebsocketBodyPreservesExplicitPromptCacheKey(t *testing.T) {
+	exec := NewExecutor()
+
+	got := exec.prepareWebsocketBody([]byte(`{"model":"gpt-5.4","prompt_cache_key":"explicit-key"}`), "session-key")
+
+	if key := gjson.GetBytes(got, "prompt_cache_key").String(); key != "explicit-key" {
+		t.Fatalf("prompt_cache_key = %q, want explicit-key; body=%s", key, got)
+	}
+}
+
+func TestPrepareWebsocketBodyFallsBackToSessionPromptCacheKey(t *testing.T) {
+	exec := NewExecutor()
+
+	got := exec.prepareWebsocketBody([]byte(`{"model":"gpt-5.4"}`), "session-key")
+
+	if key := gjson.GetBytes(got, "prompt_cache_key").String(); key != "session-key" {
+		t.Fatalf("prompt_cache_key = %q, want session-key; body=%s", key, got)
 	}
 }

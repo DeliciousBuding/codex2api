@@ -172,12 +172,10 @@ func (e *Executor) prepareWebsocketBody(body []byte, sessionID string) []byte {
 	wsBody, _ = sjson.DeleteBytes(wsBody, "safety_identifier")
 	wsBody, _ = sjson.DeleteBytes(wsBody, "disable_response_storage")
 
-	// 3. 注入 prompt_cache_key
+	// 3. 注入 prompt_cache_key（保留客户端或 translator 已生成的稳定 key）
 	existingCacheKey := strings.TrimSpace(gjson.GetBytes(wsBody, "prompt_cache_key").String())
-	if sessionID != "" {
+	if existingCacheKey == "" && strings.TrimSpace(sessionID) != "" {
 		wsBody, _ = sjson.SetBytes(wsBody, "prompt_cache_key", sessionID)
-	} else if existingCacheKey != "" {
-		wsBody, _ = sjson.SetBytes(wsBody, "prompt_cache_key", existingCacheKey)
 	}
 
 	// 4. 设置请求类型和 stream

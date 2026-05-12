@@ -1514,7 +1514,9 @@ type UsageStats struct {
 	TotalTokens        int64   `json:"total_tokens"`
 	TotalPrompt        int64   `json:"total_prompt_tokens"`
 	TotalCompletion    int64   `json:"total_completion_tokens"`
+	TotalInputTokens   int64   `json:"total_input_tokens"`
 	TotalCachedTokens  int64   `json:"total_cached_tokens"`
+	TotalCacheRate     float64 `json:"total_cache_rate"`
 	TotalAccountBilled float64 `json:"total_account_billed"`
 	TotalUserBilled    float64 `json:"total_user_billed"`
 	TodayRequests      int64   `json:"today_requests"`
@@ -1576,14 +1578,22 @@ func (db *DB) GetUsageStats(ctx context.Context) (*UsageStats, error) {
 		return nil, err
 	}
 
-	// 统计当前可见请求总数和计费总额（排除 499，保证与使用统计列表口径一致）
+	// 统计当前可见请求总数、Token 和计费总额（排除 499，保证与使用统计列表口径一致）
 	var visibleTotal int64
+	var currentTokens, currentPrompt, currentCompletion, currentInput, currentCached int64
 	var currentAccountBilled, currentUserBilled float64
 	_ = db.conn.QueryRowContext(ctx, `
-			SELECT COUNT(*), COALESCE(SUM(account_billed), 0), COALESCE(SUM(user_billed), 0)
+			SELECT COUNT(*),
+			       COALESCE(SUM(total_tokens), 0),
+			       COALESCE(SUM(prompt_tokens), 0),
+			       COALESCE(SUM(completion_tokens), 0),
+			       COALESCE(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END), 0),
+			       COALESCE(SUM(cached_tokens), 0),
+			       COALESCE(SUM(account_billed), 0),
+			       COALESCE(SUM(user_billed), 0)
 			FROM usage_logs
 			WHERE status_code <> 499
-		`).Scan(&visibleTotal, &currentAccountBilled, &currentUserBilled)
+		`).Scan(&visibleTotal, &currentTokens, &currentPrompt, &currentCompletion, &currentInput, &currentCached, &currentAccountBilled, &currentUserBilled)
 
 	// 加上基线值（清空日志前保存的累计值）
 	var bReq, bTok, bPrompt, bComp, bCached int64
@@ -1594,10 +1604,12 @@ func (db *DB) GetUsageStats(ctx context.Context) (*UsageStats, error) {
 		`).Scan(&bReq, &bTok, &bPrompt, &bComp, &bCached, &bAccountBilled, &bUserBilled)
 
 	stats.TotalRequests = visibleTotal + bReq
-	stats.TotalTokens = stats.TodayTokens + bTok
-	stats.TotalPrompt += bPrompt
-	stats.TotalCompletion += bComp
-	stats.TotalCachedTokens += bCached
+	stats.TotalTokens = currentTokens + bTok
+	stats.TotalPrompt = currentPrompt + bPrompt
+	stats.TotalCompletion = currentCompletion + bComp
+	stats.TotalInputTokens = currentInput + bPrompt
+	stats.TotalCachedTokens = currentCached + bCached
+	stats.TotalCacheRate = calculateCacheRate(stats.TotalCachedTokens, stats.TotalInputTokens)
 	stats.TotalAccountBilled = currentAccountBilled + bAccountBilled
 	stats.TotalUserBilled = currentUserBilled + bUserBilled
 
@@ -1606,6 +1618,16 @@ func (db *DB) GetUsageStats(ctx context.Context) (*UsageStats, error) {
 	}
 
 	return stats, nil
+}
+
+func calculateCacheRate(cachedTokens, promptTokens int64) float64 {
+	if cachedTokens <= 0 || promptTokens <= 0 {
+		return 0
+	}
+	if cachedTokens > promptTokens {
+		cachedTokens = promptTokens
+	}
+	return float64(cachedTokens) / float64(promptTokens) * 100
 }
 
 // GetTrafficSnapshot 获取近实时流量快照

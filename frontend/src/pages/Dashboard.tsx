@@ -9,7 +9,7 @@ import StatCard from '../components/StatCard'
 import type { StatsResponse, UsageStats, ChartAggregation } from '../types'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { Card, CardContent } from '@/components/ui/card'
-import { Users, CheckCircle, XCircle, Activity, Zap, Clock, AlertTriangle, BarChart3, Database } from 'lucide-react'
+import { Users, CheckCircle, XCircle, Activity, Zap, Clock, AlertTriangle, BarChart3, Database, Gauge } from 'lucide-react'
 
 const DashboardUsageCharts = lazy(() => import('../components/DashboardUsageCharts'))
 
@@ -161,7 +161,8 @@ export default function Dashboard() {
                   <StatItem icon={<BarChart3 className="size-5" />} iconBg="bg-blue-500/10 text-blue-500" label={t('dashboard.totalRequests')} value={usageStats.total_requests.toLocaleString()} />
                   <StatItem icon={<Zap className="size-5" />} iconBg="bg-purple-500/10 text-purple-500" label={t('dashboard.totalTokens')} value={usageStats.total_tokens.toLocaleString()} />
                   <StatItem icon={<Zap className="size-5" />} iconBg="bg-emerald-500/10 text-emerald-500" label={t('dashboard.todayTokens')} value={usageStats.today_tokens.toLocaleString()} />
-                  <StatItem icon={<Database className="size-5" />} iconBg="bg-indigo-500/10 text-indigo-500" label={t('dashboard.cachedTokens')} value={usageStats.total_cached_tokens.toLocaleString()} />
+                  <StatItem icon={<Database className="size-5" />} iconBg="bg-indigo-500/10 text-indigo-500" label={t('dashboard.cachedTokens')} value={usageStats.total_cached_tokens.toLocaleString()} sub={t('dashboard.cacheRateDesc')} />
+                  <StatItem icon={<Gauge className="size-5" />} iconBg="bg-teal-500/10 text-teal-500" label={t('dashboard.cacheHitRate')} value={`${usageStats.total_cache_rate.toFixed(1)}%`} sub={t('dashboard.cacheHitRateDesc')} />
                   <StatItem icon={<Activity className="size-5" />} iconBg="bg-amber-500/10 text-amber-500" label={t('dashboard.rpmTpm')} value={`${usageStats.rpm} / ${usageStats.tpm.toLocaleString()}`} />
                   <StatItem
                     icon={<Clock className="size-5" />}
@@ -190,7 +191,7 @@ export default function Dashboard() {
   )
 }
 
-function StatItem({ icon, iconBg, label, value }: { icon: ReactNode; iconBg: string; label: string; value: string }) {
+function StatItem({ icon, iconBg, label, value, sub }: { icon: ReactNode; iconBg: string; label: string; value: string; sub?: string }) {
   return (
     <div className="flex items-center gap-3 p-4 rounded-xl bg-muted/50">
       <div className={`flex items-center justify-center size-10 rounded-lg ${iconBg}`}>
@@ -199,6 +200,7 @@ function StatItem({ icon, iconBg, label, value }: { icon: ReactNode; iconBg: str
       <div>
         <div className="text-xs text-muted-foreground">{label}</div>
         <div className="text-lg font-bold">{value}</div>
+        {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
       </div>
     </div>
   )

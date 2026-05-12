@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/codex2api/auth"
+	"github.com/tidwall/gjson"
 )
 
 func TestValidateEffectiveProxyURLRejectsInvalidNonEmptyProxy(t *testing.T) {
@@ -404,5 +405,25 @@ func TestResolveSessionIDPrefersContinuityHeaders(t *testing.T) {
 
 	if got := ResolveSessionID(headers, []byte(`{}`)); got != "idempotency-key-1" {
 		t.Fatalf("ResolveSessionID() = %q, want %q", got, "idempotency-key-1")
+	}
+}
+
+func TestApplyPromptCacheKeyPreservesExplicitBodyKey(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","prompt_cache_key":"explicit-key"}`)
+
+	got := applyPromptCacheKey(body, "session-key")
+
+	if key := gjson.GetBytes(got, "prompt_cache_key").String(); key != "explicit-key" {
+		t.Fatalf("prompt_cache_key = %q, want explicit-key; body=%s", key, got)
+	}
+}
+
+func TestApplyPromptCacheKeyFallsBackToSessionID(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4"}`)
+
+	got := applyPromptCacheKey(body, "session-key")
+
+	if key := gjson.GetBytes(got, "prompt_cache_key").String(); key != "session-key" {
+		t.Fatalf("prompt_cache_key = %q, want session-key; body=%s", key, got)
 	}
 }

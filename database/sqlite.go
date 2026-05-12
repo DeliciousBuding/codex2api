@@ -727,14 +727,22 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context) (*UsageStats, error) {
 		stats.ErrorRate = float64(todayErrors) / float64(stats.TodayRequests) * 100
 	}
 
-	// 可见请求总数（排除 499）
+	// 可见请求总数、Token 和计费总额（排除 499）
 	var visibleTotal int64
+	var currentTokens, currentPrompt, currentCompletion, currentInput, currentCached int64
 	var currentAccountBilled, currentUserBilled float64
 	_ = db.conn.QueryRowContext(ctx, `
-		SELECT COUNT(*), COALESCE(SUM(account_billed), 0), COALESCE(SUM(user_billed), 0)
+		SELECT COUNT(*),
+		       COALESCE(SUM(total_tokens), 0),
+		       COALESCE(SUM(prompt_tokens), 0),
+		       COALESCE(SUM(completion_tokens), 0),
+		       COALESCE(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END), 0),
+		       COALESCE(SUM(cached_tokens), 0),
+		       COALESCE(SUM(account_billed), 0),
+		       COALESCE(SUM(user_billed), 0)
 		FROM usage_logs
 		WHERE status_code <> 499
-	`).Scan(&visibleTotal, &currentAccountBilled, &currentUserBilled)
+	`).Scan(&visibleTotal, &currentTokens, &currentPrompt, &currentCompletion, &currentInput, &currentCached, &currentAccountBilled, &currentUserBilled)
 
 	// 基线值
 	var bReq, bTok, bPrompt, bComp, bCached int64
@@ -745,10 +753,12 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context) (*UsageStats, error) {
 	`).Scan(&bReq, &bTok, &bPrompt, &bComp, &bCached, &bAccountBilled, &bUserBilled)
 
 	stats.TotalRequests = visibleTotal + bReq
-	stats.TotalTokens = stats.TodayTokens + bTok
-	stats.TotalPrompt += bPrompt
-	stats.TotalCompletion += bComp
-	stats.TotalCachedTokens += bCached
+	stats.TotalTokens = currentTokens + bTok
+	stats.TotalPrompt = currentPrompt + bPrompt
+	stats.TotalCompletion = currentCompletion + bComp
+	stats.TotalInputTokens = currentInput + bPrompt
+	stats.TotalCachedTokens = currentCached + bCached
+	stats.TotalCacheRate = calculateCacheRate(stats.TotalCachedTokens, stats.TotalInputTokens)
 	stats.TotalAccountBilled = currentAccountBilled + bAccountBilled
 	stats.TotalUserBilled = currentUserBilled + bUserBilled
 

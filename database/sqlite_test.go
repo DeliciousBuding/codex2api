@@ -750,18 +750,22 @@ func TestUsageStatsIncludeBillingTotals(t *testing.T) {
 			Endpoint:     "/v1/responses",
 			Model:        "gpt-5.5",
 			StatusCode:   200,
+			PromptTokens: 1000,
 			InputTokens:  1000,
 			OutputTokens: 500,
 			TotalTokens:  1500,
+			CachedTokens: 250,
 		},
 		{
 			AccountID:    1,
 			Endpoint:     "/v1/responses",
 			Model:        "gpt-5.5",
 			StatusCode:   499,
+			PromptTokens: 1000,
 			InputTokens:  1000,
 			OutputTokens: 500,
 			TotalTokens:  1500,
+			CachedTokens: 500,
 		},
 	} {
 		if err := db.InsertUsageLog(ctx, usageLog); err != nil {
@@ -775,12 +779,60 @@ func TestUsageStatsIncludeBillingTotals(t *testing.T) {
 		t.Fatalf("GetUsageStats 返回错误: %v", err)
 	}
 
-	want := calculateCost(1000, 500, 0, "gpt-5.5", "")
+	want := calculateCost(1000, 500, 250, "gpt-5.5", "")
 	if stats.TotalAccountBilled != want || stats.TotalUserBilled != want {
 		t.Fatalf("total billing = account %.12f user %.12f, want %.12f", stats.TotalAccountBilled, stats.TotalUserBilled, want)
 	}
 	if stats.TodayAccountBilled != want || stats.TodayUserBilled != want {
 		t.Fatalf("today billing = account %.12f user %.12f, want %.12f", stats.TodayAccountBilled, stats.TodayUserBilled, want)
+	}
+	if stats.TotalCachedTokens != 250 {
+		t.Fatalf("TotalCachedTokens = %d, want 250", stats.TotalCachedTokens)
+	}
+	if stats.TotalCacheRate != 25 {
+		t.Fatalf("TotalCacheRate = %.2f, want 25.00", stats.TotalCacheRate)
+	}
+}
+
+func TestUsageStatsTotalsIncludeOlderVisibleLogs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.conn.ExecContext(ctx, `
+		INSERT INTO usage_logs (
+			account_id, endpoint, model, status_code,
+			total_tokens, prompt_tokens, completion_tokens, input_tokens, output_tokens, cached_tokens, created_at
+		)
+		VALUES
+			(1, '/v1/responses', 'gpt-5.5', 200, 1000, 800, 200, 800, 200, 400, $1),
+			(1, '/v1/responses', 'gpt-5.5', 200, 300, 200, 100, 0, 100, 50, $2),
+			(1, '/v1/responses', 'gpt-5.5', 499, 700, 600, 100, 600, 100, 600, $1)
+	`, sqliteTimeParam(time.Now().Add(-48*time.Hour)), sqliteTimeParam(time.Now())); err != nil {
+		t.Fatalf("insert usage logs 返回错误: %v", err)
+	}
+
+	stats, err := db.GetUsageStats(ctx)
+	if err != nil {
+		t.Fatalf("GetUsageStats 返回错误: %v", err)
+	}
+	if stats.TotalRequests != 2 {
+		t.Fatalf("TotalRequests = %d, want 2", stats.TotalRequests)
+	}
+	if stats.TotalTokens != 1300 || stats.TotalPrompt != 1000 || stats.TotalCompletion != 300 || stats.TotalCachedTokens != 450 {
+		t.Fatalf("totals = tokens %d prompt %d completion %d cached %d, want 1300/1000/300/450",
+			stats.TotalTokens, stats.TotalPrompt, stats.TotalCompletion, stats.TotalCachedTokens)
+	}
+	if stats.TotalCacheRate != 45 {
+		t.Fatalf("TotalCacheRate = %.2f, want 45.00", stats.TotalCacheRate)
+	}
+	if stats.TodayTokens != 300 {
+		t.Fatalf("TodayTokens = %d, want 300", stats.TodayTokens)
 	}
 }
 

@@ -149,6 +149,91 @@ func TestTranslateRequest_PreservesPromptCacheKey(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_DerivesStablePromptCacheKeyForCodexChat(t *testing.T) {
+	base := []byte(`{
+		"model":"gpt-5.4",
+		"reasoning_effort":"medium",
+		"messages":[
+			{"role":"system","content":"You are concise."},
+			{"role":"user","content":"build a dashboard"},
+			{"role":"assistant","content":"Sure."}
+		],
+		"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]
+	}`)
+	followup := []byte(`{
+		"model":"gpt-5.4",
+		"reasoning_effort":"medium",
+		"messages":[
+			{"role":"system","content":"You are concise."},
+			{"role":"user","content":"build a dashboard"},
+			{"role":"assistant","content":"Sure."},
+			{"role":"user","content":"add charts"}
+		],
+		"tools":[{"type":"function","function":{"name":"lookup","parameters":{"properties":{"q":{"type":"string"}},"type":"object"}}}]
+	}`)
+
+	first, err := TranslateRequest(base)
+	if err != nil {
+		t.Fatalf("TranslateRequest base returned error: %v", err)
+	}
+	second, err := TranslateRequest(followup)
+	if err != nil {
+		t.Fatalf("TranslateRequest followup returned error: %v", err)
+	}
+
+	firstKey := gjson.GetBytes(first, "prompt_cache_key").String()
+	secondKey := gjson.GetBytes(second, "prompt_cache_key").String()
+	if firstKey == "" {
+		t.Fatalf("expected derived prompt_cache_key, got body=%s", first)
+	}
+	if firstKey != secondKey {
+		t.Fatalf("derived prompt_cache_key should stay stable across follow-up turns, got %q and %q", firstKey, secondKey)
+	}
+	if !strings.HasPrefix(firstKey, "c2a-chat-") {
+		t.Fatalf("derived prompt_cache_key prefix = %q", firstKey)
+	}
+}
+
+func TestTranslateRequest_DerivedPromptCacheKeyChangesWithCacheSeed(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"A"},{"role":"user","content":"hello"}]}`)
+	changedSystem := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"B"},{"role":"user","content":"hello"}]}`)
+	changedDeveloper := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"A"},{"role":"developer","content":"use terse replies"},{"role":"user","content":"hello"}]}`)
+	changedUser := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"A"},{"role":"user","content":"hello again"}]}`)
+	changedEffort := []byte(`{"model":"gpt-5.4","reasoning_effort":"high","messages":[{"role":"system","content":"A"},{"role":"user","content":"hello"}]}`)
+	changedTools := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"A"},{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"search"}}]}`)
+
+	got, _ := TranslateRequest(raw)
+	key := gjson.GetBytes(got, "prompt_cache_key").String()
+	for name, body := range map[string][]byte{
+		"system":    changedSystem,
+		"developer": changedDeveloper,
+		"user":      changedUser,
+		"effort":    changedEffort,
+		"tools":     changedTools,
+	} {
+		translated, err := TranslateRequest(body)
+		if err != nil {
+			t.Fatalf("TranslateRequest %s returned error: %v", name, err)
+		}
+		if other := gjson.GetBytes(translated, "prompt_cache_key").String(); other == key {
+			t.Fatalf("expected %s change to alter prompt_cache_key %q", name, key)
+		}
+	}
+}
+
+func TestTranslateRequest_DoesNotDerivePromptCacheKeyForNonCodexChatModel(t *testing.T) {
+	raw := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+
+	got, err := TranslateRequest(raw)
+	if err != nil {
+		t.Fatalf("TranslateRequest returned error: %v", err)
+	}
+
+	if key := gjson.GetBytes(got, "prompt_cache_key"); key.Exists() {
+		t.Fatalf("prompt_cache_key should not be derived for non-Codex model, got %s", got)
+	}
+}
+
 func TestPrepareResponsesBody_DropsUnsupportedClientServiceTier(t *testing.T) {
 	raw := []byte(`{
 		"model":"gpt-5.4",

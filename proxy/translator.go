@@ -3,6 +3,7 @@ package proxy
 import (
 	"container/list"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -959,6 +960,86 @@ func cachedOrParse(rawJSON []byte) openAIRequest {
 	return req
 }
 
+type chatPromptCacheSeed struct {
+	Version         string            `json:"version"`
+	Model           string            `json:"model"`
+	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
+	System          []json.RawMessage `json:"system,omitempty"`
+	Developer       []json.RawMessage `json:"developer,omitempty"`
+	FirstUser       json.RawMessage   `json:"first_user,omitempty"`
+	Tools           []json.RawMessage `json:"tools,omitempty"`
+	ResponseFormat  json.RawMessage   `json:"response_format,omitempty"`
+}
+
+func deriveChatPromptCacheKey(req openAIRequest, normalizedEffort string) string {
+	if strings.TrimSpace(req.PromptCacheKey) != "" || !shouldDerivePromptCacheKeyForChatModel(req.Model) {
+		return ""
+	}
+	seed := chatPromptCacheSeed{
+		Version:         "chat_prompt_cache_v1",
+		Model:           strings.ToLower(strings.TrimSpace(req.Model)),
+		ReasoningEffort: normalizedEffort,
+	}
+	for _, msg := range req.Messages {
+		switch strings.ToLower(strings.TrimSpace(msg.Role)) {
+		case "system":
+			if content := canonicalJSON(msg.Content); len(content) > 0 {
+				seed.System = append(seed.System, content)
+			}
+		case "developer":
+			if content := canonicalJSON(msg.Content); len(content) > 0 {
+				seed.Developer = append(seed.Developer, content)
+			}
+		case "user":
+			if len(seed.FirstUser) == 0 {
+				seed.FirstUser = canonicalJSON(msg.Content)
+			}
+		}
+	}
+	if len(seed.FirstUser) == 0 && len(seed.System) == 0 && len(seed.Developer) == 0 {
+		return ""
+	}
+	for _, tool := range req.Tools {
+		if canonical := canonicalJSON(tool); len(canonical) > 0 {
+			seed.Tools = append(seed.Tools, canonical)
+		}
+	}
+	if len(req.ResponseFormat) > 0 && string(req.ResponseFormat) != "null" {
+		seed.ResponseFormat = canonicalJSON(req.ResponseFormat)
+	}
+
+	raw, err := json.Marshal(seed)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return "c2a-chat-" + hex.EncodeToString(sum[:16])
+}
+
+func shouldDerivePromptCacheKeyForChatModel(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if normalized == "" || isImageOnlyModel(normalized) {
+		return false
+	}
+	return strings.HasPrefix(normalized, "gpt-5") || strings.Contains(normalized, "codex")
+}
+
+func canonicalJSON(raw json.RawMessage) json.RawMessage {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
+		return json.RawMessage(trimmed)
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(trimmed)
+	}
+	return json.RawMessage(canonical)
+}
+
 // ==================== 请求翻译: OpenAI Chat Completions → Codex Responses ====================
 
 // TranslateRequest 将 OpenAI Chat Completions 请求转换为 Codex Responses 格式
@@ -979,12 +1060,15 @@ func TranslateRequest(rawJSON []byte) ([]byte, error) {
 	normalizeResponsesContentPartTypes(out)
 	normalizeResponsesInputMessageContent(out)
 	normalizeResponsesInputItemIDs(out)
+	effort := normalizeReasoningEffort(req.ReasoningEffort)
 	if promptCacheKey := strings.TrimSpace(req.PromptCacheKey); promptCacheKey != "" {
+		out["prompt_cache_key"] = promptCacheKey
+	} else if promptCacheKey := deriveChatPromptCacheKey(req, effort); promptCacheKey != "" {
 		out["prompt_cache_key"] = promptCacheKey
 	}
 
 	// 2. reasoning effort
-	if effort := normalizeReasoningEffort(req.ReasoningEffort); effort != "" {
+	if effort != "" {
 		out["reasoning"] = map[string]any{"effort": effort}
 	}
 

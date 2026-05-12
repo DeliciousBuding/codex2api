@@ -291,13 +291,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	requestBody, _ = sjson.DeleteBytes(requestBody, "safety_identifier")
 	requestBody, _ = sjson.DeleteBytes(requestBody, "disable_response_storage")
 
-	// 3. 注入 prompt_cache_key（如果请求体中没有，且 sessionID 不为空）
-	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
-	cacheKey := existingCacheKey
-	if sessionID != "" {
-		cacheKey = sessionID
-		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
-	}
+	// 3. 注入 prompt_cache_key（保留客户端或 translator 已生成的稳定 key）
+	requestBody = applyPromptCacheKey(requestBody, sessionID)
+	cacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 
 	endpoint := CodexBaseURL + "/responses"
 
@@ -411,12 +407,8 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 	requestBody, _ = sjson.DeleteBytes(requestBody, "safety_identifier")
 	requestBody, _ = sjson.DeleteBytes(requestBody, "disable_response_storage")
 
-	existingCacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
-	cacheKey := existingCacheKey
-	if sessionID != "" {
-		cacheKey = sessionID
-		requestBody, _ = sjson.SetBytes(requestBody, "prompt_cache_key", cacheKey)
-	}
+	requestBody = applyPromptCacheKey(requestBody, sessionID)
+	cacheKey := strings.TrimSpace(gjson.GetBytes(requestBody, "prompt_cache_key").String())
 
 	// compact 端点
 	endpoint := CodexBaseURL + "/responses/compact"
@@ -624,6 +616,18 @@ func ResolveSessionID(headers http.Header, body []byte) string {
 
 	// 最后兜底：生成随机 UUID
 	return uuid.New().String()
+}
+
+func applyPromptCacheKey(body []byte, sessionID string) []byte {
+	existingCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	if existingCacheKey != "" || strings.TrimSpace(sessionID) == "" {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "prompt_cache_key", strings.TrimSpace(sessionID))
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 // ReadSSEStream 从上游 SSE 响应读取事件流

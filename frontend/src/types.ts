@@ -435,7 +435,9 @@ export interface UsageStats {
   total_tokens: number
   total_prompt_tokens: number
   total_completion_tokens: number
+  total_input_tokens: number
   total_cached_tokens: number
+  total_cache_rate: number
   total_account_billed: number
   total_user_billed: number
   today_requests: number
