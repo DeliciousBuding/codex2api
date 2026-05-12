@@ -1001,6 +1001,7 @@
     "addProxyTitle": "添加代理",
     "addProxyDesc": "每行一个代理 URL，支持 http:// / https:// / socks5:// 格式",
     "labelPlaceholder": "标签 (可选, 如 \"美国\", \"日本\")",
+    "loadFailed": "代理列表加载失败：{{error}}",
     "adding": "添加中...",
     "confirmAdd": "确认添加",
     "addFailed": "添加代理失败",

@@ -50,6 +50,7 @@ export default function Proxies() {
   const { toast, showToast } = useToast()
   const [proxies, setProxies] = useState<ProxyRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [poolEnabled, setPoolEnabled] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
   const [addInput, setAddInput] = useState('')
@@ -67,12 +68,18 @@ export default function Proxies() {
 
   const reload = useCallback(async () => {
     try {
+      setLoadError('')
       const [proxyRes, settingsRes] = await Promise.all([api.listProxies(), api.getSettings()])
       setProxies(proxyRes.proxies)
       setPoolEnabled(settingsRes.proxy_pool_enabled)
-    } catch { /* ignore */ }
-    setLoading(false)
-  }, [])
+    } catch (error) {
+      const message = getErrorMessage(error)
+      setLoadError(message)
+      showToast(t('proxies.loadFailed', { error: message }), 'error')
+    } finally {
+      setLoading(false)
+    }
+  }, [showToast, t])
 
   useEffect(() => { reload() }, [reload])
 
@@ -403,6 +410,23 @@ export default function Proxies() {
           {loading ? (
             <div className="flex justify-center items-center py-16">
               <Loader2 className="size-6 animate-spin text-primary" />
+            </div>
+          ) : loadError ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+              <AlertTriangle className="size-10 text-destructive" />
+              <div>
+                <p className="text-sm font-semibold text-foreground">{t('common.loadFailed')}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{loadError}</p>
+              </div>
+              <button
+                onClick={() => {
+                  setLoading(true)
+                  void reload()
+                }}
+                className="rounded-md border border-border px-3 py-1.5 text-sm font-semibold text-foreground transition-colors hover:bg-muted/50"
+              >
+                {t('common.retry')}
+              </button>
             </div>
           ) : filteredProxies.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">

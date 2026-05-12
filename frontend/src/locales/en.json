@@ -1001,6 +1001,7 @@
     "addProxyTitle": "Add Proxy",
     "addProxyDesc": "One proxy URL per line, supports http:// / https:// / socks5:// format",
     "labelPlaceholder": "Label (optional, e.g. \"US\", \"Japan\")",
+    "loadFailed": "Failed to load proxies: {{error}}",
     "adding": "Adding...",
     "confirmAdd": "Confirm",
     "addFailed": "Failed to add proxy",
