@@ -145,6 +145,27 @@ func TestRefreshAccountReturnsRefreshFailure(t *testing.T) {
 	}
 }
 
+func TestDeleteAccountReturnsNotFoundForMissingAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	handler := &Handler{
+		db:    db,
+		store: &auth.Store{},
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: "404"}}
+	ctx.Request = httptest.NewRequest(http.MethodDelete, "/api/admin/accounts/404", nil)
+
+	handler.DeleteAccount(ctx)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+	assertErrorMessage(t, recorder, "账号不存在")
+}
+
 func TestAddProxiesRejectsInvalidProxyURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

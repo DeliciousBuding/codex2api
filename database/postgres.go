@@ -2850,8 +2850,15 @@ func (db *DB) SoftDeleteAccount(ctx context.Context, id int64) error {
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1 AND status <> 'deleted'
 	`
-	_, err := db.conn.ExecContext(ctx, query, id)
-	return err
+	result, err := db.conn.ExecContext(ctx, query, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // BatchSoftDeleteAccounts 批量软删除账号，分批执行避免 SQL 参数过多。

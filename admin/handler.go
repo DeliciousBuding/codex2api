@@ -2276,6 +2276,10 @@ func (h *Handler) DeleteAccount(c *gin.Context) {
 
 	// 软删除：保留账号数据与事件记录，但从运行时池和 active 列表中移除。
 	if err := h.db.SoftDeleteAccount(ctx, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "账号不存在")
+			return
+		}
 		writeError(c, http.StatusInternalServerError, "删除失败: "+err.Error())
 		return
 	}
