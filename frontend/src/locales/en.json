@@ -238,6 +238,7 @@
     "outputTokens": "Output Tokens",
     "reasoningTokens": "Reasoning Tokens",
     "cachedTokens": "Cached Tokens",
+    "cacheHitRate": "Cache Hit Rate",
     "modelDistribution": "Model Distribution",
     "noUsageData": "No usage data yet",
     "searchPlaceholder": "Search email or name…",

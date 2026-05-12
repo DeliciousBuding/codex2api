@@ -98,6 +98,7 @@ export default function AccountUsageModal({ account, onClose }: Props) {
             <StatRow label={t('accounts.outputTokens')} value={data.output_tokens.toLocaleString()} />
             <StatRow label={t('accounts.reasoningTokens')} value={data.reasoning_tokens.toLocaleString()} />
             <StatRow label={t('accounts.cachedTokens')} value={data.cached_tokens.toLocaleString()} />
+            <StatRow label={t('accounts.cacheHitRate')} value={`${data.cache_hit_rate.toFixed(1)}%`} />
           </div>
         </div>
       )}

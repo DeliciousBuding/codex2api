@@ -238,6 +238,7 @@
     "outputTokens": "输出 Token",
     "reasoningTokens": "推理 Token",
     "cachedTokens": "缓存 Token",
+    "cacheHitRate": "缓存命中率",
     "modelDistribution": "模型分布",
     "noUsageData": "暂无使用记录",
     "searchPlaceholder": "搜索邮箱或名称…",

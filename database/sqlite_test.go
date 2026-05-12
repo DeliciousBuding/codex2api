@@ -905,6 +905,44 @@ func TestUsageStatsTotalsIncludeOlderVisibleLogs(t *testing.T) {
 	}
 }
 
+func TestAccountUsageStatsReportsCacheHitRate(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.conn.ExecContext(ctx, `
+		INSERT INTO usage_logs (
+			account_id, endpoint, model, status_code,
+			total_tokens, prompt_tokens, completion_tokens, input_tokens, output_tokens, cached_tokens, created_at
+		)
+		VALUES
+			(42, '/v1/responses', 'gpt-5.5', 200, 1000, 800, 200, 800, 200, 400, $1),
+			(42, '/v1/responses', 'gpt-5.5', 200, 300, 200, 100, 0, 100, 50, $2),
+			(42, '/v1/responses', 'gpt-5.5', 499, 700, 600, 100, 600, 100, 600, $2)
+	`, sqliteTimeParam(time.Now().Add(-time.Hour)), sqliteTimeParam(time.Now())); err != nil {
+		t.Fatalf("insert usage logs 返回错误: %v", err)
+	}
+
+	detail, err := db.GetAccountUsageStats(ctx, 42)
+	if err != nil {
+		t.Fatalf("GetAccountUsageStats 返回错误: %v", err)
+	}
+	if detail.TotalRequests != 2 {
+		t.Fatalf("TotalRequests = %d, want 2", detail.TotalRequests)
+	}
+	if detail.InputTokens != 1000 || detail.CachedTokens != 450 {
+		t.Fatalf("input/cached = %d/%d, want 1000/450", detail.InputTokens, detail.CachedTokens)
+	}
+	if detail.CacheHitRate != 45 {
+		t.Fatalf("CacheHitRate = %.2f, want 45.00", detail.CacheHitRate)
+	}
+}
+
 func TestSoftDeleteAccountMarksDeletedStatus(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 

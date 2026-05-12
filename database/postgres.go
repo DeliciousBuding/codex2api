@@ -1814,6 +1814,7 @@ type AccountUsageDetail struct {
 	OutputTokens    int64              `json:"output_tokens"`
 	ReasoningTokens int64              `json:"reasoning_tokens"`
 	CachedTokens    int64              `json:"cached_tokens"`
+	CacheHitRate    float64            `json:"cache_hit_rate"`
 	Models          []AccountModelStat `json:"models"`
 }
 
@@ -1918,7 +1919,7 @@ func (db *DB) GetAccountUsageStats(ctx context.Context, accountID int64) (*Accou
 	SELECT
 		COUNT(*),
 		COALESCE(SUM(total_tokens), 0),
-		COALESCE(SUM(input_tokens), 0),
+		COALESCE(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END), 0),
 		COALESCE(SUM(output_tokens), 0),
 		COALESCE(SUM(reasoning_tokens), 0),
 		COALESCE(SUM(cached_tokens), 0)
@@ -1932,6 +1933,7 @@ func (db *DB) GetAccountUsageStats(ctx context.Context, accountID int64) (*Accou
 	); err != nil {
 		return nil, err
 	}
+	result.CacheHitRate = calculateCacheRate(result.CachedTokens, result.InputTokens)
 
 	// 模型分布
 	modelQuery := `

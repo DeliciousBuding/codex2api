@@ -154,6 +154,7 @@ export interface AccountUsageDetail {
   output_tokens: number
   reasoning_tokens: number
   cached_tokens: number
+  cache_hit_rate: number
   models: AccountModelStat[]
 }
 
