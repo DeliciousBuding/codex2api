@@ -1559,6 +1559,7 @@ func dedupeImportTokensByCredential(tokens []importToken) ([]importToken, int) {
 	seenRT := make(map[string]bool)
 	seenST := make(map[string]bool)
 	seenAT := make(map[string]bool)
+	seenAccountID := make(map[string]bool)
 	unique := make([]importToken, 0, len(tokens))
 	duplicateCount := 0
 
@@ -1566,16 +1567,18 @@ func dedupeImportTokensByCredential(tokens []importToken) ([]importToken, int) {
 		rt := strings.TrimSpace(token.refreshToken)
 		st := strings.TrimSpace(token.sessionToken)
 		at := strings.TrimSpace(token.accessToken)
+		accountID := strings.TrimSpace(token.accountID)
 		if rt == "" && st == "" && at == "" {
 			continue
 		}
-		if (rt != "" && seenRT[rt]) || (st != "" && seenST[st]) || (at != "" && seenAT[at]) {
+		if (rt != "" && seenRT[rt]) || (st != "" && seenST[st]) || (at != "" && seenAT[at]) || (accountID != "" && seenAccountID[accountID]) {
 			duplicateCount++
 			continue
 		}
 		token.refreshToken = rt
 		token.sessionToken = st
 		token.accessToken = at
+		token.accountID = accountID
 		if rt != "" {
 			seenRT[rt] = true
 		}
@@ -1584,6 +1587,9 @@ func dedupeImportTokensByCredential(tokens []importToken) ([]importToken, int) {
 		}
 		if at != "" {
 			seenAT[at] = true
+		}
+		if accountID != "" {
+			seenAccountID[accountID] = true
 		}
 		unique = append(unique, token)
 	}

@@ -3063,7 +3063,7 @@ func normalizeAccountCredentialKeys(credentials map[string]interface{}) map[stri
 	out := make(map[string]interface{}, len(credentials))
 	for key, value := range credentials {
 		switch key {
-		case "refresh_token", "access_token", "session_token":
+		case "refresh_token", "access_token", "session_token", "account_id":
 			if value == nil {
 				continue
 			}
@@ -3080,7 +3080,7 @@ func normalizeAccountCredentialKeys(credentials map[string]interface{}) map[stri
 
 func txHasDuplicateAccountCredential(ctx context.Context, tx *sql.Tx, credentials map[string]interface{}) (bool, error) {
 	wanted := make(map[string]string)
-	for _, key := range []string{"refresh_token", "access_token", "session_token"} {
+	for _, key := range []string{"refresh_token", "access_token", "session_token", "account_id"} {
 		if value, ok := credentials[key]; ok {
 			if value == nil {
 				continue

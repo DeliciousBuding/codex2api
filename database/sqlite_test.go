@@ -199,13 +199,19 @@ func TestSQLiteAccountCredentialDuplicateChecks(t *testing.T) {
 	if _, err := db.InsertAccountWithCredentials(ctx, "st2", map[string]interface{}{"session_token": "st-duplicate"}, ""); !errors.Is(err, ErrDuplicateAccountCredential) {
 		t.Fatalf("duplicate ST error = %v, want ErrDuplicateAccountCredential", err)
 	}
+	if _, err := db.InsertAccountWithCredentials(ctx, "account-id", map[string]interface{}{"account_id": " acct-duplicate ", "access_token": "at-old"}, ""); err != nil {
+		t.Fatalf("InsertAccountWithCredentials account_id 返回错误: %v", err)
+	}
+	if _, err := db.InsertAccountWithCredentials(ctx, "account-id2", map[string]interface{}{"account_id": "acct-duplicate", "access_token": "at-new"}, ""); !errors.Is(err, ErrDuplicateAccountCredential) {
+		t.Fatalf("duplicate account_id error = %v, want ErrDuplicateAccountCredential", err)
+	}
 
 	rows, err := db.ListActive(ctx)
 	if err != nil {
 		t.Fatalf("ListActive 返回错误: %v", err)
 	}
-	if len(rows) != 3 {
-		t.Fatalf("ListActive 返回 %d 条，want 3", len(rows))
+	if len(rows) != 4 {
+		t.Fatalf("ListActive 返回 %d 条，want 4", len(rows))
 	}
 }
 

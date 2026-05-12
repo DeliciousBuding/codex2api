@@ -271,6 +271,29 @@ func TestDedupeImportTokensByCredentialTreatsAnyCredentialOverlapAsDuplicate(t *
 	}
 }
 
+func TestDedupeImportTokensByCredentialTreatsAccountIDOverlapAsDuplicate(t *testing.T) {
+	tokens := []importToken{
+		{name: "old token", accountID: " acct-shared ", accessToken: "at-old"},
+		{name: "new token", accountID: "acct-shared", accessToken: "at-new"},
+		{name: "other account", accountID: "acct-other", accessToken: "at-other"},
+	}
+
+	unique, duplicates := dedupeImportTokensByCredential(tokens)
+
+	if duplicates != 1 {
+		t.Fatalf("duplicates = %d, want 1", duplicates)
+	}
+	if len(unique) != 2 {
+		t.Fatalf("unique len = %d, want 2: %+v", len(unique), unique)
+	}
+	if unique[0].accountID != "acct-shared" {
+		t.Fatalf("trimmed accountID = %q, want acct-shared", unique[0].accountID)
+	}
+	if unique[1].accountID != "acct-other" {
+		t.Fatalf("second unique accountID = %q, want acct-other", unique[1].accountID)
+	}
+}
+
 func TestParseImportJSONTokensRejectsInvalidJSON(t *testing.T) {
 	if _, err := parseImportJSONTokens([]byte(`{"accounts":[}`)); err == nil {
 		t.Fatal("expected invalid JSON error, got nil")
