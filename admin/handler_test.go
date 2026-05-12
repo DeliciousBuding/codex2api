@@ -185,6 +185,92 @@ func TestToggleAccountLockReturnsNotFoundForMissingAccount(t *testing.T) {
 	assertErrorMessage(t, recorder, "账号不存在")
 }
 
+func TestAddAccountDeduplicatesRequestAndExistingRefreshTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	if _, err := db.InsertAccount(context.Background(), "existing", "rt_existing", ""); err != nil {
+		t.Fatalf("seed existing account: %v", err)
+	}
+	store := &auth.Store{}
+	handler := &Handler{db: db, store: store}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/admin/accounts",
+		strings.NewReader(`{"refresh_token":"rt_existing\nrt_new\nrt_new"}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.AddAccount(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := int(payload["success"].(float64)); got != 1 {
+		t.Fatalf("success = %d, want 1", got)
+	}
+	if got := int(payload["duplicate"].(float64)); got != 2 {
+		t.Fatalf("duplicate = %d, want 2", got)
+	}
+	existing, err := db.GetAllRefreshTokens(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllRefreshTokens: %v", err)
+	}
+	if len(existing) != 2 || !existing["rt_existing"] || !existing["rt_new"] {
+		t.Fatalf("refresh tokens = %#v, want existing and new only", existing)
+	}
+}
+
+func TestAddATAccountDeduplicatesRequestAndExistingAccessTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	if _, err := db.InsertATAccount(context.Background(), "existing-at", "at_existing", ""); err != nil {
+		t.Fatalf("seed existing AT account: %v", err)
+	}
+	store := &auth.Store{}
+	handler := &Handler{db: db, store: store}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/admin/accounts/at",
+		strings.NewReader(`{"access_token":"at_existing\nat_new\nat_new"}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.AddATAccount(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := int(payload["success"].(float64)); got != 1 {
+		t.Fatalf("success = %d, want 1", got)
+	}
+	if got := int(payload["duplicate"].(float64)); got != 2 {
+		t.Fatalf("duplicate = %d, want 2", got)
+	}
+	existing, err := db.GetAllAccessTokens(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllAccessTokens: %v", err)
+	}
+	if len(existing) != 2 || !existing["at_existing"] || !existing["at_new"] {
+		t.Fatalf("access tokens = %#v, want existing and new only", existing)
+	}
+}
+
 func TestGetAccountAuthJSONRejectsInvalidID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

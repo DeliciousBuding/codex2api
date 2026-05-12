@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -973,19 +974,41 @@ func (h *Handler) AddAccount(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
+	existingRTs, err := h.db.GetAllRefreshTokens(ctx)
+	if err != nil {
+		log.Printf("查询已有 RT 失败: %v", err)
+		writeError(c, http.StatusInternalServerError, "查询已有账号失败")
+		return
+	}
+	uniqueTokens := make([]string, 0, len(tokens))
+	seenRTs := make(map[string]bool, len(tokens))
+	duplicateCount := 0
+	for _, rt := range tokens {
+		if seenRTs[rt] || existingRTs[rt] {
+			duplicateCount++
+			continue
+		}
+		seenRTs[rt] = true
+		uniqueTokens = append(uniqueTokens, rt)
+	}
+
 	successCount := 0
 	failCount := 0
 
-	for i, rt := range tokens {
+	for i, rt := range uniqueTokens {
 		name := req.Name
 		if name == "" {
 			name = fmt.Sprintf("account-%d", i+1)
-		} else if len(tokens) > 1 {
+		} else if len(uniqueTokens) > 1 {
 			name = fmt.Sprintf("%s-%d", req.Name, i+1)
 		}
 
 		id, err := h.db.InsertAccount(ctx, name, rt, req.ProxyURL)
 		if err != nil {
+			if errors.Is(err, database.ErrDuplicateAccountCredential) {
+				duplicateCount++
+				continue
+			}
 			log.Printf("批量添加账号 %d 失败: %v", i+1, err)
 			failCount++
 			continue
@@ -1015,17 +1038,21 @@ func (h *Handler) AddAccount(c *gin.Context) {
 	}
 
 	// 记录安全审计日志
-	security.SecurityAuditLog("ACCOUNTS_ADDED", fmt.Sprintf("success=%d failed=%d ip=%s", successCount, failCount, c.ClientIP()))
+	security.SecurityAuditLog("ACCOUNTS_ADDED", fmt.Sprintf("success=%d duplicate=%d failed=%d ip=%s", successCount, duplicateCount, failCount, c.ClientIP()))
 
 	msg := fmt.Sprintf("成功添加 %d 个账号", successCount)
+	if duplicateCount > 0 {
+		msg += fmt.Sprintf("，%d 个重复", duplicateCount)
+	}
 	if failCount > 0 {
 		msg += fmt.Sprintf("，%d 个失败", failCount)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": msg,
-		"success": successCount,
-		"failed":  failCount,
+		"message":   msg,
+		"success":   successCount,
+		"duplicate": duplicateCount,
+		"failed":    failCount,
 	})
 }
 
@@ -1090,19 +1117,41 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
+	existingATs, err := h.db.GetAllAccessTokens(ctx)
+	if err != nil {
+		log.Printf("查询已有 AT 失败: %v", err)
+		writeError(c, http.StatusInternalServerError, "查询已有账号失败")
+		return
+	}
+	uniqueTokens := make([]string, 0, len(tokens))
+	seenATs := make(map[string]bool, len(tokens))
+	duplicateCount := 0
+	for _, at := range tokens {
+		if seenATs[at] || existingATs[at] {
+			duplicateCount++
+			continue
+		}
+		seenATs[at] = true
+		uniqueTokens = append(uniqueTokens, at)
+	}
+
 	successCount := 0
 	failCount := 0
 
-	for i, at := range tokens {
+	for i, at := range uniqueTokens {
 		name := req.Name
 		if name == "" {
 			name = fmt.Sprintf("at-account-%d", i+1)
-		} else if len(tokens) > 1 {
+		} else if len(uniqueTokens) > 1 {
 			name = fmt.Sprintf("%s-%d", req.Name, i+1)
 		}
 
 		id, err := h.db.InsertATAccount(ctx, name, at, req.ProxyURL)
 		if err != nil {
+			if errors.Is(err, database.ErrDuplicateAccountCredential) {
+				duplicateCount++
+				continue
+			}
 			log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
 			failCount++
 			continue
@@ -1146,17 +1195,21 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 		log.Printf("AT 账号 %d 已加入号池 (id=%d, email=%s)", i+1, id, newAcc.Email)
 	}
 
-	security.SecurityAuditLog("AT_ACCOUNTS_ADDED", fmt.Sprintf("success=%d failed=%d ip=%s", successCount, failCount, c.ClientIP()))
+	security.SecurityAuditLog("AT_ACCOUNTS_ADDED", fmt.Sprintf("success=%d duplicate=%d failed=%d ip=%s", successCount, duplicateCount, failCount, c.ClientIP()))
 
 	msg := fmt.Sprintf("成功添加 %d 个 AT 账号", successCount)
+	if duplicateCount > 0 {
+		msg += fmt.Sprintf("，%d 个重复", duplicateCount)
+	}
 	if failCount > 0 {
 		msg += fmt.Sprintf("，%d 个失败", failCount)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": msg,
-		"success": successCount,
-		"failed":  failCount,
+		"message":   msg,
+		"success":   successCount,
+		"duplicate": duplicateCount,
+		"failed":    failCount,
 	})
 }
 
@@ -1500,6 +1553,42 @@ type importToken struct {
 	codex5HUsedPercent  string
 	codex5HResetAt      string
 	codexUsageUpdatedAt string
+}
+
+func dedupeImportTokensByCredential(tokens []importToken) ([]importToken, int) {
+	seenRT := make(map[string]bool)
+	seenST := make(map[string]bool)
+	seenAT := make(map[string]bool)
+	unique := make([]importToken, 0, len(tokens))
+	duplicateCount := 0
+
+	for _, token := range tokens {
+		rt := strings.TrimSpace(token.refreshToken)
+		st := strings.TrimSpace(token.sessionToken)
+		at := strings.TrimSpace(token.accessToken)
+		if rt == "" && st == "" && at == "" {
+			continue
+		}
+		if (rt != "" && seenRT[rt]) || (st != "" && seenST[st]) || (at != "" && seenAT[at]) {
+			duplicateCount++
+			continue
+		}
+		token.refreshToken = rt
+		token.sessionToken = st
+		token.accessToken = at
+		if rt != "" {
+			seenRT[rt] = true
+		}
+		if st != "" {
+			seenST[st] = true
+		}
+		if at != "" {
+			seenAT[at] = true
+		}
+		unique = append(unique, token)
+	}
+
+	return unique, duplicateCount
 }
 
 // jsonAccountEntry CLIProxyAPI 凭证 JSON 条目
@@ -1853,73 +1942,54 @@ func setupSSE(c *gin.Context) {
 
 // importAccountsCommon 公共的去重、并发插入、SSE 进度推送逻辑（支持 RT 和 AT-only 混合导入）
 func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, proxyURL string) {
-	// 文件内去重（RT、ST 和 AT 分别去重）
-	seenRT := make(map[string]bool)
-	seenST := make(map[string]bool)
-	seenAT := make(map[string]bool)
-	var unique []importToken
-	for _, t := range tokens {
-		if t.refreshToken != "" {
-			if !seenRT[t.refreshToken] {
-				seenRT[t.refreshToken] = true
-				unique = append(unique, t)
-			}
-			if t.sessionToken != "" {
-				seenST[t.sessionToken] = true
-			}
-			if t.accessToken != "" {
-				seenAT[t.accessToken] = true
-			}
-		} else if t.sessionToken != "" {
-			if !seenST[t.sessionToken] {
-				seenST[t.sessionToken] = true
-				unique = append(unique, t)
-			}
-			if t.accessToken != "" {
-				seenAT[t.accessToken] = true
-			}
-		} else if t.accessToken != "" {
-			if !seenAT[t.accessToken] {
-				seenAT[t.accessToken] = true
-				unique = append(unique, t)
-			}
-		}
-	}
+	unique, fileDuplicateCount := dedupeImportTokensByCredential(tokens)
 
 	// 数据库去重（独立短超时）
 	dedupeCtx, dedupeCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer dedupeCancel()
 
-	log.Printf("导入解析: 文件内 %d 条, 去重后 %d 条（%d 条文件内重复）", len(tokens), len(unique), len(tokens)-len(unique))
+	log.Printf("导入解析: 文件内 %d 条, 去重后 %d 条（%d 条文件内重复）", len(tokens), len(unique), fileDuplicateCount)
 
 	existingRTs, err := h.db.GetAllRefreshTokens(dedupeCtx)
 	if err != nil {
-		log.Printf("查询已有 RT 失败: %v", err)
-		existingRTs = make(map[string]bool)
+		writeError(c, http.StatusInternalServerError, "查询已有 RT 失败")
+		return
 	}
 
 	// 存在 AT-only token 时额外查询已有 AT
-	hasAT := len(seenAT) > 0
+	hasAT := false
 	var existingATs map[string]bool
+	for _, token := range unique {
+		if strings.TrimSpace(token.accessToken) != "" {
+			hasAT = true
+			break
+		}
+	}
 	if hasAT {
 		existingATs, err = h.db.GetAllAccessTokens(dedupeCtx)
 		if err != nil {
-			log.Printf("查询已有 AT 失败: %v", err)
-			existingATs = make(map[string]bool)
+			writeError(c, http.StatusInternalServerError, "查询已有 AT 失败")
+			return
 		}
 	}
-	hasST := len(seenST) > 0
+	hasST := false
 	var existingSTs map[string]bool
+	for _, token := range unique {
+		if strings.TrimSpace(token.sessionToken) != "" {
+			hasST = true
+			break
+		}
+	}
 	if hasST {
 		existingSTs, err = h.db.GetAllSessionTokens(dedupeCtx)
 		if err != nil {
-			log.Printf("查询已有 ST 失败: %v", err)
-			existingSTs = make(map[string]bool)
+			writeError(c, http.StatusInternalServerError, "查询已有 ST 失败")
+			return
 		}
 	}
 
 	var newTokens []importToken
-	duplicateCount := 0
+	duplicateCount := fileDuplicateCount
 	for _, t := range unique {
 		switch {
 		case t.refreshToken != "":
@@ -1949,7 +2019,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 		}
 	}
 
-	total := len(unique)
+	total := len(newTokens) + duplicateCount
 
 	log.Printf("导入去重: 总计 %d 条, 数据库已存在 %d 条, 待导入 %d 条", total, duplicateCount, len(newTokens))
 
@@ -1968,6 +2038,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 	setupSSE(c)
 
 	var successCount int64
+	var insertDuplicateCount int64
 	var failCount int64
 	var current int64
 	sem := make(chan struct{}, 20) // 并发插入上限
@@ -1983,10 +2054,11 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 			case <-ticker.C:
 				cur := int(atomic.LoadInt64(&current))
 				suc := int(atomic.LoadInt64(&successCount))
+				dup := duplicateCount + int(atomic.LoadInt64(&insertDuplicateCount))
 				fai := int(atomic.LoadInt64(&failCount))
 				sendImportEvent(c, importEvent{
 					Type: "progress", Current: cur + duplicateCount, Total: total,
-					Success: suc, Duplicate: duplicateCount, Failed: fai,
+					Success: suc, Duplicate: dup, Failed: fai,
 				})
 			case <-done:
 				return
@@ -2014,6 +2086,11 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				insertCancel()
 
 				if err != nil {
+					if errors.Is(err, database.ErrDuplicateAccountCredential) {
+						atomic.AddInt64(&insertDuplicateCount, 1)
+						atomic.AddInt64(&current, 1)
+						return
+					}
 					log.Printf("导入 AT 账号 %d/%d 失败: %v", idx+1, len(newTokens), err)
 					atomic.AddInt64(&failCount, 1)
 					atomic.AddInt64(&current, 1)
@@ -2076,6 +2153,11 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				insertCancel()
 
 				if err != nil {
+					if errors.Is(err, database.ErrDuplicateAccountCredential) {
+						atomic.AddInt64(&insertDuplicateCount, 1)
+						atomic.AddInt64(&current, 1)
+						return
+					}
 					log.Printf("导入账号 %d/%d 失败: %v", idx+1, len(newTokens), err)
 					atomic.AddInt64(&failCount, 1)
 					atomic.AddInt64(&current, 1)
@@ -2132,13 +2214,14 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 
 	// 发送完成事件
 	suc := int(atomic.LoadInt64(&successCount))
+	dup := duplicateCount + int(atomic.LoadInt64(&insertDuplicateCount))
 	fai := int(atomic.LoadInt64(&failCount))
 	sendImportEvent(c, importEvent{
 		Type: "complete", Current: total, Total: total,
-		Success: suc, Duplicate: duplicateCount, Failed: fai,
+		Success: suc, Duplicate: dup, Failed: fai,
 	})
 
-	log.Printf("导入完成: success=%d, duplicate=%d, failed=%d, total=%d", suc, duplicateCount, fai, total)
+	log.Printf("导入完成: success=%d, duplicate=%d, failed=%d, total=%d", suc, dup, fai, total)
 }
 
 // importAccountsATTXT 通过 TXT 文件导入 AT-only 账号（每行一个 Access Token）

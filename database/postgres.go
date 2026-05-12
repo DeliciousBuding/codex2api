@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -104,6 +105,7 @@ type DB struct {
 	usageLogBatchSize     int64
 	usageLogFlushInterval int64 // ns
 	logFlushNotify        chan struct{}
+	accountInsertMu       sync.Mutex
 }
 
 const (
@@ -119,6 +121,8 @@ const (
 	minUsageLogFlushIntervalSeconds     = 1
 	maxUsageLogFlushIntervalSeconds     = 300
 )
+
+var ErrDuplicateAccountCredential = errors.New("duplicate account credential")
 
 func NormalizeUsageLogMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
@@ -2868,18 +2872,9 @@ func (db *DB) ClearCooldown(ctx context.Context, id int64) error {
 // InsertAccount 插入新账号
 func (db *DB) InsertAccount(ctx context.Context, name string, refreshToken string, proxyURL string) (int64, error) {
 	credentials := map[string]interface{}{
-		"refresh_token": refreshToken,
+		"refresh_token": strings.TrimSpace(refreshToken),
 	}
-	credJSON, err := json.Marshal(credentials)
-	if err != nil {
-		return 0, err
-	}
-
-	return db.insertRowID(ctx,
-		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3) RETURNING id`,
-		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3)`,
-		name, credJSON, proxyURL,
-	)
+	return db.insertAccountWithDuplicateCheck(ctx, name, credentials, proxyURL)
 }
 
 // CountAll 获取账号总数
@@ -2914,18 +2909,9 @@ func (db *DB) GetAllRefreshTokens(ctx context.Context) (map[string]bool, error) 
 // InsertATAccount 插入 AT-only 账号（无 refresh_token）
 func (db *DB) InsertATAccount(ctx context.Context, name string, accessToken string, proxyURL string) (int64, error) {
 	credentials := map[string]interface{}{
-		"access_token": accessToken,
+		"access_token": strings.TrimSpace(accessToken),
 	}
-	credJSON, err := json.Marshal(credentials)
-	if err != nil {
-		return 0, err
-	}
-
-	return db.insertRowID(ctx,
-		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3) RETURNING id`,
-		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3)`,
-		name, credJSON, proxyURL,
-	)
+	return db.insertAccountWithDuplicateCheck(ctx, name, credentials, proxyURL)
 }
 
 // InsertAccountWithCredentials 插入带完整 credentials 的账号。
@@ -2933,16 +2919,103 @@ func (db *DB) InsertAccountWithCredentials(ctx context.Context, name string, cre
 	if credentials == nil {
 		credentials = map[string]interface{}{}
 	}
+	return db.insertAccountWithDuplicateCheck(ctx, name, credentials, proxyURL)
+}
+
+func (db *DB) insertAccountWithDuplicateCheck(ctx context.Context, name string, credentials map[string]interface{}, proxyURL string) (int64, error) {
+	credentials = normalizeAccountCredentialKeys(credentials)
+	db.accountInsertMu.Lock()
+	defer db.accountInsertMu.Unlock()
+
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	if duplicate, err := txHasDuplicateAccountCredential(ctx, tx, credentials); err != nil {
+		return 0, err
+	} else if duplicate {
+		return 0, ErrDuplicateAccountCredential
+	}
+
 	credJSON, err := json.Marshal(credentials)
 	if err != nil {
 		return 0, err
 	}
 
-	return db.insertRowID(ctx,
-		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3) RETURNING id`,
-		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3)`,
-		name, credJSON, proxyURL,
-	)
+	if db.isSQLite() {
+		res, err := tx.ExecContext(ctx, `INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3)`, name, credJSON, proxyURL)
+		if err != nil {
+			return 0, err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return 0, err
+		}
+		return id, tx.Commit()
+	}
+
+	var id int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3) RETURNING id`, name, credJSON, proxyURL).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+func normalizeAccountCredentialKeys(credentials map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(credentials))
+	for key, value := range credentials {
+		switch key {
+		case "refresh_token", "access_token", "session_token":
+			if value == nil {
+				continue
+			}
+			text := strings.TrimSpace(fmt.Sprint(value))
+			if text != "" {
+				out[key] = text
+			}
+		default:
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func txHasDuplicateAccountCredential(ctx context.Context, tx *sql.Tx, credentials map[string]interface{}) (bool, error) {
+	wanted := make(map[string]string)
+	for _, key := range []string{"refresh_token", "access_token", "session_token"} {
+		if value, ok := credentials[key]; ok {
+			if value == nil {
+				continue
+			}
+			if text := strings.TrimSpace(fmt.Sprint(value)); text != "" {
+				wanted[key] = text
+			}
+		}
+	}
+	if len(wanted) == 0 {
+		return false, nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT credentials FROM accounts WHERE status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var raw interface{}
+		if err := rows.Scan(&raw); err != nil {
+			return false, err
+		}
+		for key, want := range wanted {
+			if strings.TrimSpace(credentialString(raw, key)) == want {
+				return true, nil
+			}
+		}
+	}
+	return false, rows.Err()
 }
 
 func (db *DB) InsertOpenAIResponsesAccount(ctx context.Context, name string, credentials map[string]interface{}, proxyURL string) (int64, error) {

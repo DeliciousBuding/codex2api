@@ -3,7 +3,10 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -110,6 +113,79 @@ func TestSQLiteAccountsEnabledDefaultsAndCanToggle(t *testing.T) {
 
 	if err := db.SetAccountLocked(ctx, id+1, true); err != sql.ErrNoRows {
 		t.Fatalf("SetAccountLocked missing account error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestSQLiteAccountCredentialDuplicateChecks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.InsertAccount(ctx, "rt", " rt-duplicate ", ""); err != nil {
+		t.Fatalf("InsertAccount 返回错误: %v", err)
+	}
+	if _, err := db.InsertAccount(ctx, "rt2", "rt-duplicate", ""); !errors.Is(err, ErrDuplicateAccountCredential) {
+		t.Fatalf("duplicate InsertAccount error = %v, want ErrDuplicateAccountCredential", err)
+	}
+	if _, err := db.InsertATAccount(ctx, "at", "at-duplicate", ""); err != nil {
+		t.Fatalf("InsertATAccount 返回错误: %v", err)
+	}
+	if _, err := db.InsertAccountWithCredentials(ctx, "cross-at", map[string]interface{}{"access_token": " at-duplicate "}, ""); !errors.Is(err, ErrDuplicateAccountCredential) {
+		t.Fatalf("cross duplicate AT error = %v, want ErrDuplicateAccountCredential", err)
+	}
+	if _, err := db.InsertAccountWithCredentials(ctx, "st", map[string]interface{}{"session_token": "st-duplicate"}, ""); err != nil {
+		t.Fatalf("InsertAccountWithCredentials 返回错误: %v", err)
+	}
+	if _, err := db.InsertAccountWithCredentials(ctx, "st2", map[string]interface{}{"session_token": "st-duplicate"}, ""); !errors.Is(err, ErrDuplicateAccountCredential) {
+		t.Fatalf("duplicate ST error = %v, want ErrDuplicateAccountCredential", err)
+	}
+
+	rows, err := db.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive 返回错误: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("ListActive 返回 %d 条，want 3", len(rows))
+	}
+}
+
+func TestSQLiteConcurrentDuplicateRefreshTokenInsert(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	var successes int64
+	var duplicates int64
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := db.InsertAccount(context.Background(), "concurrent", "rt-concurrent", "")
+			if err == nil {
+				atomic.AddInt64(&successes, 1)
+				return
+			}
+			if errors.Is(err, ErrDuplicateAccountCredential) {
+				atomic.AddInt64(&duplicates, 1)
+				return
+			}
+			t.Errorf("InsertAccount unexpected error: %v", err)
+		}()
+	}
+	wg.Wait()
+
+	if successes != 1 || duplicates != 19 {
+		t.Fatalf("successes=%d duplicates=%d, want 1/19", successes, duplicates)
 	}
 }
 

@@ -245,6 +245,32 @@ func TestParseImportJSONTokensReturnsNoTokensForValidUnsupportedJSON(t *testing.
 	}
 }
 
+func TestDedupeImportTokensByCredentialTreatsAnyCredentialOverlapAsDuplicate(t *testing.T) {
+	tokens := []importToken{
+		{name: "session only", sessionToken: "st-shared"},
+		{name: "rt with same session", refreshToken: "rt-new", sessionToken: "st-shared"},
+		{name: "at only", accessToken: "at-shared"},
+		{name: "rt with same at", refreshToken: "rt-other", accessToken: "at-shared"},
+		{name: "unique", refreshToken: " rt-unique ", sessionToken: " st-unique ", accessToken: " at-unique "},
+	}
+
+	unique, duplicates := dedupeImportTokensByCredential(tokens)
+
+	if duplicates != 2 {
+		t.Fatalf("duplicates = %d, want 2", duplicates)
+	}
+	if len(unique) != 3 {
+		t.Fatalf("unique len = %d, want 3: %+v", len(unique), unique)
+	}
+	if unique[1].name != "at only" {
+		t.Fatalf("second unique token = %+v, want AT-only entry preserved", unique[1])
+	}
+	last := unique[2]
+	if last.refreshToken != "rt-unique" || last.sessionToken != "st-unique" || last.accessToken != "at-unique" {
+		t.Fatalf("trimmed unique token = %+v", last)
+	}
+}
+
 func TestParseImportJSONTokensRejectsInvalidJSON(t *testing.T) {
 	if _, err := parseImportJSONTokens([]byte(`{"accounts":[}`)); err == nil {
 		t.Fatal("expected invalid JSON error, got nil")
