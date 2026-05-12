@@ -996,6 +996,7 @@
     "poolDisabled": "Proxy Pool Disabled",
     "deleteSelected": "Delete ({{count}})",
     "testingAll": "Testing...",
+    "testingAllProgress": "Testing {{done}}/{{total}}, failed {{failed}}",
     "testAll": "Test All",
     "addProxy": "Add Proxy",
     "addProxyTitle": "Add Proxy",

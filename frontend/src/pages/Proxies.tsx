@@ -9,6 +9,7 @@ import { getErrorMessage } from '../utils/error'
 
 const PAGE_SIZE = 10
 const SLOW_PROXY_MS = 1500
+const TEST_ALL_CONCURRENCY = 4
 type ProxyFilter = 'all' | 'enabled' | 'disabled' | 'untested' | 'slow'
 
 function latencyColor(ms: number): string {
@@ -59,6 +60,8 @@ export default function Proxies() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [testingIds, setTestingIds] = useState<Set<number>>(new Set())
   const [testAllLoading, setTestAllLoading] = useState(false)
+  const [testAllDone, setTestAllDone] = useState(0)
+  const [testAllFailed, setTestAllFailed] = useState(0)
   const [page, setPage] = useState(1)
   const [revealedIds, setRevealedIds] = useState<Set<number>>(new Set())
   const [filter, setFilter] = useState<ProxyFilter>('all')
@@ -198,9 +201,13 @@ export default function Proxies() {
 
   const handleTestAll = async () => {
     setTestAllLoading(true)
+    setTestAllDone(0)
+    setTestAllFailed(0)
     let failedCount = 0
     let firstError = ''
-    for (const p of proxies) {
+    let nextIndex = 0
+    const queue = [...proxies]
+    const testOne = async (p: ProxyRow) => {
       setTestingIds(prev => new Set(prev).add(p.id))
       try {
         const result = await api.testProxy(p.url, p.id, ipApiLang)
@@ -213,14 +220,29 @@ export default function Proxies() {
         }
       } catch (error) {
         failedCount += 1
+        setTestAllFailed(failedCount)
         if (!firstError) firstError = getErrorMessage(error)
+      } finally {
+        setTestAllDone(prev => prev + 1)
+        setTestingIds(prev => {
+          const next = new Set(prev)
+          next.delete(p.id)
+          return next
+        })
       }
-      setTestingIds(prev => {
-        const next = new Set(prev)
-        next.delete(p.id)
-        return next
-      })
     }
+
+    const worker = async () => {
+      for (;;) {
+        const current = nextIndex
+        nextIndex += 1
+        const proxy = queue[current]
+        if (!proxy) return
+        await testOne(proxy)
+      }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(TEST_ALL_CONCURRENCY, queue.length) }, worker))
     if (failedCount > 0) {
       showToast(t('proxies.testAllFailed', { count: failedCount, error: firstError }), 'error')
     }
@@ -303,7 +325,9 @@ export default function Proxies() {
               className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-semibold text-foreground transition-colors hover:bg-muted/50 disabled:opacity-50"
             >
               {testAllLoading ? <Loader2 className="size-4 animate-spin" /> : <Zap className="size-4" />}
-              {testAllLoading ? t('proxies.testingAll') : t('proxies.testAll')}
+              {testAllLoading
+                ? t('proxies.testingAllProgress', { done: testAllDone, total: proxies.length, failed: testAllFailed })
+                : t('proxies.testAll')}
             </button>
           )}
 

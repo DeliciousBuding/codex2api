@@ -996,6 +996,7 @@
     "poolDisabled": "代理池已关闭",
     "deleteSelected": "删除 ({{count}})",
     "testingAll": "测试中...",
+    "testingAllProgress": "测试中 {{done}}/{{total}}，失败 {{failed}}",
     "testAll": "一键测试",
     "addProxy": "添加代理",
     "addProxyTitle": "添加代理",
