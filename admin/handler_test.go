@@ -187,6 +187,34 @@ func TestAddProxiesRejectsInvalidProxyURL(t *testing.T) {
 	assertErrorContains(t, recorder, "代理 URL 格式错误")
 }
 
+func TestTestProxyReturnsNotFoundWhenPersistTargetMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","country":"US","regionName":"CA","city":"San Francisco","isp":"Example","query":"203.0.113.10"}`))
+	}))
+	t.Cleanup(proxyServer.Close)
+
+	db := newTestAdminDB(t)
+	handler := &Handler{db: db}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/admin/proxies/test",
+		strings.NewReader(fmt.Sprintf(`{"url":%q,"id":404}`, proxyServer.URL)),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.TestProxy(ctx)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	assertErrorMessage(t, recorder, "代理不存在")
+}
+
 func TestToggleAccountLockReturnsNotFoundForMissingAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
