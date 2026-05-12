@@ -484,7 +484,14 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 
 	result := &ChartAggregation{}
 	timelineMap := make(map[string]*bucketAgg)
-	modelMap := make(map[string]int64)
+	type modelAgg struct {
+		model        string
+		requests     int64
+		totalLatency float64
+		inputTokens  int64
+		cachedTokens int64
+	}
+	modelMap := make(map[string]*modelAgg)
 
 	for rows.Next() {
 		var createdRaw interface{}
@@ -534,7 +541,15 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 		if model.Valid && model.String != "" {
 			modelName = model.String
 		}
-		modelMap[modelName]++
+		mAgg, ok := modelMap[modelName]
+		if !ok {
+			mAgg = &modelAgg{model: modelName}
+			modelMap[modelName] = mAgg
+		}
+		mAgg.requests++
+		mAgg.totalLatency += float64(durationMs)
+		mAgg.inputTokens += effectiveInputTokens
+		mAgg.cachedTokens += cachedTokens
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -569,13 +584,9 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 		result.Timeline = []ChartTimelinePoint{}
 	}
 
-	type modelAgg struct {
-		model    string
-		requests int64
-	}
 	models := make([]modelAgg, 0, len(modelMap))
-	for model, requests := range modelMap {
-		models = append(models, modelAgg{model: model, requests: requests})
+	for _, agg := range modelMap {
+		models = append(models, *agg)
 	}
 	sort.Slice(models, func(i, j int) bool {
 		if models[i].requests == models[j].requests {
@@ -587,9 +598,17 @@ func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Tim
 		models = models[:10]
 	}
 	for _, model := range models {
+		avgLatency := 0.0
+		if model.requests > 0 {
+			avgLatency = model.totalLatency / float64(model.requests)
+		}
 		result.Models = append(result.Models, ChartModelPoint{
-			Model:    model.model,
-			Requests: model.requests,
+			Model:        model.model,
+			Requests:     model.requests,
+			AvgLatency:   avgLatency,
+			InputTokens:  model.inputTokens,
+			CachedTokens: model.cachedTokens,
+			CacheHitRate: calculateCacheRate(model.cachedTokens, model.inputTokens),
 		})
 	}
 	if result.Models == nil {

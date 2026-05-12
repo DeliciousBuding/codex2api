@@ -1802,8 +1802,12 @@ type ChartTimelinePoint struct {
 
 // ChartModelPoint 模型排行聚合点
 type ChartModelPoint struct {
-	Model    string `json:"model"`
-	Requests int64  `json:"requests"`
+	Model        string  `json:"model"`
+	Requests     int64   `json:"requests"`
+	AvgLatency   float64 `json:"avg_latency"`
+	InputTokens  int64   `json:"input_tokens"`
+	CachedTokens int64   `json:"cached_tokens"`
+	CacheHitRate float64 `json:"cache_hit_rate"`
 }
 
 // ChartAggregation 仪表盘图表聚合结果
@@ -1902,7 +1906,20 @@ func (db *DB) GetChartAggregation(ctx context.Context, start, end time.Time, buc
 
 	// 模型排行聚合：Top 10
 	modelQuery := `
-	SELECT COALESCE(model, 'unknown'), COUNT(*) AS requests
+	SELECT
+		COALESCE(model, 'unknown') AS model,
+		COUNT(*) AS requests,
+		COALESCE(AVG(duration_ms), 0) AS avg_latency,
+		COALESCE(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END), 0) AS input_tokens,
+		COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+		COALESCE(
+			LEAST(
+				100.0,
+				(SUM(cached_tokens)::double precision * 100.0) /
+				NULLIF(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END), 0)
+			),
+			0
+		) AS cache_hit_rate
 	FROM usage_logs
 	WHERE created_at >= $1 AND created_at <= $2
 	  AND status_code <> 499
@@ -1918,7 +1935,7 @@ func (db *DB) GetChartAggregation(ctx context.Context, start, end time.Time, buc
 
 	for mRows.Next() {
 		var m ChartModelPoint
-		if err := mRows.Scan(&m.Model, &m.Requests); err != nil {
+		if err := mRows.Scan(&m.Model, &m.Requests, &m.AvgLatency, &m.InputTokens, &m.CachedTokens, &m.CacheHitRate); err != nil {
 			return nil, err
 		}
 		result.Models = append(result.Models, m)

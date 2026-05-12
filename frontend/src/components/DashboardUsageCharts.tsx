@@ -48,6 +48,10 @@ interface ModelRankingPoint {
   model: string
   shortModel: string
   requests: number
+  avgLatency: number
+  inputTokens: number
+  cachedTokens: number
+  cacheHitRate: number
 }
 
 const chartMargin = { top: 8, right: 12, left: 8, bottom: 0 }
@@ -113,6 +117,10 @@ export default function DashboardUsageCharts({
         model: m.model,
         shortModel: truncateLabel(m.model, 22),
         requests: m.requests,
+        avgLatency: m.avg_latency,
+        inputTokens: m.input_tokens,
+        cachedTokens: m.cached_tokens,
+        cacheHitRate: m.cache_hit_rate,
       }))
 
     return { timelineData, modelData, sampleCount: totalRequests }
@@ -339,8 +347,7 @@ export default function DashboardUsageCharts({
                 <YAxis dataKey="shortModel" type="category" width={80} tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} />
                 <Tooltip
                   position={{ y: 10 }}
-                  formatter={(value) => formatNumber(value)}
-                  labelFormatter={(_, payload) => getTooltipLabel(payload, 'model')}
+                  content={<ModelRankingTooltip />}
                   contentStyle={tooltipContentStyle}
                   labelStyle={tooltipLabelStyle}
                   itemStyle={tooltipItemStyle}
@@ -366,6 +373,43 @@ function ChartCard({ title, description, children }: { title: string; descriptio
         <div className="h-[280px]">{children}</div>
       </CardContent>
     </Card>
+  )
+}
+
+function ModelRankingTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean
+  payload?: Array<{ payload?: ModelRankingPoint }>
+}) {
+  const { t } = useTranslation()
+  const point = payload?.[0]?.payload
+  if (!active || !point) return null
+
+  return (
+    <div
+      className="rounded-2xl border border-border bg-card px-3 py-2 text-xs text-foreground shadow-xl"
+      style={tooltipContentStyle}
+    >
+      <div className="mb-2 max-w-[260px] truncate font-semibold">{point.model}</div>
+      <div className="space-y-1.5">
+        <TooltipRow label={t('dashboard.seriesRequestCount')} value={formatNumber(point.requests)} />
+        <TooltipRow label={t('dashboard.seriesAvgLatency')} value={formatDuration(point.avgLatency)} />
+        <TooltipRow label={t('dashboard.seriesInputTokens')} value={formatNumber(point.inputTokens)} />
+        <TooltipRow label={t('dashboard.seriesCachedTokens')} value={formatNumber(point.cachedTokens)} />
+        <TooltipRow label={t('dashboard.seriesCacheHitRate')} value={formatPercent(point.cacheHitRate)} />
+      </div>
+    </div>
+  )
+}
+
+function TooltipRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex min-w-[180px] items-center justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums">{value}</span>
+    </div>
   )
 }
 

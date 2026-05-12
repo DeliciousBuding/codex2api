@@ -538,6 +538,10 @@ export interface ChartTimelinePoint {
 export interface ChartModelPoint {
   model: string
   requests: number
+  avg_latency: number
+  input_tokens: number
+  cached_tokens: number
+  cache_hit_rate: number
 }
 
 export interface ChartAggregation {

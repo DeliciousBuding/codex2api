@@ -572,6 +572,19 @@ func TestChartAggregationIncludesCacheHitRateWithPromptFallback(t *testing.T) {
 	if point.CacheHitRate != 50 {
 		t.Fatalf("CacheHitRate = %.2f, want 50.00", point.CacheHitRate)
 	}
+	if len(charts.Models) != 1 {
+		t.Fatalf("len(Models) = %d, want 1", len(charts.Models))
+	}
+	model := charts.Models[0]
+	if model.Model != "gpt-5.5" || model.Requests != 2 {
+		t.Fatalf("model summary = %#v, want gpt-5.5/2 requests", model)
+	}
+	if model.AvgLatency != 110 {
+		t.Fatalf("model AvgLatency = %.2f, want 110.00", model.AvgLatency)
+	}
+	if model.InputTokens != 600 || model.CachedTokens != 300 || model.CacheHitRate != 50 {
+		t.Fatalf("model cache stats = input %d cached %d rate %.2f, want 600/300/50.00", model.InputTokens, model.CachedTokens, model.CacheHitRate)
+	}
 }
 
 func TestSQLiteModelCooldownPersistence(t *testing.T) {
