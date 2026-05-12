@@ -163,6 +163,8 @@ export default function Dashboard() {
                   <StatItem icon={<Zap className="size-5" />} iconBg="bg-emerald-500/10 text-emerald-500" label={t('dashboard.todayTokens')} value={usageStats.today_tokens.toLocaleString()} />
                   <StatItem icon={<Database className="size-5" />} iconBg="bg-indigo-500/10 text-indigo-500" label={t('dashboard.cachedTokens')} value={usageStats.total_cached_tokens.toLocaleString()} sub={t('dashboard.cacheRateDesc')} />
                   <StatItem icon={<Gauge className="size-5" />} iconBg="bg-teal-500/10 text-teal-500" label={t('dashboard.cacheHitRate')} value={`${usageStats.total_cache_rate.toFixed(1)}%`} sub={t('dashboard.cacheHitRateDesc')} />
+                  <StatItem icon={<Database className="size-5" />} iconBg="bg-violet-500/10 text-violet-500" label={t('dashboard.todayCachedTokens')} value={usageStats.today_cached_tokens.toLocaleString()} sub={t('dashboard.cacheRateDesc')} />
+                  <StatItem icon={<Gauge className="size-5" />} iconBg="bg-sky-500/10 text-sky-500" label={t('dashboard.todayCacheHitRate')} value={`${usageStats.today_cache_rate.toFixed(1)}%`} sub={t('dashboard.cacheHitRateDesc')} />
                   <StatItem icon={<Activity className="size-5" />} iconBg="bg-amber-500/10 text-amber-500" label={t('dashboard.rpmTpm')} value={`${usageStats.rpm} / ${usageStats.tpm.toLocaleString()}`} />
                   <StatItem
                     icon={<Clock className="size-5" />}

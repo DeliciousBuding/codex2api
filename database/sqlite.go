@@ -683,6 +683,7 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context) (*UsageStats, error) {
 
 	rows, err := db.conn.QueryContext(ctx, `
 			SELECT created_at, total_tokens, prompt_tokens, completion_tokens,
+			       CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END,
 			       cached_tokens, duration_ms, status_code, account_billed, user_billed
 			FROM usage_logs
 			WHERE created_at >= $1 AND status_code <> 499
@@ -698,12 +699,12 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context) (*UsageStats, error) {
 
 	for rows.Next() {
 		var createdRaw interface{}
-		var totalTokens, promptTokens, completionTokens, cachedTokens int64
+		var totalTokens, promptTokens, completionTokens, inputTokens, cachedTokens int64
 		var durationMs int
 		var statusCode int
 		var accountBilled, userBilled float64
 		if err := rows.Scan(&createdRaw, &totalTokens, &promptTokens, &completionTokens,
-			&cachedTokens, &durationMs, &statusCode, &accountBilled, &userBilled); err != nil {
+			&inputTokens, &cachedTokens, &durationMs, &statusCode, &accountBilled, &userBilled); err != nil {
 			return nil, err
 		}
 		createdAt, err := parseDBTimeValue(createdRaw)
@@ -715,7 +716,8 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context) (*UsageStats, error) {
 		stats.TodayTokens += totalTokens
 		stats.TotalPrompt += promptTokens
 		stats.TotalCompletion += completionTokens
-		stats.TotalCachedTokens += cachedTokens
+		stats.TodayInputTokens += inputTokens
+		stats.TodayCachedTokens += cachedTokens
 		stats.TodayAccountBilled += accountBilled
 		stats.TodayUserBilled += userBilled
 		totalDuration += float64(durationMs)
@@ -735,6 +737,7 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context) (*UsageStats, error) {
 
 	if stats.TodayRequests > 0 {
 		stats.AvgDurationMs = totalDuration / float64(stats.TodayRequests)
+		stats.TodayCacheRate = calculateCacheRate(stats.TodayCachedTokens, stats.TodayInputTokens)
 		stats.ErrorRate = float64(todayErrors) / float64(stats.TodayRequests) * 100
 	}
 

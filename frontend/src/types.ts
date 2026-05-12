@@ -443,6 +443,9 @@ export interface UsageStats {
   total_user_billed: number
   today_requests: number
   today_tokens: number
+  today_input_tokens: number
+  today_cached_tokens: number
+  today_cache_rate: number
   today_account_billed: number
   today_user_billed: number
   rpm: number

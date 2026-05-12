@@ -929,6 +929,12 @@ func TestUsageStatsTotalsIncludeOlderVisibleLogs(t *testing.T) {
 	if stats.TodayTokens != 300 {
 		t.Fatalf("TodayTokens = %d, want 300", stats.TodayTokens)
 	}
+	if stats.TodayInputTokens != 200 || stats.TodayCachedTokens != 50 {
+		t.Fatalf("today input/cached = %d/%d, want 200/50", stats.TodayInputTokens, stats.TodayCachedTokens)
+	}
+	if stats.TodayCacheRate != 25 {
+		t.Fatalf("TodayCacheRate = %.2f, want 25.00", stats.TodayCacheRate)
+	}
 }
 
 func TestAccountUsageStatsReportsCacheHitRate(t *testing.T) {

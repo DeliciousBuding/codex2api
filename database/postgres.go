@@ -1569,6 +1569,9 @@ type UsageStats struct {
 	TotalUserBilled    float64 `json:"total_user_billed"`
 	TodayRequests      int64   `json:"today_requests"`
 	TodayTokens        int64   `json:"today_tokens"`
+	TodayInputTokens   int64   `json:"today_input_tokens"`
+	TodayCachedTokens  int64   `json:"today_cached_tokens"`
+	TodayCacheRate     float64 `json:"today_cache_rate"`
 	TodayAccountBilled float64 `json:"today_account_billed"`
 	TodayUserBilled    float64 `json:"today_user_billed"`
 	RPM                float64 `json:"rpm"`
@@ -1602,6 +1605,7 @@ func (db *DB) GetUsageStats(ctx context.Context) (*UsageStats, error) {
 		COALESCE(SUM(total_tokens), 0) AS today_tokens,
 			COALESCE(SUM(prompt_tokens), 0) AS today_prompt,
 			COALESCE(SUM(completion_tokens), 0) AS today_completion,
+			COALESCE(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END), 0) AS today_input,
 			COALESCE(SUM(cached_tokens), 0) AS today_cached,
 			COALESCE(SUM(account_billed), 0) AS today_account_billed,
 			COALESCE(SUM(user_billed), 0) AS today_user_billed,
@@ -1616,7 +1620,8 @@ func (db *DB) GetUsageStats(ctx context.Context) (*UsageStats, error) {
 
 	var todayErrors int64
 	err := db.conn.QueryRowContext(ctx, todayQuery, todayStart, minuteAgo).Scan(
-		&stats.TodayRequests, &stats.TodayTokens, &stats.TotalPrompt, &stats.TotalCompletion, &stats.TotalCachedTokens,
+		&stats.TodayRequests, &stats.TodayTokens, &stats.TotalPrompt, &stats.TotalCompletion,
+		&stats.TodayInputTokens, &stats.TodayCachedTokens,
 		&stats.TodayAccountBilled, &stats.TodayUserBilled,
 		&stats.RPM, &stats.TPM,
 		&stats.AvgDurationMs,
@@ -1662,6 +1667,7 @@ func (db *DB) GetUsageStats(ctx context.Context) (*UsageStats, error) {
 	stats.TotalUserBilled = currentUserBilled + bUserBilled
 
 	if stats.TodayRequests > 0 {
+		stats.TodayCacheRate = calculateCacheRate(stats.TodayCachedTokens, stats.TodayInputTokens)
 		stats.ErrorRate = float64(todayErrors) / float64(stats.TodayRequests) * 100
 	}
 
