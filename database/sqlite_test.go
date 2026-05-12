@@ -25,6 +25,35 @@ func TestNewSQLiteInitializesFreshDatabase(t *testing.T) {
 	}
 }
 
+func TestSQLiteProxyMutationsReturnNoRowsForMissingProxy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.DeleteProxy(ctx, 404); err != sql.ErrNoRows {
+		t.Fatalf("DeleteProxy missing proxy error = %v, want sql.ErrNoRows", err)
+	}
+
+	label := "backup"
+	if err := db.UpdateProxy(ctx, 404, &label, nil); err != sql.ErrNoRows {
+		t.Fatalf("UpdateProxy label missing proxy error = %v, want sql.ErrNoRows", err)
+	}
+
+	enabled := false
+	if err := db.UpdateProxy(ctx, 404, nil, &enabled); err != sql.ErrNoRows {
+		t.Fatalf("UpdateProxy enabled missing proxy error = %v, want sql.ErrNoRows", err)
+	}
+
+	if err := db.UpdateProxyTestResult(ctx, 404, "198.51.100.1", "test", 123); err != sql.ErrNoRows {
+		t.Fatalf("UpdateProxyTestResult missing proxy error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestSQLiteAPIKeyLookupAndCount(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 

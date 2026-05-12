@@ -4208,6 +4208,10 @@ func (h *Handler) DeleteProxy(c *gin.Context) {
 	defer cancel()
 
 	if err := h.db.DeleteProxy(ctx, id); err != nil {
+		if err == sql.ErrNoRows {
+			writeError(c, http.StatusNotFound, "代理不存在")
+			return
+		}
 		writeError(c, http.StatusInternalServerError, "删除代理失败")
 		return
 	}
@@ -4237,6 +4241,10 @@ func (h *Handler) UpdateProxy(c *gin.Context) {
 	defer cancel()
 
 	if err := h.db.UpdateProxy(ctx, id, req.Label, req.Enabled); err != nil {
+		if err == sql.ErrNoRows {
+			writeError(c, http.StatusNotFound, "代理不存在")
+			return
+		}
 		writeError(c, http.StatusInternalServerError, "更新代理失败")
 		return
 	}

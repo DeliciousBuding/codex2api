@@ -1121,8 +1121,18 @@ func (db *DB) InsertProxies(ctx context.Context, urls []string, label string) (i
 
 // DeleteProxy 删除单个代理
 func (db *DB) DeleteProxy(ctx context.Context, id int64) error {
-	_, err := db.conn.ExecContext(ctx, `DELETE FROM proxies WHERE id = $1`, id)
-	return err
+	res, err := db.conn.ExecContext(ctx, `DELETE FROM proxies WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // DeleteProxies 批量删除代理
@@ -1148,25 +1158,56 @@ func (db *DB) DeleteProxies(ctx context.Context, ids []int64) (int, error) {
 
 // UpdateProxy 更新代理
 func (db *DB) UpdateProxy(ctx context.Context, id int64, label *string, enabled *bool) error {
-	if label != nil {
-		if _, err := db.conn.ExecContext(ctx, `UPDATE proxies SET label = $1 WHERE id = $2`, *label, id); err != nil {
+	if label == nil && enabled == nil {
+		var exists int
+		if err := db.conn.QueryRowContext(ctx, `SELECT 1 FROM proxies WHERE id = $1`, id).Scan(&exists); err != nil {
+			if err == sql.ErrNoRows {
+				return sql.ErrNoRows
+			}
 			return err
 		}
+		return nil
 	}
-	if enabled != nil {
-		if _, err := db.conn.ExecContext(ctx, `UPDATE proxies SET enabled = $1 WHERE id = $2`, *enabled, id); err != nil {
-			return err
+	var res sql.Result
+	var err error
+	if label != nil {
+		if enabled != nil {
+			res, err = db.conn.ExecContext(ctx, `UPDATE proxies SET label = $1, enabled = $2 WHERE id = $3`, *label, *enabled, id)
+		} else {
+			res, err = db.conn.ExecContext(ctx, `UPDATE proxies SET label = $1 WHERE id = $2`, *label, id)
 		}
+	} else {
+		res, err = db.conn.ExecContext(ctx, `UPDATE proxies SET enabled = $1 WHERE id = $2`, *enabled, id)
+	}
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }
 
 // UpdateProxyTestResult 更新代理测试结果
 func (db *DB) UpdateProxyTestResult(ctx context.Context, id int64, ip, location string, latencyMs int) error {
-	_, err := db.conn.ExecContext(ctx,
+	res, err := db.conn.ExecContext(ctx,
 		`UPDATE proxies SET test_ip = $1, test_location = $2, test_latency_ms = $3 WHERE id = $4`,
 		ip, location, latencyMs, id)
-	return err
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // ==================== Usage Logs（批量写入） ====================
