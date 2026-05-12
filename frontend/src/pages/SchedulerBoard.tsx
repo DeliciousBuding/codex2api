@@ -156,9 +156,10 @@ export default function SchedulerBoard() {
         <PageHeader
           title={t('scheduler.title')}
           description={t('scheduler.description')}
+          actionMeta={t('scheduler.lastUpdated', { time: updatedLabel })}
           actions={
-            <div className="flex items-center gap-3 max-sm:w-full max-sm:flex-col max-sm:items-stretch">
-              <span className="text-sm text-muted-foreground max-sm:text-center">{t('scheduler.lastUpdated', { time: updatedLabel })}</span>
+            <div className="flex flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start">
+              <OpsTabs compact />
               <Button variant="outline" onClick={() => void reload()}>
                 <RefreshCw className="size-3.5" />
                 {t('common.refresh')}
@@ -166,7 +167,6 @@ export default function SchedulerBoard() {
             </div>
           }
         />
-        <OpsTabs />
 
         {overview ? (
           <>
@@ -177,8 +177,8 @@ export default function SchedulerBoard() {
               <SummaryPill label={t('scheduler.highRiskAccounts')} value={formatNumber(schedulerCounts.risky + schedulerCounts.banned)} />
             </div>
 
-            <Card className="mb-6">
-              <CardContent className="p-6">
+            <Card className="mb-6 py-0">
+              <CardContent className="p-4">
                 <div className="flex items-center justify-between gap-4 max-sm:flex-col max-sm:items-start">
                   <div>
                     <h3 className="text-base font-semibold text-foreground">{t('scheduler.globalView')}</h3>

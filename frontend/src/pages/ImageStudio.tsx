@@ -1110,8 +1110,8 @@ export default function ImageStudio() {
   )
 
   const currentJobPanel = (
-    <Card>
-      <CardContent className="space-y-3">
+    <Card className="py-0">
+      <CardContent className="space-y-3 p-4">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">{t('images.currentJob')}</h2>
           {currentJob && <Badge className={jobStatusClass(currentJob.status)}>{t(`images.status.${currentJob.status}`, { defaultValue: currentJob.status })}</Badge>}
@@ -1119,7 +1119,7 @@ export default function ImageStudio() {
         {currentJob ? (
           <>
             <div className="space-y-1 text-xs text-muted-foreground">
-              <div className="flex justify-between gap-3"><span>ID</span><span className="font-geist-mono">{currentJob.id}</span></div>
+              <div className="flex justify-between gap-3"><span>ID</span><span className="font-medium tabular-nums">{currentJob.id}</span></div>
               <div className="flex justify-between gap-3"><span>{t('images.duration')}</span><span>{formatDuration(currentJob.duration_ms)}</span></div>
               <div className="flex justify-between gap-3"><span>{t('images.createdAt')}</span><span>{formatBeijingTime(currentJob.created_at)}</span></div>
               <div className="flex justify-between gap-3"><span>{t('images.apiKey')}</span><span className="truncate">{currentJob.api_key_name || currentJob.api_key_masked || '-'}</span></div>
@@ -1154,8 +1154,8 @@ export default function ImageStudio() {
   )
 
   const recentJobsPanel = (
-    <Card>
-      <CardContent className="space-y-3">
+    <Card className="py-0">
+      <CardContent className="space-y-3 p-4">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">{t('images.recentJobs')}</h2>
           <div className="flex items-center gap-1">
@@ -1200,8 +1200,8 @@ export default function ImageStudio() {
 
   const historyView = (
     <section className="space-y-4">
-      <Card>
-        <CardContent className="space-y-4">
+      <Card className="py-0">
+        <CardContent className="space-y-4 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold">{t('images.historyJobs')}</h2>
@@ -1296,10 +1296,13 @@ export default function ImageStudio() {
   return (
     <>
       <div className="relative">
-        <PageHeader title={t('images.title')} description={t('images.description')} />
-        {activeView === 'studio' && <ImageNoticeCarousel />}
+        <PageHeader
+          title={t('images.title')}
+          description={t('images.description')}
+          actionMeta={activeView === 'studio' ? <ImageNoticeCarousel /> : undefined}
+          actions={<ImageStudioTabs activeView={activeView} compact />}
+        />
       </div>
-      <ImageStudioTabs activeView={activeView} />
       <ToastNotice toast={toast} />
       {confirmDialog}
 
@@ -1380,9 +1383,9 @@ function ImageNoticeCarousel() {
   }, [notice])
 
   return (
-    <div className="-mt-3 mb-4 flex justify-center md:absolute md:inset-x-0 md:top-0 md:mt-0 md:mb-0">
+    <div className="flex justify-end">
       <div
-        className="flex h-10 w-full max-w-[620px] items-center gap-3 rounded-xl border border-primary/20 bg-primary/6 px-4 text-primary shadow-sm backdrop-blur-sm transition-colors hover:bg-primary/8 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/45"
+        className="flex h-8 w-full max-w-[560px] items-center gap-2 rounded-lg border border-primary/20 bg-primary/6 px-3 text-primary shadow-sm backdrop-blur-sm transition-colors hover:bg-primary/8 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/45"
         tabIndex={0}
         role="status"
         aria-live="polite"
@@ -1391,12 +1394,12 @@ function ImageNoticeCarousel() {
         onFocus={() => setPaused(true)}
         onBlur={() => setPaused(false)}
       >
-        <Sparkles className="size-4 shrink-0" />
+        <Sparkles className="size-3.5 shrink-0" />
         <div ref={textFrameRef} className="relative min-w-0 flex-1 overflow-hidden">
           <div
             key={currentIndex}
             ref={textRef}
-            className={`inline-block whitespace-nowrap text-sm font-semibold ${overflowDistance > 0 && !paused ? 'animate-image-notice-marquee' : ''}`}
+            className={`inline-block whitespace-nowrap text-xs font-semibold ${overflowDistance > 0 && !paused ? 'animate-image-notice-marquee' : ''}`}
             style={overflowDistance > 0 ? { '--image-notice-marquee-distance': `-${overflowDistance}px` } as React.CSSProperties : undefined}
           >
             {notice}
@@ -1409,7 +1412,7 @@ function ImageNoticeCarousel() {
               type="button"
               aria-current={dotIndex === currentIndex ? 'true' : undefined}
               aria-label={t('images.noticeDotLabel', { index: dotIndex + 1, total: IMAGE_NOTICE_KEYS.length })}
-              className={`size-2 rounded-full border-0 p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 ${dotIndex === currentIndex ? 'bg-primary' : 'bg-primary/25 hover:bg-primary/45'}`}
+                className={`size-1.5 rounded-full border-0 p-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 ${dotIndex === currentIndex ? 'bg-primary' : 'bg-primary/25 hover:bg-primary/45'}`}
               onClick={() => setIndex(dotIndex)}
             />
           ))}
@@ -1419,7 +1422,7 @@ function ImageNoticeCarousel() {
   )
 }
 
-function ImageStudioTabs({ activeView }: { activeView: ImageView }) {
+function ImageStudioTabs({ activeView, compact = false }: { activeView: ImageView; compact?: boolean }) {
   const { t } = useTranslation()
   const tabs = [
     { view: 'studio' as const, label: t('images.views.studio'), to: '/images/studio' },
@@ -1428,6 +1431,28 @@ function ImageStudioTabs({ activeView }: { activeView: ImageView }) {
     { view: 'history' as const, label: t('images.views.history'), to: '/images/history' },
   ]
   const activeIndex = Math.max(0, tabs.findIndex(tab => tab.view === activeView))
+
+  if (compact) {
+    return (
+      <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-muted/30 p-1" role="tablist" aria-label={t('images.title')}>
+        {tabs.map(tab => (
+          <NavLink
+            key={tab.view}
+            to={tab.to}
+            role="tab"
+            aria-selected={activeView === tab.view}
+            className={`inline-flex h-8 items-center justify-center rounded-md border px-2.5 text-[13px] font-semibold transition-colors ${
+              activeView === tab.view
+                ? 'border-primary/25 bg-primary/10 text-primary'
+                : 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+            }`}
+          >
+            {tab.label}
+          </NavLink>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="mb-5 flex justify-center">
@@ -1691,7 +1716,7 @@ function HistoryJobCard({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <button type="button" className="min-w-0 flex-1 text-left" onClick={onSelect}>
               <div className="flex items-center gap-2">
-                <span className="font-geist-mono text-base font-semibold">#{job.id}</span>
+                <span className="text-base font-semibold tabular-nums">#{job.id}</span>
                 <Badge className={jobStatusClass(job.status)}>{t(`images.status.${job.status}`, { defaultValue: job.status })}</Badge>
               </div>
               <div className="mt-2 line-clamp-2 text-sm leading-6 text-foreground">{job.prompt}</div>
@@ -1944,7 +1969,7 @@ function PreviewMeta({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 rounded-md bg-muted/55 px-2.5 py-1.5">
       <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/75">{label}</div>
-      <div className="mt-1 truncate font-geist-mono text-[12px] text-foreground">{value}</div>
+      <div className="mt-1 truncate text-[12px] font-medium tabular-nums text-foreground">{value}</div>
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { type PropsWithChildren, type ReactNode, useEffect, useRef, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Users, Activity, Settings, Server, Sun, Moon, Languages, Globe, BookOpen, FileCode2, KeyRound, Image as ImageIcon, ShieldAlert, ExternalLink } from 'lucide-react'
+import { LayoutDashboard, Users, Activity, Settings, Server, Sun, Moon, Languages, Globe, BookOpen, KeyRound, Image as ImageIcon, ShieldAlert, ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { api } from '../api'
 import { DEFAULT_SITE_LOGO, useBranding } from '../branding'
@@ -29,7 +29,6 @@ const navDefs: NavDef[] = [
   { to: '/usage', labelKey: 'nav.usage', icon: <Activity className="size-[18px]" /> },
   { to: '/settings', labelKey: 'nav.settings', icon: <Settings className="size-[18px]" /> },
   { to: '/docs', labelKey: 'nav2.docs', icon: <BookOpen className="size-[18px]" /> },
-  { to: '/api-reference', labelKey: 'nav2.apiRef', icon: <FileCode2 className="size-[18px]" /> },
 ]
 
 export default function Layout({ children }: PropsWithChildren) {

@@ -223,6 +223,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.DELETE("/usage/logs", h.ClearUsageLogs)
 	api.GET("/keys", h.ListAPIKeys)
 	api.POST("/keys", h.CreateAPIKey)
+	api.PATCH("/keys/:id", h.UpdateAPIKey)
 	api.DELETE("/keys/:id", h.DeleteAPIKey)
 	api.GET("/health", h.GetHealth)
 	api.GET("/system/update", h.GetSelfUpdateStatus)
@@ -627,6 +628,7 @@ type updateAccountSchedulerReq struct {
 	ScoreBiasOverride       json.RawMessage `json:"score_bias_override"`
 	BaseConcurrencyOverride json.RawMessage `json:"base_concurrency_override"`
 	AllowedAPIKeyIDs        json.RawMessage `json:"allowed_api_key_ids"`
+	ProxyURL                *string         `json:"proxy_url"`
 }
 
 // UpdateAccountScheduler 更新账号调度配置。
@@ -692,6 +694,23 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		h.store.ApplyAccountSchedulerOverrides(id, nullableInt64Pointer(scoreBiasOverride), nullableInt64Pointer(baseConcurrencyOverride))
 		if allowedAPIKeyIDs.Set {
 			h.store.ApplyAccountAllowedAPIKeys(id, allowedAPIKeyIDs.Values)
+		}
+	}
+
+	if req.ProxyURL != nil {
+		proxyURL := strings.TrimSpace(*req.ProxyURL)
+		if proxyURL != "" {
+			if err := security.ValidateProxyURL(proxyURL); err != nil {
+				writeError(c, http.StatusBadRequest, "proxy_url 无效: "+err.Error())
+				return
+			}
+		}
+		if err := h.db.UpdateAccountProxyURL(ctx, id, proxyURL); err != nil {
+			writeError(c, http.StatusInternalServerError, "更新账号代理失败: "+err.Error())
+			return
+		}
+		if h.store != nil {
+			h.store.ApplyAccountProxyURL(id, proxyURL)
 		}
 	}
 
@@ -2848,6 +2867,51 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 	})
 }
 
+// UpdateAPIKey 重命名 API 密钥
+func (h *Handler) UpdateAPIKey(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "无效 ID")
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+
+	req.Name = security.SanitizeInput(req.Name)
+	if req.Name == "" {
+		writeError(c, http.StatusBadRequest, "名称不能为空")
+		return
+	}
+	if utf8.RuneCountInString(req.Name) > 100 {
+		writeError(c, http.StatusBadRequest, "名称长度不能超过100字符")
+		return
+	}
+	if security.ContainsXSS(req.Name) {
+		writeError(c, http.StatusBadRequest, "名称包含非法字符")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := h.db.UpdateAPIKeyName(ctx, id, req.Name); err != nil {
+		if err == sql.ErrNoRows {
+			writeError(c, http.StatusNotFound, "API Key 不存在")
+			return
+		}
+		writeError(c, http.StatusInternalServerError, "更新失败: "+err.Error())
+		return
+	}
+
+	writeMessage(c, http.StatusOK, "API Key 已更新")
+}
+
 // DeleteAPIKey 删除 API 密钥
 func (h *Handler) DeleteAPIKey(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -4179,7 +4243,7 @@ func (h *Handler) DeleteProxy(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "代理已删除"})
 }
 
-// UpdateProxy 更新代理（启用/禁用/改标签）
+// UpdateProxy 更新代理（URL/标签/启用状态）
 func (h *Handler) UpdateProxy(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -4188,6 +4252,7 @@ func (h *Handler) UpdateProxy(c *gin.Context) {
 	}
 
 	var req struct {
+		URL     *string `json:"url"`
 		Label   *string `json:"label"`
 		Enabled *bool   `json:"enabled"`
 	}
@@ -4196,12 +4261,29 @@ func (h *Handler) UpdateProxy(c *gin.Context) {
 		return
 	}
 
+	if req.URL != nil {
+		trimmed := strings.TrimSpace(*req.URL)
+		if trimmed == "" {
+			writeError(c, http.StatusBadRequest, "代理 URL 不能为空")
+			return
+		}
+		if err := security.ValidateProxyURL(trimmed); err != nil {
+			writeError(c, http.StatusBadRequest, "代理 URL 无效: "+err.Error())
+			return
+		}
+		req.URL = &trimmed
+	}
+
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	if err := h.db.UpdateProxy(ctx, id, req.Label, req.Enabled); err != nil {
+	if err := h.db.UpdateProxy(ctx, id, req.URL, req.Label, req.Enabled); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(c, http.StatusNotFound, "代理不存在")
+			return
+		}
+		if strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "unique") {
+			writeError(c, http.StatusConflict, "该代理 URL 已存在")
 			return
 		}
 		writeError(c, http.StatusInternalServerError, "更新代理失败")

@@ -261,27 +261,28 @@ export default function PromptFilter() {
           title={t('promptFilter.title')}
           description={t('promptFilter.description')}
           actions={
-            activeView === 'overview' ? (
-              <>
+            <div className="flex flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start">
+              <PromptFilterTabs activeView={activeView} compact />
+              {activeView === 'overview' ? (
+                <>
+                  <Button variant="outline" onClick={() => void reload()}>
+                    <RefreshCw className="size-3.5" />
+                    {t('common.refresh')}
+                  </Button>
+                  <Button onClick={() => void saveSettings()} disabled={saving}>
+                    <Save className="size-4" />
+                    {saving ? t('common.saving') : t('common.save')}
+                  </Button>
+                </>
+              ) : (
                 <Button variant="outline" onClick={() => void reload()}>
                   <RefreshCw className="size-3.5" />
                   {t('common.refresh')}
                 </Button>
-                <Button onClick={() => void saveSettings()} disabled={saving}>
-                  <Save className="size-4" />
-                  {saving ? t('common.saving') : t('common.save')}
-                </Button>
-              </>
-            ) : (
-              <Button variant="outline" onClick={() => void reload()}>
-                <RefreshCw className="size-3.5" />
-                {t('common.refresh')}
-              </Button>
-            )
+              )}
+            </div>
           }
         />
-
-        <PromptFilterTabs activeView={activeView} />
 
         {activeView === 'overview' ? (
           <OverviewView
@@ -330,7 +331,7 @@ export default function PromptFilter() {
   )
 }
 
-function PromptFilterTabs({ activeView }: { activeView: PromptFilterView }) {
+function PromptFilterTabs({ activeView, compact = false }: { activeView: PromptFilterView; compact?: boolean }) {
   const { t } = useTranslation()
   const tabs = [
     { view: 'overview' as const, label: t('promptFilter.views.overview'), to: '/prompt-filter/overview' },
@@ -338,6 +339,28 @@ function PromptFilterTabs({ activeView }: { activeView: PromptFilterView }) {
     { view: 'rules' as const, label: t('promptFilter.views.rules'), to: '/prompt-filter/rules' },
   ]
   const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.view === activeView))
+  if (compact) {
+    return (
+      <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-muted/30 p-1" role="tablist">
+        {tabs.map((tab) => (
+          <NavLink
+            key={tab.view}
+            to={tab.to}
+            role="tab"
+            aria-selected={activeView === tab.view}
+            className={`inline-flex h-8 items-center justify-center rounded-md border px-2.5 text-[13px] font-semibold transition-colors ${
+              activeView === tab.view
+                ? 'border-primary/25 bg-primary/10 text-primary'
+                : 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+            }`}
+          >
+            {tab.label}
+          </NavLink>
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div className="mb-5 flex justify-center">
       <div className="relative grid w-full max-w-[560px] grid-cols-3 rounded-2xl border border-border bg-background/80 p-1 shadow-sm backdrop-blur-lg" role="tablist">
@@ -432,8 +455,8 @@ function OverviewView({
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(420px,1.1fr)]">
-        <Card>
-          <CardContent className="space-y-5">
+        <Card className="py-0">
+          <CardContent className="space-y-5 p-4">
             <SectionTitle title={t('promptFilter.rulesTitle')} />
             <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-4">
               <Field label={t('promptFilter.enabled')}>
@@ -473,8 +496,8 @@ function OverviewView({
           </CardContent>
         </Card>
 
-        <Card>
-          <CardContent className="space-y-5">
+        <Card className="py-0">
+          <CardContent className="space-y-5 p-4">
             <SectionTitle title={t('promptFilter.testerTitle')} />
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
               <Field label={t('promptFilter.testEndpoint')}>
@@ -499,8 +522,8 @@ function OverviewView({
         </Card>
       </div>
 
-      <Card className="mt-4">
-        <CardContent>
+      <Card className="mt-4 py-0">
+        <CardContent className="p-4">
           <div className="mb-4 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-stretch">
             <SectionTitle title={t('promptFilter.recentLogsTitle')} />
             <div className="flex flex-wrap gap-2">
@@ -572,8 +595,8 @@ function LogsView({ clearLogs, clearing }: { clearLogs: () => Promise<void>; cle
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   return (
-    <Card>
-      <CardContent>
+    <Card className="py-0">
+      <CardContent className="p-4">
         <div className="mb-4 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-stretch">
           <SectionTitle title={t('promptFilter.logsTitle')} />
           <div className="flex flex-wrap gap-2">
@@ -766,8 +789,8 @@ function RulesView({
 
   return (
     <>
-      <Card>
-        <CardContent>
+      <Card className="py-0">
+        <CardContent className="p-4">
           <div className="mb-4 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-stretch">
             <div>
               <SectionTitle title={t('promptFilter.rulesCatalogTitle')} />
@@ -863,8 +886,8 @@ function RulesView({
         </CardContent>
       </Card>
 
-      <Card className="mt-4">
-        <CardContent>
+      <Card className="mt-4 py-0">
+        <CardContent className="p-4">
           <div className="mb-4 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-stretch">
             <div>
               <SectionTitle title={t('promptFilter.customRulesTitle')} />
@@ -962,7 +985,7 @@ function RuleRow({ rule, selected, onSelect, onToggle, onDelete, busy }: { rule:
         </TableCell>
       ) : null}
       <TableCell>
-        <div className="font-mono text-xs font-semibold text-foreground">{rule.name}</div>
+        <div className="text-xs font-semibold text-foreground">{rule.name}</div>
         <div className="mt-1 flex gap-1">
           {rule.builtin ? <Badge variant="secondary">{t('promptFilter.builtinRule')}</Badge> : <Badge variant="outline">{t('promptFilter.customRule')}</Badge>}
           {rule.strict ? <Badge variant="destructive">{t('promptFilter.ruleStrict')}</Badge> : null}
@@ -970,7 +993,7 @@ function RuleRow({ rule, selected, onSelect, onToggle, onDelete, busy }: { rule:
         </div>
       </TableCell>
       <TableCell>{rule.category || '-'}</TableCell>
-      <TableCell className="font-mono text-sm">{rule.weight}</TableCell>
+      <TableCell className="text-sm font-medium tabular-nums">{rule.weight}</TableCell>
       <TableCell className="max-w-[520px]">
         <code className="line-clamp-2 whitespace-normal break-all rounded bg-muted/60 px-2 py-1 text-xs text-muted-foreground">{rule.pattern}</code>
       </TableCell>
@@ -1127,8 +1150,8 @@ function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: 
         </div>
       </TableCell>
       <TableCell>
-        <div className="font-mono text-xs text-foreground">{log.endpoint || '-'}</div>
-        <div className="font-mono text-xs text-muted-foreground">{log.model || '-'}</div>
+        <div className="text-xs font-medium text-foreground">{log.endpoint || '-'}</div>
+        <div className="text-xs text-muted-foreground">{log.model || '-'}</div>
       </TableCell>
       <TableCell>
         <span className="font-semibold">{log.score}</span>
@@ -1143,7 +1166,7 @@ function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: 
         ) : <span className="text-muted-foreground">-</span>}
       </TableCell>
       <TableCell>
-        <div className="max-w-[160px] truncate">{log.api_key_name || log.api_key_masked || '-'}</div>
+        <div className="max-w-[160px] truncate font-mono text-[12px]">{log.api_key_name || log.api_key_masked || '-'}</div>
         {!compact && log.client_ip ? <div className="text-xs text-muted-foreground">{log.client_ip}</div> : null}
       </TableCell>
       <TableCell className="max-w-[360px]">

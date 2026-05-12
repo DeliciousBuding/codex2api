@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Globe, Plus, Trash2, Play, MapPin, Loader2, Zap, ChevronLeft, ChevronRight, Eye, EyeOff, AlertTriangle } from 'lucide-react'
+import { Globe, Plus, Trash2, Play, MapPin, Loader2, Zap, ChevronLeft, ChevronRight, Eye, EyeOff, AlertTriangle, Pencil, Check, X } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { api, type ProxyRow, type ProxyTestResult } from '../api'
 import ToastNotice from '../components/ToastNotice'
@@ -66,6 +66,11 @@ export default function Proxies() {
   const [revealedIds, setRevealedIds] = useState<Set<number>>(new Set())
   const [filter, setFilter] = useState<ProxyFilter>('all')
   const [addError, setAddError] = useState('')
+  const [editingProxy, setEditingProxy] = useState<ProxyRow | null>(null)
+  const [editUrl, setEditUrl] = useState('')
+  const [editLabel, setEditLabel] = useState('')
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState('')
 
   const ipApiLang = i18n.language?.startsWith('zh') ? 'zh-CN' : 'en'
 
@@ -175,6 +180,34 @@ export default function Proxies() {
       await reload()
     } catch (error) {
       showToast(t('proxies.updateFailed', { error: getErrorMessage(error) }), 'error')
+    }
+  }
+
+  const startEdit = (p: ProxyRow) => {
+    setEditingProxy(p)
+    setEditUrl(p.url)
+    setEditLabel(p.label || '')
+    setEditError('')
+  }
+
+  const handleEditSave = async () => {
+    if (!editingProxy) return
+    const trimmedUrl = editUrl.trim()
+    if (!trimmedUrl || !validateProxyInput(trimmedUrl)) {
+      setEditError(t('proxies.invalidProxyUrl'))
+      return
+    }
+    setEditSaving(true)
+    setEditError('')
+    try {
+      await api.updateProxy(editingProxy.id, { url: trimmedUrl, label: editLabel.trim() || undefined })
+      setEditingProxy(null)
+      await reload()
+      showToast(t('proxies.proxyUpdated'))
+    } catch (error) {
+      setEditError(getErrorMessage(error))
+    } finally {
+      setEditSaving(false)
     }
   }
 
@@ -289,56 +322,6 @@ export default function Proxies() {
             {t('proxies.description')}
           </p>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {/* Pool Toggle Switch */}
-          <div className="flex items-center gap-3" title={!canEnable && !poolEnabled ? t('proxies.addFirstProxy') : undefined}>
-            <span className={`text-sm font-medium ${poolEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>
-              {poolEnabled ? t('proxies.poolEnabled') : t('proxies.poolDisabled')}
-            </span>
-            <button
-              role="switch"
-              aria-checked={poolEnabled}
-              disabled={!canEnable && !poolEnabled}
-              onClick={handleTogglePool}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-40 ${
-                poolEnabled ? 'bg-emerald-500' : 'bg-muted-foreground/30'
-              }`}
-            >
-              <span className={`pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 ${poolEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-            </button>
-          </div>
-
-          {selected.size > 0 && (
-            <button
-              onClick={handleBatchDelete}
-              className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-semibold text-destructive transition-colors hover:bg-destructive/20"
-            >
-              <Trash2 className="size-4" />
-              {t('proxies.deleteSelected', { count: selected.size })}
-            </button>
-          )}
-
-          {proxies.length > 0 && (
-            <button
-              onClick={handleTestAll}
-              disabled={testAllLoading}
-              className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-semibold text-foreground transition-colors hover:bg-muted/50 disabled:opacity-50"
-            >
-              {testAllLoading ? <Loader2 className="size-4 animate-spin" /> : <Zap className="size-4" />}
-              {testAllLoading
-                ? t('proxies.testingAllProgress', { done: testAllDone, total: proxies.length, failed: testAllFailed })
-                : t('proxies.testAll')}
-            </button>
-          )}
-
-          <button
-            onClick={() => setShowAdd(!showAdd)}
-            className="flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
-          >
-            <Plus className="size-4" />
-            {t('proxies.addProxy')}
-          </button>
-        </div>
       </div>
 
       {/* Add Panel */}
@@ -356,7 +339,7 @@ export default function Proxies() {
                 if (addError) setAddError('')
               }}
               placeholder={"http://user:pass@ip:port\nsocks5://ip:port"}
-              className="w-full h-32 px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground resize-none outline-none focus:ring-2 focus:ring-primary/30 font-mono"
+              className="w-full h-32 px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground resize-none outline-none focus:ring-2 focus:ring-primary/30"
             />
             {addError && (
               <div className="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
@@ -408,24 +391,76 @@ export default function Proxies() {
         </Card>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        {filterOptions.map(option => (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {filterOptions.map(option => (
+            <button
+              key={option.value}
+              onClick={() => {
+                setFilter(option.value)
+                setPage(1)
+              }}
+              className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold transition-colors ${
+                filter === option.value
+                  ? 'border-primary/40 bg-primary/10 text-primary'
+                  : 'border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+              }`}
+            >
+              <span>{option.label}</span>
+              <span className="text-xs font-semibold tabular-nums">{option.count}</span>
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {/* Pool Toggle Switch */}
+          <div className="flex items-center gap-2.5" title={!canEnable && !poolEnabled ? t('proxies.addFirstProxy') : undefined}>
+            <span className={`text-sm font-medium ${poolEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>
+              {poolEnabled ? t('proxies.poolEnabled') : t('proxies.poolDisabled')}
+            </span>
+            <button
+              role="switch"
+              aria-checked={poolEnabled}
+              disabled={!canEnable && !poolEnabled}
+              onClick={handleTogglePool}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-40 ${
+                poolEnabled ? 'bg-emerald-500' : 'bg-muted-foreground/30'
+              }`}
+            >
+              <span className={`pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 ${poolEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+            </button>
+          </div>
+
+          {selected.size > 0 && (
+            <button
+              onClick={handleBatchDelete}
+              className="flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-sm font-semibold text-destructive transition-colors hover:bg-destructive/20"
+            >
+              <Trash2 className="size-3.5" />
+              {t('proxies.deleteSelected', { count: selected.size })}
+            </button>
+          )}
+
+          {proxies.length > 0 && (
+            <button
+              onClick={handleTestAll}
+              disabled={testAllLoading}
+              className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm font-semibold text-foreground transition-colors hover:bg-muted/50 disabled:opacity-50"
+            >
+              {testAllLoading ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5" />}
+              {testAllLoading
+                ? t('proxies.testingAllProgress', { done: testAllDone, total: proxies.length, failed: testAllFailed })
+                : t('proxies.testAll')}
+            </button>
+          )}
+
           <button
-            key={option.value}
-            onClick={() => {
-              setFilter(option.value)
-              setPage(1)
-            }}
-            className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold transition-colors ${
-              filter === option.value
-                ? 'border-primary/40 bg-primary/10 text-primary'
-                : 'border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground'
-            }`}
+            onClick={() => setShowAdd(!showAdd)}
+            className="flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
           >
-            <span>{option.label}</span>
-            <span className="font-mono text-xs">{option.count}</span>
+            <Plus className="size-3.5" />
+            {t('proxies.addProxy')}
           </button>
-        ))}
+        </div>
       </div>
 
       {/* Table */}
@@ -509,7 +544,7 @@ export default function Proxies() {
                               >
                                 {revealedIds.has(p.id) ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
                               </button>
-                              <span className="font-mono text-[13px] font-medium break-all text-foreground">
+                              <span className="text-[13px] font-medium break-all font-mono text-foreground">
                                 {revealedIds.has(p.id) ? p.url : maskUrl(p.url)}
                               </span>
                             </div>
@@ -517,13 +552,14 @@ export default function Proxies() {
                           <td className="p-3">
                             <button
                               onClick={() => handleToggle(p)}
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold transition-all ${
+                              className={`group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 active:scale-95 ${
                                 p.enabled
-                                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
-                                  : 'bg-muted/50 text-muted-foreground border border-border'
+                                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/16 hover:border-emerald-500/35'
+                                  : 'bg-muted/50 text-muted-foreground border border-border hover:bg-muted hover:text-foreground'
                               }`}
+                              title={p.enabled ? t('common.disable') : t('common.enable')}
                             >
-                              <span className={`size-1.5 rounded-full ${p.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/50'}`} />
+                              <span className={`size-1.5 rounded-full transition-transform duration-200 group-hover:scale-125 ${p.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/50'}`} />
                               {p.enabled ? t('proxies.enabled') : t('proxies.disabled')}
                             </button>
                           </td>
@@ -543,7 +579,7 @@ export default function Proxies() {
                           {/* IP */}
                           <td className="p-3">
                             {p.test_ip ? (
-                              <span className="text-[13px] font-mono font-medium text-foreground whitespace-nowrap">{p.test_ip}</span>
+                              <span className="text-[13px] font-medium tabular-nums text-foreground whitespace-nowrap">{p.test_ip}</span>
                             ) : (
                               <span className="text-xs text-muted-foreground">-</span>
                             )}
@@ -560,6 +596,13 @@ export default function Proxies() {
                           </td>
                           <td className="p-3">
                             <div className="flex items-center gap-1.5 justify-end">
+                              <button
+                                onClick={() => startEdit(p)}
+                                className="flex items-center justify-center size-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-all"
+                                title={t('proxies.editProxy')}
+                              >
+                                <Pencil className="size-3.5" />
+                              </button>
                               <button
                                 onClick={() => handleTest(p)}
                                 disabled={isTesting}
@@ -626,6 +669,58 @@ export default function Proxies() {
           )}
         </CardContent>
       </Card>
+
+      {/* Edit Proxy Dialog */}
+      {editingProxy && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setEditingProxy(null)}>
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-foreground mb-4">{t('proxies.editProxyTitle')}</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-muted-foreground">{t('proxies.editUrlLabel')}</label>
+                <input
+                  type="text"
+                  value={editUrl}
+                  onChange={e => { setEditUrl(e.target.value); setEditError('') }}
+                  className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-primary/30 font-mono"
+                  placeholder="http://user:pass@ip:port"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-muted-foreground">{t('proxies.editLabelLabel')}</label>
+                <input
+                  type="text"
+                  value={editLabel}
+                  onChange={e => setEditLabel(e.target.value)}
+                  className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-primary/30"
+                  placeholder={t('proxies.labelPlaceholder')}
+                />
+              </div>
+              {editError && (
+                <div className="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
+                  <AlertTriangle className="size-4 shrink-0" />
+                  {editError}
+                </div>
+              )}
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  onClick={() => setEditingProxy(null)}
+                  className="px-4 py-2 rounded-md text-sm font-medium border border-border text-foreground hover:bg-muted/50 transition-colors"
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  onClick={() => void handleEditSave()}
+                  disabled={editSaving || !editUrl.trim()}
+                  className="px-4 py-2 rounded-md text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+                >
+                  {editSaving ? t('common.saving') : t('common.save')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

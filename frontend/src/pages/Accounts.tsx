@@ -26,7 +26,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, RefreshCw, Trash2, Zap, FlaskConical, Ban, Timer, AlertTriangle, Upload, Download, ArrowDownToLine, KeyRound, ExternalLink, FileText, FileJson, BarChart3, Search, Fingerprint, FolderOpen, Lock, Unlock, RotateCcw, Pencil, Check, ChevronDown, Copy, Power, PowerOff, Hourglass, X } from 'lucide-react'
+import { Plus, RefreshCw, Trash2, Zap, FlaskConical, Ban, Timer, AlertTriangle, Upload, Download, ArrowDownToLine, KeyRound, ExternalLink, FileText, FileJson, BarChart3, Search, Fingerprint, FolderOpen, Lock, Unlock, RotateCcw, Pencil, Check, ChevronDown, Copy, Power, PowerOff, Hourglass, X, SlidersHorizontal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import AccountUsageModal from '../components/AccountUsageModal'
 import AccountQuotaDistributionChart from '../components/AccountQuotaDistributionChart'
@@ -35,6 +35,29 @@ import AccountRateLimitRecoveryChart from '../components/AccountRateLimitRecover
 const ACCOUNT_BATCH_CONCURRENCY = 6
 const ACCOUNT_REFRESH_BATCH_CONCURRENCY = 4
 const ACCOUNT_ANALYSIS_VISIBILITY_KEY = 'codex2api:accounts:analysis-visible'
+const ACCOUNT_VISIBLE_COLUMNS_KEY = 'codex2api:accounts:visible-columns'
+const ACCOUNT_TABLE_COLUMNS = ['sequence', 'email', 'plan', 'status', 'requests', 'usage', 'importTime', 'updatedAt', 'actions'] as const
+type AccountTableColumn = typeof ACCOUNT_TABLE_COLUMNS[number]
+
+function getInitialAccountVisibleColumns(): Record<AccountTableColumn, boolean> {
+  const fallback = Object.fromEntries(ACCOUNT_TABLE_COLUMNS.map((column) => [column, true])) as Record<AccountTableColumn, boolean>
+  try {
+    const raw = window.localStorage.getItem(ACCOUNT_VISIBLE_COLUMNS_KEY)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw) as Partial<Record<AccountTableColumn, boolean>>
+    return Object.fromEntries(ACCOUNT_TABLE_COLUMNS.map((column) => [column, parsed[column] !== false])) as Record<AccountTableColumn, boolean>
+  } catch {
+    return fallback
+  }
+}
+
+function persistAccountVisibleColumns(columns: Record<AccountTableColumn, boolean>) {
+  try {
+    window.localStorage.setItem(ACCOUNT_VISIBLE_COLUMNS_KEY, JSON.stringify(columns))
+  } catch {
+    // Keep the in-memory preference working when localStorage is unavailable.
+  }
+}
 
 function getInitialAnalysisVisibility(): boolean {
   try {
@@ -120,6 +143,7 @@ export default function Accounts() {
   const [planFilter, setPlanFilter] = useState<'all' | 'pro' | 'prolite' | 'plus' | 'team' | 'free'>('all')
   const [sortKey, setSortKey] = useState<'requests' | 'usage' | 'importTime' | null>(null)
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [visibleColumns, setVisibleColumns] = useState<Record<AccountTableColumn, boolean>>(getInitialAccountVisibleColumns)
   const [addForm, setAddForm] = useState<AddAccountRequest>({
     refresh_token: '',
     proxy_url: '',
@@ -146,6 +170,7 @@ export default function Accounts() {
   const [concurrencyMode, setConcurrencyMode] = useState<'default' | 'custom'>('default')
   const [concurrencyInput, setConcurrencyInput] = useState('')
   const [allowedAPIKeySelection, setAllowedAPIKeySelection] = useState<number[]>([])
+  const [editProxyUrl, setEditProxyUrl] = useState('')
   const [editOpenAIForm, setEditOpenAIForm] = useState<UpdateOpenAIResponsesAccountRequest>({
     name: '',
     base_url: 'https://api.openai.com',
@@ -224,6 +249,10 @@ export default function Accounts() {
   useEffect(() => {
     persistAnalysisVisibility(showAnalysisCharts)
   }, [showAnalysisCharts])
+
+  useEffect(() => {
+    persistAccountVisibleColumns(visibleColumns)
+  }, [visibleColumns])
 
   useEffect(() => {
     const needsUsageReload = (account: AccountRow) => {
@@ -1182,6 +1211,7 @@ export default function Accounts() {
     setConcurrencyMode(account.base_concurrency_override === null || account.base_concurrency_override === undefined ? 'default' : 'custom')
     setConcurrencyInput(account.base_concurrency_override === null || account.base_concurrency_override === undefined ? '' : String(account.base_concurrency_override))
     setAllowedAPIKeySelection(filterExistingAPIKeyIDs(account.allowed_api_key_ids ?? [], apiKeys))
+    setEditProxyUrl(account.proxy_url ?? '')
     setEditOpenAIForm({
       name: account.name ?? '',
       base_url: account.base_url || 'https://api.openai.com',
@@ -1249,6 +1279,7 @@ export default function Accounts() {
         score_bias_override: scoreMode === 'custom' ? parsedScoreBias : null,
         base_concurrency_override: concurrencyMode === 'custom' ? parsedBaseConcurrency : null,
         allowed_api_key_ids: allowedAPIKeySelection,
+        proxy_url: editProxyUrl.trim() || null,
       }
       await api.updateAccountScheduler(editingAccount.id, payload)
       showToast(t('accounts.schedulerSaveSuccess'))
@@ -1462,60 +1493,82 @@ export default function Accounts() {
           </div>
         ) : null}
 
-        <div className="toolbar-surface mb-3 flex flex-wrap items-center gap-2">
-          <span className="font-semibold text-foreground">{t('accounts.filter')}</span>
-          {([['all', t('accounts.filterAll')], ['normal', t('accounts.filterNormal')], ['rate_limited', t('accounts.filterRateLimited')], ['banned', t('accounts.filterBanned')], ['error', t('accounts.filterError')], ['disabled', t('accounts.filterDisabled')], ['locked', t('accounts.filterLocked')]] as const).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => { setStatusFilter(key); setPage(1) }}
-              className={`rounded-md px-2.5 py-1 font-semibold transition-colors ${
-                statusFilter === key
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted/50 text-muted-foreground hover:bg-muted'
-              }`}
-            >
-              {label} {key === 'all' ? totalAccounts : key === 'normal' ? normalAccounts : key === 'rate_limited' ? rateLimitedAccounts : key === 'banned' ? bannedAccounts : key === 'error' ? errorAccounts : key === 'disabled' ? disabledAccounts : lockedAccounts}
-            </button>
-          ))}
-        </div>
-
-        <div className="toolbar-surface mb-3 flex flex-wrap items-center gap-2">
-          <span className="font-semibold text-foreground">{t('accounts.schedulerView')}</span>
-          <SchedulerChip label={t('accounts.healthy')} value={healthyAccounts} tone="success" />
-          <SchedulerChip label={t('accounts.warm')} value={warmAccounts} tone="warning" />
-          <SchedulerChip label={t('accounts.risky')} value={riskyAccounts} tone="danger" />
-          <SchedulerChip label={t('status.unauthorized')} value={bannedAccounts} tone="neutral" />
-        </div>
-
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <div className="relative w-72 max-sm:w-full">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-            <Input
-              className="pl-9 h-8 rounded-lg text-[13px]"
-              placeholder={t('accounts.searchPlaceholder')}
-              value={searchQuery}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => { setSearchQuery(e.target.value); setPage(1) }}
-            />
-          </div>
-          <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/30 p-0.5">
-            {(['all', 'pro', 'prolite', 'plus', 'team', 'free'] as const).map((key) => (
+        <div className="mb-3 grid gap-3 xl:grid-cols-2">
+          <div className="toolbar-surface flex items-center gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <span className="shrink-0 font-semibold text-foreground">{t('accounts.filter')}</span>
+            {([['all', t('accounts.filterAll')], ['normal', t('accounts.filterNormal')], ['rate_limited', t('accounts.filterRateLimited')], ['banned', t('accounts.filterBanned')], ['error', t('accounts.filterError')], ['disabled', t('accounts.filterDisabled')], ['locked', t('accounts.filterLocked')]] as const).map(([key, label]) => (
               <button
                 key={key}
-                onClick={() => { setPlanFilter(key); setPage(1) }}
-                className={`rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors ${
-                  planFilter === key
-                    ? 'bg-background shadow-sm text-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
+                onClick={() => { setStatusFilter(key); setPage(1) }}
+                className={`shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 font-semibold transition-colors ${
+                  statusFilter === key
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-muted/50 text-muted-foreground hover:bg-muted'
                 }`}
               >
-                {key === 'all'
-                  ? t('accounts.filterAll')
-                  : key === 'prolite'
-                    ? 'ProLite'
-                    : key.charAt(0).toUpperCase() + key.slice(1)}
+                {label} {key === 'all' ? totalAccounts : key === 'normal' ? normalAccounts : key === 'rate_limited' ? rateLimitedAccounts : key === 'banned' ? bannedAccounts : key === 'error' ? errorAccounts : key === 'disabled' ? disabledAccounts : lockedAccounts}
               </button>
             ))}
           </div>
+
+          <div className="toolbar-surface flex items-center gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <span className="shrink-0 font-semibold text-foreground">{t('accounts.schedulerView')}</span>
+            <SchedulerChip label={t('accounts.healthy')} value={healthyAccounts} tone="success" />
+            <SchedulerChip label={t('accounts.warm')} value={warmAccounts} tone="warning" />
+            <SchedulerChip label={t('accounts.risky')} value={riskyAccounts} tone="danger" />
+            <SchedulerChip label={t('status.unauthorized')} value={bannedAccounts} tone="neutral" />
+          </div>
+        </div>
+
+        <div className="mb-4 flex items-center justify-between gap-2 max-sm:flex-wrap">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="relative w-72 shrink-0 max-sm:w-full">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+              <Input
+                className="pl-9 h-8 rounded-lg text-[13px]"
+                placeholder={t('accounts.searchPlaceholder')}
+                value={searchQuery}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => { setSearchQuery(e.target.value); setPage(1) }}
+              />
+            </div>
+            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-muted/30 p-0.5">
+              {(['all', 'pro', 'prolite', 'plus', 'team', 'free'] as const).map((key) => (
+                <button
+                  key={key}
+                  onClick={() => { setPlanFilter(key); setPage(1) }}
+                  className={`whitespace-nowrap rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors ${
+                    planFilter === key
+                      ? 'bg-background shadow-sm text-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {key === 'all'
+                    ? t('accounts.filterAll')
+                    : key === 'prolite'
+                      ? 'ProLite'
+                      : key.charAt(0).toUpperCase() + key.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <ColumnSettingsMenu
+            columns={visibleColumns}
+            onToggle={(column) => {
+              setVisibleColumns((current) => ({ ...current, [column]: !current[column] }))
+            }}
+            labels={{
+              sequence: t('accounts.sequence'),
+              email: t('accounts.email'),
+              plan: t('accounts.plan'),
+              status: t('accounts.status'),
+              requests: t('accounts.requests'),
+              usage: t('accounts.usage'),
+              importTime: t('accounts.importTime'),
+              updatedAt: t('accounts.updatedAt'),
+              actions: t('accounts.actions'),
+            }}
+            title={t('accounts.columnSettings')}
+          />
         </div>
 
         {selected.size > 0 && (
@@ -1553,7 +1606,7 @@ export default function Accounts() {
           </div>
         )}
 
-        <Card>
+        <Card className="py-0">
           <CardContent className="p-4">
             <StateShell
               variant="section"
@@ -1575,30 +1628,36 @@ export default function Accounts() {
                           onChange={toggleSelectAll}
                         />
                       </TableHead>
-                      <TableHead className="text-[13px] font-semibold">{t('accounts.sequence')}</TableHead>
-                      <TableHead className="text-[13px] font-semibold">{t('accounts.email')}</TableHead>
-                      <TableHead className="text-[13px] font-semibold">{t('accounts.plan')}</TableHead>
-                      <TableHead className="text-[13px] font-semibold">{t('accounts.status')}</TableHead>
-                      <TableHead
-                        className="text-[13px] font-semibold cursor-pointer select-none hover:text-primary transition-colors"
-                        onClick={() => { if (sortKey === 'requests') { setSortDir(d => d === 'asc' ? 'desc' : 'asc') } else { setSortKey('requests'); setSortDir('desc') }; setPage(1) }}
-                      >
-                        {t('accounts.requests')} {sortKey === 'requests' ? (sortDir === 'desc' ? '↓' : '↑') : ''}
-                      </TableHead>
-                      <TableHead
-                        className="text-[13px] font-semibold cursor-pointer select-none hover:text-primary transition-colors"
-                        onClick={() => { if (sortKey === 'usage') { setSortDir(d => d === 'asc' ? 'desc' : 'asc') } else { setSortKey('usage'); setSortDir('desc') }; setPage(1) }}
-                      >
-                        {t('accounts.usage')} {sortKey === 'usage' ? (sortDir === 'desc' ? '↓' : '↑') : ''}
-                      </TableHead>
-                      <TableHead
-                        className="text-[13px] font-semibold cursor-pointer select-none hover:text-primary transition-colors"
-                        onClick={() => { if (sortKey === 'importTime') { setSortDir(d => d === 'asc' ? 'desc' : 'asc') } else { setSortKey('importTime'); setSortDir('desc') }; setPage(1) }}
-                      >
-                        {t('accounts.importTime')} {sortKey === 'importTime' ? (sortDir === 'desc' ? '↓' : '↑') : ''}
-                      </TableHead>
-                      <TableHead className="text-[13px] font-semibold">{t('accounts.updatedAt')}</TableHead>
-                      <TableHead className="text-[13px] font-semibold text-right">{t('accounts.actions')}</TableHead>
+                      {visibleColumns.sequence && <TableHead className="text-[13px] font-semibold">{t('accounts.sequence')}</TableHead>}
+                      {visibleColumns.email && <TableHead className="text-[13px] font-semibold">{t('accounts.email')}</TableHead>}
+                      {visibleColumns.plan && <TableHead className="text-[13px] font-semibold">{t('accounts.plan')}</TableHead>}
+                      {visibleColumns.status && <TableHead className="text-[13px] font-semibold">{t('accounts.status')}</TableHead>}
+                      {visibleColumns.requests && (
+                        <TableHead
+                          className="text-[13px] font-semibold cursor-pointer select-none hover:text-primary transition-colors"
+                          onClick={() => { if (sortKey === 'requests') { setSortDir(d => d === 'asc' ? 'desc' : 'asc') } else { setSortKey('requests'); setSortDir('desc') }; setPage(1) }}
+                        >
+                          {t('accounts.requests')} {sortKey === 'requests' ? (sortDir === 'desc' ? '↓' : '↑') : ''}
+                        </TableHead>
+                      )}
+                      {visibleColumns.usage && (
+                        <TableHead
+                          className="text-[13px] font-semibold cursor-pointer select-none hover:text-primary transition-colors"
+                          onClick={() => { if (sortKey === 'usage') { setSortDir(d => d === 'asc' ? 'desc' : 'asc') } else { setSortKey('usage'); setSortDir('desc') }; setPage(1) }}
+                        >
+                          {t('accounts.usage')} {sortKey === 'usage' ? (sortDir === 'desc' ? '↓' : '↑') : ''}
+                        </TableHead>
+                      )}
+                      {visibleColumns.importTime && (
+                        <TableHead
+                          className="text-[13px] font-semibold cursor-pointer select-none hover:text-primary transition-colors"
+                          onClick={() => { if (sortKey === 'importTime') { setSortDir(d => d === 'asc' ? 'desc' : 'asc') } else { setSortKey('importTime'); setSortDir('desc') }; setPage(1) }}
+                        >
+                          {t('accounts.importTime')} {sortKey === 'importTime' ? (sortDir === 'desc' ? '↓' : '↑') : ''}
+                        </TableHead>
+                      )}
+                      {visibleColumns.updatedAt && <TableHead className="text-[13px] font-semibold">{t('accounts.updatedAt')}</TableHead>}
+                      {visibleColumns.actions && <TableHead className="text-[13px] font-semibold text-right">{t('accounts.actions')}</TableHead>}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1614,82 +1673,95 @@ export default function Accounts() {
                               onChange={() => toggleSelect(account.id)}
                             />
                           </TableCell>
-                          <TableCell className="text-[14px] font-mono text-muted-foreground" title={`ID ${account.id}`}>
-                            {(currentPage - 1) * pageSize + index + 1}
-                          </TableCell>
-                          <TableCell className="text-[14px] text-muted-foreground">
-                            <span>{account.openai_responses_api ? formatAccountName(account) : formatCompactEmail(account.email)}</span>
-                            {account.at_only && (
-                              <span className="ml-1.5 inline-flex items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-400/20">
-                                AT
-                              </span>
-                            )}
-                            {account.openai_responses_api && (
-                              <span className="ml-1.5 inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-400 dark:ring-emerald-400/20">
-                                Responses API
-                              </span>
-                            )}
-                            {account.enabled === false && (
-                              <span className="ml-1.5 inline-flex items-center rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-500/20 dark:bg-zinc-900 dark:text-zinc-300 dark:ring-zinc-400/20">
-                                <PowerOff className="size-2.5 mr-0.5" />{t('accounts.disabled')}
-                              </span>
-                            )}
-                            {account.locked && (
-                              <span className="ml-1.5 inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20">
-                                <Lock className="size-2.5 mr-0.5" />{t('accounts.lock')}
-                              </span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <PlanBadge planType={account.plan_type} />
-                          </TableCell>
-                          <TableCell>
-                            <div className="space-y-1.5">
-                              <div className="flex min-h-6 items-center gap-2 whitespace-nowrap">
-                                <StatusBadge status={account.status} detail={getAccountRateLimitWindow(account) ?? undefined} />
-                                <AccountStatusCountdown account={account} />
+                          {visibleColumns.sequence && (
+                            <TableCell className="text-[14px] font-medium tabular-nums text-muted-foreground" title={`ID ${account.id}`}>
+                              {(currentPage - 1) * pageSize + index + 1}
+                            </TableCell>
+                          )}
+                          {visibleColumns.email && (
+                            <TableCell className="text-[14px] text-muted-foreground">
+                              <span>{account.openai_responses_api ? formatAccountName(account) : formatCompactEmail(account.email)}</span>
+                              {account.at_only && (
+                                <span className="ml-1.5 inline-flex items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-400/20">
+                                  AT
+                                </span>
+                              )}
+                              {account.openai_responses_api && (
+                                <span className="ml-1.5 inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-400 dark:ring-emerald-400/20">
+                                  Responses API
+                                </span>
+                              )}
+                              {account.enabled === false && (
+                                <span className="ml-1.5 inline-flex items-center rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-500/20 dark:bg-zinc-900 dark:text-zinc-300 dark:ring-zinc-400/20">
+                                  <PowerOff className="size-2.5 mr-0.5" />{t('accounts.disabled')}
+                                </span>
+                              )}
+                              {account.locked && (
+                                <span className="ml-1.5 inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20">
+                                  <Lock className="size-2.5 mr-0.5" />{t('accounts.lock')}
+                                </span>
+                              )}
+                            </TableCell>
+                          )}
+                          {visibleColumns.plan && (
+                            <TableCell>
+                              <PlanBadge planType={account.plan_type} />
+                            </TableCell>
+                          )}
+                          {visibleColumns.status && (
+                            <TableCell>
+                              <div className="space-y-1.5">
+                                <div className="flex min-h-6 items-center gap-2 whitespace-nowrap">
+                                  <StatusBadge status={account.status} detail={getAccountRateLimitWindow(account) ?? undefined} />
+                                  <AccountStatusCountdown account={account} />
+                                </div>
+                                {account.status === 'error' && account.error_message && (
+                                  <div className="max-w-[180px] truncate text-[11px] leading-tight text-red-500" title={account.error_message}>
+                                    {account.error_message}
+                                  </div>
+                                )}
+                                {(account.model_cooldowns?.length ?? 0) > 0 && (
+                                  <div className="text-[11px] leading-tight text-amber-600">
+                                    model {account.model_cooldowns?.[0]?.model}
+                                    {(account.model_cooldowns?.length ?? 0) > 1 ? ` +${(account.model_cooldowns?.length ?? 1) - 1}` : ''}
+                                  </div>
+                                )}
+                                <div className="text-[11px] text-muted-foreground">
+                                  {t('accounts.healthSummary', {
+                                    health: formatHealthTier(account.health_tier, t),
+                                    score: Math.round(getDispatchScore(account)),
+                                    concurrency: account.dynamic_concurrency_limit ?? '-',
+                                  })}
+                                </div>
                               </div>
-                              {account.status === 'error' && account.error_message && (
-                                <div className="max-w-[180px] truncate text-[11px] leading-tight text-red-500" title={account.error_message}>
-                                  {account.error_message}
+                            </TableCell>
+                          )}
+                        {visibleColumns.requests && (
+                          <TableCell>
+                            <div className="space-y-0.5 text-[13px]">
+                              <div className="flex items-center gap-2">
+                                <span className="text-emerald-600 font-medium">{account.success_requests ?? 0}</span>
+                                <span className="text-muted-foreground">/</span>
+                                <span className="text-red-500 font-medium">{account.error_requests ?? 0}</span>
+                              </div>
+                              {((account.retry_error_requests ?? 0) > 0 || (account.rate_limit_attempts ?? 0) > 0) && (
+                                <div className="text-[11px] text-muted-foreground">
+                                  retry {account.retry_error_requests ?? 0} · 429 {account.rate_limit_attempts ?? 0}
                                 </div>
                               )}
-                              {(account.model_cooldowns?.length ?? 0) > 0 && (
-                                <div className="text-[11px] leading-tight text-amber-600">
-                                  model {account.model_cooldowns?.[0]?.model}
-                                  {(account.model_cooldowns?.length ?? 0) > 1 ? ` +${(account.model_cooldowns?.length ?? 1) - 1}` : ''}
-                                </div>
-                              )}
-                              <div className="text-[11px] text-muted-foreground">
-                                {t('accounts.healthSummary', {
-                                  health: formatHealthTier(account.health_tier, t),
-                                  score: Math.round(getDispatchScore(account)),
-                                  concurrency: account.dynamic_concurrency_limit ?? '-',
-                                })}
-                              </div>
                             </div>
                           </TableCell>
-                        <TableCell>
-                          <div className="space-y-0.5 text-[13px]">
-                            <div className="flex items-center gap-2">
-                              <span className="text-emerald-600 font-medium">{account.success_requests ?? 0}</span>
-                              <span className="text-muted-foreground">/</span>
-                              <span className="text-red-500 font-medium">{account.error_requests ?? 0}</span>
-                            </div>
-                            {((account.retry_error_requests ?? 0) > 0 || (account.rate_limit_attempts ?? 0) > 0) && (
-                              <div className="text-[11px] text-muted-foreground">
-                                retry {account.retry_error_requests ?? 0} · 429 {account.rate_limit_attempts ?? 0}
-                              </div>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <UsageCell account={account} />
-                        </TableCell>
-                        <TableCell className="text-[13px] text-muted-foreground whitespace-nowrap">{formatBeijingTime(account.created_at)}</TableCell>
-                        <TableCell className="text-[14px] text-muted-foreground">{formatRelativeTime(account.updated_at)}</TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex items-center gap-1 justify-end">
+                        )}
+                        {visibleColumns.usage && (
+                          <TableCell>
+                            <UsageCell account={account} />
+                          </TableCell>
+                        )}
+                        {visibleColumns.importTime && <TableCell className="text-[13px] text-muted-foreground whitespace-nowrap">{formatBeijingTime(account.created_at)}</TableCell>}
+                        {visibleColumns.updatedAt && <TableCell className="text-[14px] text-muted-foreground">{formatRelativeTime(account.updated_at)}</TableCell>}
+                        {visibleColumns.actions && (
+                          <TableCell className="text-right">
+                            <div className="flex items-center gap-1 justify-end">
                             <Button
                               variant="outline"
                               size="icon"
@@ -1773,8 +1845,9 @@ export default function Accounts() {
                             >
                               <Trash2 className="size-3.5" />
                             </Button>
-                          </div>
-                        </TableCell>
+                            </div>
+                          </TableCell>
+                        )}
                       </TableRow>
                       )
                     })}
@@ -2582,6 +2655,19 @@ export default function Accounts() {
                 </div>
               </div>
 
+              <div className="rounded-xl border border-border p-4">
+                <div className="text-sm font-semibold text-foreground">{t('accounts.proxyUrlLabel')}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{t('accounts.proxyUrlHint')}</div>
+                <div className="mt-3">
+                  <Input
+                    className="h-8 text-[13px] font-mono"
+                    placeholder={t('accounts.proxyUrlPlaceholder')}
+                    value={editProxyUrl}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setEditProxyUrl(e.target.value)}
+                  />
+                </div>
+              </div>
+
               <div className="rounded-xl border border-border bg-white/60 px-4 py-4 dark:bg-white/5">
                 <div className="text-sm font-semibold text-foreground">{t('accounts.schedulerPreviewTitle')}</div>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -2836,7 +2922,7 @@ function ModelChipGrid({
           className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm"
           title={model}
         >
-          <span className="min-w-0 truncate font-mono text-[12px] text-foreground">{model}</span>
+          <span className="min-w-0 truncate text-[12px] font-medium text-foreground">{model}</span>
           <button
             type="button"
             className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -3084,6 +3170,81 @@ function HeaderActionMenu({
               >
                 <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">{item.icon}</span>
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function ColumnSettingsMenu({
+  columns,
+  onToggle,
+  labels,
+  title,
+}: {
+  columns: Record<AccountTableColumn, boolean>
+  onToggle: (column: AccountTableColumn) => void
+  labels: Record<AccountTableColumn, string>
+  title: string
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [open])
+
+  return (
+    <div ref={rootRef} className="relative ml-auto max-sm:ml-0">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <SlidersHorizontal className="size-3.5" />
+        {title}
+        <ChevronDown className={`size-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </Button>
+
+      {open ? (
+        <div className="absolute right-0 top-[calc(100%+0.5rem)] z-50 w-48 overflow-hidden rounded-lg border border-border bg-popover p-1.5 shadow-[0_18px_40px_hsl(222_30%_18%/0.12)] backdrop-blur-sm">
+          <div role="menu" className="space-y-0.5">
+            {ACCOUNT_TABLE_COLUMNS.map((column) => (
+              <button
+                key={column}
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={columns[column]}
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent/70"
+                onClick={() => onToggle(column)}
+              >
+                <span className={`flex size-4 shrink-0 items-center justify-center rounded border ${columns[column] ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background'}`}>
+                  {columns[column] ? <Check className="size-3" /> : null}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{labels[column]}</span>
               </button>
             ))}
           </div>
@@ -3832,7 +3993,7 @@ function CooldownTimer({ until }: { until: string }) {
 
   if (!remaining) return null
   return (
-    <span className="inline-flex h-6 min-w-[112px] shrink-0 items-center justify-center gap-1.5 rounded-full bg-amber-50 px-2 text-[11px] font-mono leading-none tabular-nums text-amber-700 ring-1 ring-inset ring-amber-200/70 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-400/20">
+    <span className="inline-flex h-6 min-w-[112px] shrink-0 items-center justify-center gap-1.5 rounded-full bg-amber-50 px-2 text-[11px] font-semibold leading-none tabular-nums text-amber-700 ring-1 ring-inset ring-amber-200/70 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-400/20">
       <Hourglass className="size-3 shrink-0" aria-hidden="true" />
       {remaining}
     </span>

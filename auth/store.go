@@ -3058,6 +3058,19 @@ func (s *Store) ApplyAccountAllowedAPIKeys(dbID int64, allowedAPIKeyIDs []int64)
 	return true
 }
 
+func (s *Store) ApplyAccountProxyURL(dbID int64, proxyURL string) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+
+	acc.mu.Lock()
+	acc.ProxyURL = strings.TrimSpace(proxyURL)
+	acc.mu.Unlock()
+	s.fastSchedulerUpdate(acc)
+	return true
+}
+
 func (s *Store) ApplyOpenAIResponsesConfig(dbID int64, baseURL, apiKey string, models []string, proxyURL string) bool {
 	acc := s.FindByID(dbID)
 	if acc == nil {

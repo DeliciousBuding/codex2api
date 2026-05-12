@@ -24,15 +24,18 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import {
+  Check,
   Copy,
   Eye,
   EyeOff,
   Fingerprint,
   KeyRound,
   LockKeyhole,
+  Pencil,
   Plus,
   ShieldCheck,
   Trash2,
+  X,
 } from 'lucide-react'
 
 export default function APIKeys() {
@@ -43,6 +46,9 @@ export default function APIKeys() {
   const [visibleKeys, setVisibleKeys] = useState<Set<number>>(new Set())
   const [creating, setCreating] = useState(false)
   const [deletingIds, setDeletingIds] = useState<Set<number>>(new Set())
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [editingName, setEditingName] = useState('')
+  const [saving, setSaving] = useState(false)
   const { toast, showToast } = useToast()
   const { confirm, confirmDialog } = useConfirmDialog()
 
@@ -138,6 +144,27 @@ export default function APIKeys() {
     }
   }
 
+  const handleRenameKey = async (id: number) => {
+    const trimmed = editingName.trim()
+    if (!trimmed) return
+    setSaving(true)
+    try {
+      await api.updateAPIKey(id, { name: trimmed })
+      showToast(t('apiKeys.keyRenamed'))
+      setEditingId(null)
+      void reload()
+    } catch (error) {
+      showToast(`${t('apiKeys.renameFailed')}: ${getErrorMessage(error)}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const startEditing = (keyRow: APIKeyRow) => {
+    setEditingId(keyRow.id)
+    setEditingName(keyRow.name)
+  }
+
   const toggleVisible = (id: number) => {
     setVisibleKeys((prev) => {
       const next = new Set(prev)
@@ -188,7 +215,7 @@ export default function APIKeys() {
           />
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
+        <div className="grid gap-4 xl:grid-cols-3">
           <div className="space-y-4">
             <Card className="py-0">
               <CardContent className="p-4">
@@ -243,7 +270,7 @@ export default function APIKeys() {
             </Card>
           </div>
 
-          <Card>
+          <Card className="xl:col-span-2 py-0">
             <CardContent className="p-4">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -280,18 +307,43 @@ export default function APIKeys() {
                         return (
                           <TableRow key={keyRow.id} className={isNew ? 'bg-[hsl(var(--success-bg))]' : ''}>
                             <TableCell className="font-medium text-foreground">
-                              <div className="flex items-center gap-2">
-                                <span>{keyRow.name}</span>
-                                {isNew ? (
-                                  <Badge variant="outline" className="border-transparent bg-[hsl(var(--success-bg))] text-[hsl(var(--success))]">
-                                    {t('apiKeys.newBadge')}
-                                  </Badge>
-                                ) : null}
-                              </div>
+                              {editingId === keyRow.id ? (
+                                <div className="flex items-center gap-1.5">
+                                  <Input
+                                    className="h-7 w-40 text-[13px]"
+                                    value={editingName}
+                                    onChange={(e: ChangeEvent<HTMLInputElement>) => setEditingName(e.target.value)}
+                                    onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                                      if (e.key === 'Enter') void handleRenameKey(keyRow.id)
+                                      if (e.key === 'Escape') setEditingId(null)
+                                    }}
+                                    autoFocus
+                                    disabled={saving}
+                                  />
+                                  <Button variant="ghost" size="icon-xs" onClick={() => void handleRenameKey(keyRow.id)} disabled={saving || !editingName.trim()}>
+                                    <Check className="size-3.5" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon-xs" onClick={() => setEditingId(null)} disabled={saving}>
+                                    <X className="size-3.5" />
+                                  </Button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <span>{keyRow.name}</span>
+                                  {isNew ? (
+                                    <Badge variant="outline" className="border-transparent bg-[hsl(var(--success-bg))] text-[hsl(var(--success))]">
+                                      {t('apiKeys.newBadge')}
+                                    </Badge>
+                                  ) : null}
+                                  <Button variant="ghost" size="icon-xs" onClick={() => startEditing(keyRow)} title={t('apiKeys.renameKey')}>
+                                    <Pencil className="size-3" />
+                                  </Button>
+                                </div>
+                              )}
                             </TableCell>
                             <TableCell>
                               <div className="flex min-w-[260px] items-center gap-2">
-                                <code className="min-w-0 max-w-[420px] truncate rounded-md bg-muted px-2 py-1 font-mono text-[13px] text-foreground" title={displayKey}>
+                                <code className="min-w-0 max-w-[420px] truncate rounded-md bg-muted px-2 py-1 text-[13px] font-medium tabular-nums text-foreground" title={displayKey}>
                                   {displayKey}
                                 </code>
                                 <Button

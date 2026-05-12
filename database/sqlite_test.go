@@ -40,12 +40,12 @@ func TestSQLiteProxyMutationsReturnNoRowsForMissingProxy(t *testing.T) {
 	}
 
 	label := "backup"
-	if err := db.UpdateProxy(ctx, 404, &label, nil); err != sql.ErrNoRows {
+	if err := db.UpdateProxy(ctx, 404, nil, &label, nil); err != sql.ErrNoRows {
 		t.Fatalf("UpdateProxy label missing proxy error = %v, want sql.ErrNoRows", err)
 	}
 
 	enabled := false
-	if err := db.UpdateProxy(ctx, 404, nil, &enabled); err != sql.ErrNoRows {
+	if err := db.UpdateProxy(ctx, 404, nil, nil, &enabled); err != sql.ErrNoRows {
 		t.Fatalf("UpdateProxy enabled missing proxy error = %v, want sql.ErrNoRows", err)
 	}
 
@@ -967,6 +967,45 @@ func TestUsageStatsTotalsIncludeOlderVisibleLogs(t *testing.T) {
 	}
 	if stats.TodayCacheRate != 25 {
 		t.Fatalf("TodayCacheRate = %.2f, want 25.00", stats.TodayCacheRate)
+	}
+}
+
+func TestUsageStatsReportsAverageFirstTokenLatency(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now()
+	if _, err := db.conn.ExecContext(ctx, `
+		INSERT INTO usage_logs (
+			account_id, endpoint, model, status_code,
+			total_tokens, prompt_tokens, completion_tokens, duration_ms, first_token_ms, created_at
+		)
+		VALUES
+			(1, '/v1/responses', 'gpt-5.5', 200, 1000, 800, 200, 3000, 400, $1),
+			(1, '/v1/responses', 'gpt-5.5', 200, 300, 200, 100, 5000, 600, $1),
+			(1, '/v1/responses', 'gpt-5.5', 200, 100, 80, 20, 9000, 0, $1),
+			(1, '/v1/responses', 'gpt-5.5', 499, 700, 600, 100, 1000, 100, $1),
+			(1, '/v1/responses', 'gpt-5.5', 200, 700, 600, 100, 1000, 100, $2)
+	`, sqliteTimeParam(now), sqliteTimeParam(now.Add(-48*time.Hour))); err != nil {
+		t.Fatalf("insert usage logs 返回错误: %v", err)
+	}
+
+	stats, err := db.GetUsageStats(ctx)
+	if err != nil {
+		t.Fatalf("GetUsageStats 返回错误: %v", err)
+	}
+
+	if stats.AvgFirstTokenMs != 500 {
+		t.Fatalf("AvgFirstTokenMs = %.2f, want 500.00", stats.AvgFirstTokenMs)
+	}
+	if stats.AvgDurationMs != 5666.666666666667 {
+		t.Fatalf("AvgDurationMs = %.12f, want 5666.666666666667", stats.AvgDurationMs)
 	}
 }
 

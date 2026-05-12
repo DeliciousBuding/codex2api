@@ -108,13 +108,13 @@ function ModelMappingEditor({ value, onChange }: { value: string; onChange: (v: 
         {mappings.map(([k, v], i) => (
           <div key={i} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2rem] items-center gap-1.5">
             <Input
-              className="h-8 px-2 font-mono text-xs"
+              className="h-8 px-2 text-xs font-medium"
               placeholder="claude-opus-4-6"
               value={k}
               onChange={(e: ChangeEvent<HTMLInputElement>) => handleChange(i, 0, e.target.value)}
             />
             <Input
-              className="h-8 px-2 font-mono text-xs"
+              className="h-8 px-2 text-xs font-medium"
               placeholder="gpt-5.4"
               value={v}
               onChange={(e: ChangeEvent<HTMLInputElement>) => handleChange(i, 1, e.target.value)}
@@ -1121,7 +1121,7 @@ export default function Settings() {
                 <div className="flex min-h-0 flex-1 flex-wrap content-start gap-2 overflow-auto rounded-lg border border-border bg-muted/20 p-3">
                   {visibleModelItems.map((model) => (
                     <div key={model.id} className="flex h-fit flex-wrap items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5">
-                      <span className="font-mono text-xs font-semibold text-foreground">{model.id}</span>
+                      <span className="text-xs font-semibold text-foreground">{model.id}</span>
                       <Badge variant={model.source === 'official_codex_docs' ? 'default' : 'secondary'} className="text-[11px]">
                         {model.source === 'official_codex_docs' ? t('settings.modelSourceOfficial') : t('settings.modelSourceBuiltin')}
                       </Badge>
@@ -1160,32 +1160,32 @@ export default function Settings() {
                   <TableBody>
                     <TableRow>
                       <TableCell><Badge variant="default" className="text-[12px]">POST</Badge></TableCell>
-                      <TableCell className="font-mono text-[13px]">/v1/chat/completions</TableCell>
+                      <TableCell className="text-[13px] font-medium">/v1/chat/completions</TableCell>
                       <TableCell className="text-[13px] text-muted-foreground">{t('settings.openaiCompat')}</TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell><Badge variant="outline" className="text-[12px]">POST</Badge></TableCell>
-                      <TableCell className="font-mono text-[13px]">/v1/responses</TableCell>
+                      <TableCell className="text-[13px] font-medium">/v1/responses</TableCell>
                       <TableCell className="text-[13px] text-muted-foreground">{t('settings.responsesApi')}</TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell><Badge variant="outline" className="text-[12px]">POST</Badge></TableCell>
-                      <TableCell className="font-mono text-[13px]">/v1/messages</TableCell>
+                      <TableCell className="text-[13px] font-medium">/v1/messages</TableCell>
                       <TableCell className="text-[13px] text-muted-foreground">{t('settings2.messagesEndpoint')}</TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell><Badge variant="outline" className="text-[12px]">POST</Badge></TableCell>
-                      <TableCell className="font-mono text-[13px]">/v1/images/generations</TableCell>
+                      <TableCell className="text-[13px] font-medium">/v1/images/generations</TableCell>
                       <TableCell className="text-[13px] text-muted-foreground">{t('settings.imageGenerationApi')}</TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell><Badge variant="outline" className="text-[12px]">POST</Badge></TableCell>
-                      <TableCell className="font-mono text-[13px]">/v1/images/edits</TableCell>
+                      <TableCell className="text-[13px] font-medium">/v1/images/edits</TableCell>
                       <TableCell className="text-[13px] text-muted-foreground">{t('settings.imageEditApi')}</TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell><Badge variant="secondary" className="text-[12px]">GET</Badge></TableCell>
-                      <TableCell className="font-mono text-[13px]">/v1/models</TableCell>
+                      <TableCell className="text-[13px] font-medium">/v1/models</TableCell>
                       <TableCell className="text-[13px] text-muted-foreground">{t('settings.modelList')}</TableCell>
                     </TableRow>
                   </TableBody>

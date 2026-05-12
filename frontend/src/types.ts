@@ -139,6 +139,7 @@ export interface UpdateAccountSchedulerRequest {
   score_bias_override: number | null
   base_concurrency_override: number | null
   allowed_api_key_ids?: number[] | null
+  proxy_url?: string | null
 }
 
 export interface AccountModelStat {
@@ -451,6 +452,7 @@ export interface UsageStats {
   rpm: number
   tpm: number
   avg_duration_ms: number
+  avg_first_token_ms: number
   error_rate: number
 }
 

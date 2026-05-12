@@ -50,7 +50,7 @@ const pageSizeOptions = [10, 20, 50, 100]
 
 const errorTableHeadClass = 'text-[12px] font-semibold'
 const errorTableTextClass = 'text-[14px]'
-const errorTableMonoClass = 'font-geist-mono text-[13px] tabular-nums'
+const errorTableMonoClass = 'text-[13px] font-medium font-mono tabular-nums'
 
 export default function OperationsErrors() {
   const { t } = useTranslation()
@@ -210,13 +210,15 @@ export default function OperationsErrors() {
           title={t('opsErrors.title')}
           description={t('opsErrors.description')}
           actions={
-            <Button variant="outline" onClick={() => void reload()}>
-              <RefreshCw className="size-3.5" />
-              {t('common.refresh')}
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start">
+              <OpsTabs compact />
+              <Button variant="outline" onClick={() => void reload()}>
+                <RefreshCw className="size-3.5" />
+                {t('common.refresh')}
+              </Button>
+            </div>
           }
         />
-        <OpsTabs />
 
         <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-4 mb-6">
           <SummaryPill
@@ -257,8 +259,8 @@ export default function OperationsErrors() {
           />
         </div>
 
-        <Card>
-          <CardContent className="p-6">
+        <Card className="py-0">
+          <CardContent className="p-4">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold text-foreground">{t('opsErrors.tableTitle')}</h3>
@@ -489,7 +491,7 @@ export default function OperationsErrors() {
 
               <div className="rounded-lg border border-border bg-muted/30 p-4">
                 <div className="mb-2 text-[12px] font-semibold uppercase text-muted-foreground">{t('opsErrors.fullError')}</div>
-                <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words font-geist-mono text-[12px] leading-relaxed text-foreground">
+                <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-foreground" style={{ fontFamily: 'var(--font-mono)' }}>
                   {selectedLog.error_message || t('opsErrors.noErrorMessage')}
                 </pre>
               </div>
@@ -569,7 +571,7 @@ function DetailRow({ label, value, mono = false }: { label: string; value: strin
   return (
     <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-3 text-sm">
       <span className="text-muted-foreground">{label}</span>
-      <span className={`min-w-0 break-words text-foreground ${mono ? 'font-geist-mono text-[13px] tabular-nums' : ''}`}>{value}</span>
+      <span className={`min-w-0 break-words text-foreground ${mono ? 'text-[13px] font-medium font-mono tabular-nums' : ''}`}>{value}</span>
     </div>
   )
 }

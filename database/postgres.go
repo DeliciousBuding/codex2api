@@ -803,6 +803,22 @@ func (db *DB) InsertAPIKey(ctx context.Context, name, key string) (int64, error)
 	)
 }
 
+// UpdateAPIKeyName updates the display name of an API key without changing the key value.
+func (db *DB) UpdateAPIKeyName(ctx context.Context, id int64, name string) error {
+	res, err := db.conn.ExecContext(ctx, `UPDATE api_keys SET name = $1 WHERE id = $2`, name, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // ==================== System Settings ====================
 
 const DefaultSiteName = "CodexProxy"
@@ -1171,8 +1187,8 @@ func (db *DB) DeleteProxies(ctx context.Context, ids []int64) (int, error) {
 }
 
 // UpdateProxy 更新代理
-func (db *DB) UpdateProxy(ctx context.Context, id int64, label *string, enabled *bool) error {
-	if label == nil && enabled == nil {
+func (db *DB) UpdateProxy(ctx context.Context, id int64, urlValue *string, label *string, enabled *bool) error {
+	if urlValue == nil && label == nil && enabled == nil {
 		var exists int
 		if err := db.conn.QueryRowContext(ctx, `SELECT 1 FROM proxies WHERE id = $1`, id).Scan(&exists); err != nil {
 			if err == sql.ErrNoRows {
@@ -1182,17 +1198,23 @@ func (db *DB) UpdateProxy(ctx context.Context, id int64, label *string, enabled 
 		}
 		return nil
 	}
-	var res sql.Result
-	var err error
-	if label != nil {
-		if enabled != nil {
-			res, err = db.conn.ExecContext(ctx, `UPDATE proxies SET label = $1, enabled = $2 WHERE id = $3`, *label, *enabled, id)
-		} else {
-			res, err = db.conn.ExecContext(ctx, `UPDATE proxies SET label = $1 WHERE id = $2`, *label, id)
-		}
-	} else {
-		res, err = db.conn.ExecContext(ctx, `UPDATE proxies SET enabled = $1 WHERE id = $2`, *enabled, id)
+	assignments := make([]string, 0, 3)
+	args := make([]interface{}, 0, 4)
+	if urlValue != nil {
+		args = append(args, *urlValue)
+		assignments = append(assignments, fmt.Sprintf("url = $%d", len(args)))
 	}
+	if label != nil {
+		args = append(args, *label)
+		assignments = append(assignments, fmt.Sprintf("label = $%d", len(args)))
+	}
+	if enabled != nil {
+		args = append(args, *enabled)
+		assignments = append(assignments, fmt.Sprintf("enabled = $%d", len(args)))
+	}
+	args = append(args, id)
+	query := fmt.Sprintf("UPDATE proxies SET %s WHERE id = $%d", strings.Join(assignments, ", "), len(args))
+	res, err := db.conn.ExecContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -1584,6 +1606,7 @@ type UsageStats struct {
 	RPM                float64 `json:"rpm"`
 	TPM                float64 `json:"tpm"`
 	AvgDurationMs      float64 `json:"avg_duration_ms"`
+	AvgFirstTokenMs    float64 `json:"avg_first_token_ms"`
 	ErrorRate          float64 `json:"error_rate"`
 }
 
@@ -1619,6 +1642,7 @@ func (db *DB) GetUsageStats(ctx context.Context) (*UsageStats, error) {
 			COALESCE(SUM(CASE WHEN created_at >= $2 THEN 1 ELSE 0 END), 0) AS rpm,
 			COALESCE(SUM(CASE WHEN created_at >= $2 THEN total_tokens ELSE 0 END), 0) AS tpm,
 			COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
+			COALESCE(AVG(NULLIF(first_token_ms, 0)), 0) AS avg_first_token_ms,
 		COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS today_errors
 	FROM usage_logs
 	WHERE created_at >= $1
@@ -1631,7 +1655,7 @@ func (db *DB) GetUsageStats(ctx context.Context) (*UsageStats, error) {
 		&stats.TodayInputTokens, &stats.TodayCachedTokens,
 		&stats.TodayAccountBilled, &stats.TodayUserBilled,
 		&stats.RPM, &stats.TPM,
-		&stats.AvgDurationMs,
+		&stats.AvgDurationMs, &stats.AvgFirstTokenMs,
 		&todayErrors,
 	)
 	if err != nil {
@@ -2656,6 +2680,22 @@ func nullableInt64Value(v sql.NullInt64) interface{} {
 		return nil
 	}
 	return v.Int64
+}
+
+// UpdateAccountProxyURL updates the account-level proxy override. The empty string means no account-specific proxy.
+func (db *DB) UpdateAccountProxyURL(ctx context.Context, id int64, proxyURL string) error {
+	res, err := db.conn.ExecContext(ctx, `UPDATE accounts SET proxy_url = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, strings.TrimSpace(proxyURL), id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // SetAccountEnabled 设置账号是否参与调度选择

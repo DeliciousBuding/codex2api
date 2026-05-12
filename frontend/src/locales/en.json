@@ -100,6 +100,12 @@
     "error": "Errors",
     "todayRequests": "Today's Requests",
     "usageStats": "Usage Statistics",
+    "trafficGroup": "Traffic",
+    "tokenGroup": "Tokens",
+    "cacheGroup": "Cache",
+    "healthGroup": "Health",
+    "billing": "Billing",
+    "totalCostShort": "Total",
     "totalRequests": "Total Requests",
     "totalTokens": "Total Tokens",
     "todayTokens": "Today's Tokens",
@@ -107,10 +113,13 @@
     "todayCachedTokens": "Today's Cached Tokens",
     "cacheRateDesc": "From input tokens",
     "cacheHitRate": "Cache Hit Rate",
+    "totalCacheHitRate": "Total Cache Hit Rate",
     "todayCacheHitRate": "Today's Cache Hit Rate",
     "cacheHitRateDesc": "Cached input / input tokens",
     "rpmTpm": "RPM / TPM",
     "avgLatency": "Avg Latency",
+    "avgFirstTokenLatency": "Avg First Token Latency",
+    "avgCompletionLatency": "Avg Completion Time",
     "todayErrorRate": "Error Rate (Today)",
     "usageCharts": "Usage Trends",
     "usageChartsDesc": "Auto-aggregated from {{count}} logs in the selected time range.",
@@ -222,6 +231,7 @@
     "importFailedCount": "Failed",
     "importDoneHint": "Token refresh is still running in the background. You can close this dialog.",
     "selectAll": "Select All",
+    "columnSettings": "Columns",
     "email": "Email",
     "plan": "Plan",
     "status": "Status",
@@ -388,6 +398,9 @@
     "allowedAPIKeysPlaceholder": "Choose which tokens may use this account",
     "allowedAPIKeysNoOptions": "No API keys yet",
     "allowedAPIKeysNoOptionsHint": "No API keys have been created, so this account currently allows all callers.",
+    "proxyUrlLabel": "Account Proxy",
+    "proxyUrlHint": "Set a dedicated proxy URL for this account. Leave empty to use the global proxy pool.",
+    "proxyUrlPlaceholder": "http://user:pass@ip:port (empty = global proxy)",
     "schedulerPreviewTitle": "Current Scheduler Preview",
     "schedulerPreviewRawScore": "Raw Score",
     "schedulerPreviewDispatchScore": "Dispatch Score",
@@ -666,6 +679,7 @@
     "errorRateCard": "Error Rate",
     "avgLatencyInline": "Avg Latency: {{value}}ms",
     "requestLogs": "Request Logs",
+    "lastUpdated": "Last updated: {{time}}",
     "recordsCount": "{{count}} records",
     "clearLogsTitle": "Clear Usage Logs",
     "clearLogsDesc": "All request logs will be removed immediately and the statistics view will refresh right away. This action cannot be undone.",
@@ -1038,7 +1052,13 @@
     "disabled": "Inactive",
     "test": "Test",
     "testProxy": "Test Proxy",
-    "pagination": "{{total}} proxies, page {{page}}/{{totalPages}}"
+    "pagination": "{{total}} proxies, page {{page}}/{{totalPages}}",
+    "editProxy": "Edit",
+    "editProxyTitle": "Edit Proxy",
+    "editUrlLabel": "Proxy URL",
+    "editLabelLabel": "Label",
+    "invalidProxyUrl": "Invalid proxy URL format",
+    "proxyUpdated": "Proxy updated"
   },
   "apiKeys": {
     "title": "API Keys",
@@ -1084,7 +1104,10 @@
     "noKeysDesc": "After creating the first key, client requests will require authentication.",
     "keyColumn": "Key",
     "showKey": "Show key",
-    "hideKey": "Hide key"
+    "hideKey": "Hide key",
+    "renameKey": "Rename",
+    "keyRenamed": "Key renamed",
+    "renameFailed": "Rename failed"
   },
   "nav2": {
     "docs": "Docs",
@@ -1319,6 +1342,72 @@
       "sending": "Sending…",
       "placeholder": "Click Send to make a request",
       "selectKey": "Select key:"
+    }
+  },
+  "docs": {
+    "title": "Documentation",
+    "description": "Complete integration guide, API endpoints and admin reference.",
+    "tocTitle": "Contents",
+    "copyMarkdown": "Copy as Markdown",
+    "markdownCopied": "Copied as Markdown",
+    "section1Eyebrow": "01 · Onboarding",
+    "section2Eyebrow": "02 · Clients",
+    "section3Eyebrow": "03 · Authentication",
+    "section4Eyebrow": "04 · Model API",
+    "section5Eyebrow": "05 · Admin API",
+    "toc": {
+      "quickStart": "Quick Start",
+      "qsTools": "AI Clients",
+      "qsCurl": "cURL Check",
+      "clientConfig": "Client Setup",
+      "modelMapping": "Model Mapping",
+      "authentication": "Authentication",
+      "modelApi": "Model API",
+      "adminApi": "Admin API"
+    },
+    "quickStart": {
+      "title": "Quick Start",
+      "description": "Pick your favorite AI client. Copy config or launch the app in one click.",
+      "toolsTitle": "One-click client setup",
+      "toolsDesc": "Curated set of CLI, desktop, web, and mobile tools.",
+      "launch": "Launch",
+      "needKey": "Create a key first",
+      "copyConfig": "Copy config",
+      "copied": "Copied",
+      "useKey": "Use key",
+      "curlTitle": "cURL quick check",
+      "curlDesc": "Use these commands to verify your endpoints. YOUR_API_KEY auto-fills with your first API key.",
+      "createKeyFirst": "Create an API key first",
+      "copiedToast": "Copied {{name}} config",
+      "launchedToast": "Launching {{name}}"
+    },
+    "clientConfig": {
+      "title": "Client Configuration",
+      "description": "Wire this proxy into Codex CLI or Claude Code. Covers every supported protocol.",
+      "codexDesc": "Add the following config files to the Codex CLI config directory to route Codex traffic through this proxy.",
+      "codexConfigHint": "Make sure the content below appears at the top of config.toml",
+      "codexNoteUnix": "Make sure the config directory exists — run mkdir -p ~/.codex if not.",
+      "codexNoteWindows": "Press Win+R and enter %userprofile%\\.codex to open the config directory — create it manually if missing.",
+      "claudeDesc": "Set environment variables or edit settings.json to make Claude Code use this proxy.",
+      "claudeEnvNote": "Environment variables only persist for the current shell session — write them to ~/.bashrc or ~/.zshrc for permanent use.",
+      "claudeSettingsNote": "Or edit Claude Code's settings.json directly (pick one approach).",
+      "mappingTitle": "Model Mapping",
+      "mappingDesc": "On the /v1/messages endpoint, Claude model names are auto-mapped to Codex names. Customize the mapping in System Settings."
+    },
+    "authentication": {
+      "title": "Authentication",
+      "description": "All endpoints except /health require an API key. Admin endpoints additionally require X-Admin-Key.",
+      "bearerNote": "Standard (recommended)",
+      "xApiKeyNote": "Anthropic SDK default",
+      "adminNote": "Admin endpoints only"
+    },
+    "modelApi": {
+      "title": "Model API",
+      "description": "OpenAI Responses, Chat Completions, and Anthropic Messages — three compatible surfaces sharing one upstream pool."
+    },
+    "adminApi": {
+      "title": "Account Management API",
+      "description": "Add, delete, and list pool accounts. All endpoints require X-Admin-Key."
     }
   }
 }

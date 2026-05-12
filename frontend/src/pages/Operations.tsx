@@ -57,9 +57,10 @@ export default function Operations() {
         <PageHeader
           title={t('ops.title')}
           description={t('ops.description')}
+          actionMeta={t('ops.lastUpdated', { time: updatedLabel })}
           actions={
-            <div className="flex items-center gap-3 max-sm:w-full max-sm:flex-col max-sm:items-stretch">
-              <span className="text-sm text-muted-foreground max-sm:text-center">{t('ops.lastUpdated', { time: updatedLabel })}</span>
+            <div className="flex flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start">
+              <OpsTabs compact />
               <Button variant="outline" onClick={() => void reload()}>
                 <RefreshCw className="size-3.5" />
                 {t('common.refresh')}
@@ -67,27 +68,26 @@ export default function Operations() {
             </div>
           }
         />
-        <OpsTabs />
 
         {overview ? (
           <>
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-4 mb-6">
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3 mb-4">
               <SummaryPill label={t('ops.uptime')} value={formatUptime(overview.uptime_seconds, t)} />
               <SummaryPill label={t('ops.accountPool')} value={`${overview.runtime.available_accounts} / ${overview.runtime.total_accounts}`} />
               <SummaryPill label={t('ops.todayRequests')} value={formatNumber(overview.traffic.today_requests)} />
               <SummaryPill label={t('ops.todayErrorRate')} value={`${overview.traffic.error_rate.toFixed(1)}%`} />
             </div>
 
-            <Card>
-              <CardContent className="p-6">
-                <div className="mb-5 flex items-center justify-between gap-4">
+            <Card className="py-0">
+              <CardContent className="p-4">
+                <div className="mb-3 flex items-center justify-between gap-4">
                   <div>
                     <h3 className="text-base font-semibold text-foreground">{t('ops.overview')}</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">{t('ops.overviewDesc')}</p>
+                    <p className="mt-0.5 text-sm text-muted-foreground">{t('ops.overviewDesc')}</p>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
                   <OpsMetricCard
                     label={t('ops.cpu')}
                     value={`${overview.cpu.percent.toFixed(1)}%`}
@@ -222,21 +222,21 @@ function OpsMetricCard({
 
   return (
     <Card className="py-0 transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md">
-      <CardContent className="p-4">
+      <CardContent className="p-3">
         <div className="flex items-center justify-between gap-3">
           <span className="text-[13px] font-semibold text-muted-foreground">{label}</span>
-          <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-semibold ${toneStyle.badge}`}>
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[12px] font-semibold ${toneStyle.badge}`}>
             <span className={`size-2 rounded-full ${toneStyle.dot}`} />
             {toneStyle.label}
           </span>
         </div>
 
-        <div className="mt-5 flex items-end justify-between gap-3">
+        <div className="mt-3 flex items-end justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-[32px] font-bold leading-none text-foreground">{value}</div>
-            <div className="mt-3 text-[13px] leading-relaxed text-muted-foreground">{sub}</div>
+            <div className="text-[28px] font-bold leading-none text-foreground">{value}</div>
+            <div className="mt-2 text-[13px] leading-relaxed text-muted-foreground">{sub}</div>
           </div>
-          <div className={`flex size-11 shrink-0 items-center justify-center rounded-lg ${toneStyle.icon}`}>
+          <div className={`flex size-9 shrink-0 items-center justify-center rounded-lg ${toneStyle.icon}`}>
             {icon}
           </div>
         </div>
@@ -247,9 +247,9 @@ function OpsMetricCard({
 
 function SummaryPill({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-border bg-card/85 px-3 py-2.5 shadow-sm">
+    <div className="rounded-lg border border-border bg-card/85 px-3 py-2 shadow-sm">
       <div className="text-[12px] font-bold uppercase text-muted-foreground">{label}</div>
-      <div className="mt-2 text-[20px] font-bold text-foreground">{value}</div>
+      <div className="mt-1 text-[20px] font-bold text-foreground">{value}</div>
     </div>
   )
 }
