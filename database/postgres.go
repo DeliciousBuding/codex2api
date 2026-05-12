@@ -1101,9 +1101,12 @@ func (db *DB) InsertProxies(ctx context.Context, urls []string, label string) (i
 		if db.isSQLite() {
 			res, err := db.conn.ExecContext(ctx, `INSERT INTO proxies (url, label) VALUES ($1, $2) ON CONFLICT(url) DO NOTHING`, u, label)
 			if err != nil {
-				continue
+				return inserted, err
 			}
-			affected, _ := res.RowsAffected()
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return inserted, err
+			}
 			if affected > 0 {
 				inserted++
 			}
@@ -1114,6 +1117,10 @@ func (db *DB) InsertProxies(ctx context.Context, urls []string, label string) (i
 			`INSERT INTO proxies (url, label) VALUES ($1, $2) ON CONFLICT (url) DO NOTHING RETURNING id`, u, label).Scan(&id)
 		if err == nil {
 			inserted++
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return inserted, err
 		}
 	}
 	return inserted, nil

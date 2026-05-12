@@ -54,6 +54,32 @@ func TestSQLiteProxyMutationsReturnNoRowsForMissingProxy(t *testing.T) {
 	}
 }
 
+func TestSQLiteInsertProxiesSkipsDuplicatesAndReportsInsertErrors(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	inserted, err := db.InsertProxies(ctx, []string{"http://127.0.0.1:8080", "http://127.0.0.1:8080"}, "local")
+	if err != nil {
+		t.Fatalf("InsertProxies duplicate batch error = %v", err)
+	}
+	if inserted != 1 {
+		t.Fatalf("InsertProxies inserted = %d, want 1", inserted)
+	}
+
+	if _, err := db.conn.ExecContext(ctx, `DROP TABLE proxies`); err != nil {
+		t.Fatalf("drop proxies: %v", err)
+	}
+	if _, err := db.InsertProxies(ctx, []string{"http://127.0.0.1:8081"}, "broken"); err == nil {
+		t.Fatal("InsertProxies after dropping table should return an error")
+	}
+}
+
 func TestSQLiteAPIKeyLookupAndCount(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 
