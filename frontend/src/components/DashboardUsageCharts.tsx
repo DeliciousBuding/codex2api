@@ -38,6 +38,7 @@ interface TimelinePoint {
   outputTokens: number
   reasoningTokens: number
   cachedTokens: number
+  cacheHitRate: number | null
   errors4xx: number
   errors5xx: number
 }
@@ -96,6 +97,7 @@ export default function DashboardUsageCharts({
         outputTokens: point.output_tokens,
         reasoningTokens: point.reasoning_tokens,
         cachedTokens: point.cached_tokens,
+        cacheHitRate: point.input_tokens > 0 ? Math.min(100, (point.cached_tokens / point.input_tokens) * 100) : null,
         errors4xx: point.errors_4xx,
         errors5xx: point.errors_5xx,
       }
@@ -159,7 +161,7 @@ export default function DashboardUsageCharts({
 
       {loading ? (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {[0, 1, 2, 3].map((i) => (
+          {[0, 1, 2, 3, 4].map((i) => (
             <Card key={i} className="py-0">
               <CardContent className="p-6">
                 <div className="mb-5 space-y-2">
@@ -299,6 +301,34 @@ export default function DashboardUsageCharts({
             </ResponsiveContainer>
           </ChartCard>
 
+          <ChartCard title={t('dashboard.cacheHitRateTrend')} description={t('dashboard.cacheHitRateTrendDesc')}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={displayData.timelineData} margin={chartMargin}>
+                <CartesianGrid vertical={false} stroke={gridColor} strokeDasharray="4 4" />
+                <XAxis dataKey="label" tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} minTickGap={20} tickMargin={8} />
+                <YAxis domain={[0, 100]} tickFormatter={formatPercentTick} tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} width={58} />
+                <Tooltip
+                  position={{ y: 10 }}
+                  formatter={(value) => formatPercent(value)}
+                  labelFormatter={(_, payload) => getTooltipLabel(payload, 'fullLabel')}
+                  contentStyle={tooltipContentStyle}
+                  labelStyle={tooltipLabelStyle}
+                  itemStyle={tooltipItemStyle}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="cacheHitRate"
+                  name={t('dashboard.seriesCacheHitRate')}
+                  stroke="hsl(173 80% 36%)"
+                  strokeWidth={2.5}
+                  dot={false}
+                  connectNulls
+                  activeDot={{ r: 4 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </ChartCard>
+
           <ChartCard title={t('dashboard.modelRanking')} description={t('dashboard.modelRankingDesc')}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={displayData.modelData} layout="vertical" margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
@@ -405,6 +435,18 @@ function formatDurationTick(value: number | string): string {
   const numericValue = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(numericValue)) return '0ms'
   return formatDuration(numericValue)
+}
+
+function formatPercent(value: unknown): string {
+  const numericValue = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numericValue)) return '-'
+  return `${numericValue.toFixed(numericValue >= 10 ? 0 : 1)}%`
+}
+
+function formatPercentTick(value: number | string): string {
+  const numericValue = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numericValue)) return '0%'
+  return `${Math.round(numericValue)}%`
 }
 
 function getTooltipLabel(payload: readonly { payload?: Record<string, unknown> }[] | undefined, key: string): string {
