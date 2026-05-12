@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -2076,6 +2077,9 @@ func (s *Store) SetProxyPoolEnabled(enabled bool) {
 
 // ReloadProxyPool 从数据库重新加载代理池
 func (s *Store) ReloadProxyPool() error {
+	if s == nil || s.db == nil {
+		return errors.New("proxy pool database is not configured")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	proxies, err := s.db.ListEnabledProxies(ctx)

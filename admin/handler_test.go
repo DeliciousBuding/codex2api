@@ -187,6 +187,28 @@ func TestAddProxiesRejectsInvalidProxyURL(t *testing.T) {
 	assertErrorContains(t, recorder, "代理 URL 格式错误")
 }
 
+func TestAddProxiesReportsReloadFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	handler := &Handler{db: db, store: &auth.Store{}}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/admin/proxies",
+		strings.NewReader(`{"url":"http://127.0.0.1:8080"}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.AddProxies(ctx)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+	assertErrorContains(t, recorder, "刷新代理池失败")
+}
+
 func TestTestProxyReturnsNotFoundWhenPersistTargetMissing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -4191,7 +4191,10 @@ func (h *Handler) AddProxies(c *gin.Context) {
 	}
 
 	// 刷新代理池
-	_ = h.store.ReloadProxyPool()
+	if err := h.store.ReloadProxyPool(); err != nil {
+		writeError(c, http.StatusInternalServerError, "代理已添加，但刷新代理池失败: "+err.Error())
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":  fmt.Sprintf("成功添加 %d 个代理", inserted),
@@ -4220,7 +4223,10 @@ func (h *Handler) DeleteProxy(c *gin.Context) {
 		return
 	}
 
-	_ = h.store.ReloadProxyPool()
+	if err := h.store.ReloadProxyPool(); err != nil {
+		writeError(c, http.StatusInternalServerError, "代理已删除，但刷新代理池失败: "+err.Error())
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "代理已删除"})
 }
 
@@ -4253,7 +4259,10 @@ func (h *Handler) UpdateProxy(c *gin.Context) {
 		return
 	}
 
-	_ = h.store.ReloadProxyPool()
+	if err := h.store.ReloadProxyPool(); err != nil {
+		writeError(c, http.StatusInternalServerError, "代理已更新，但刷新代理池失败: "+err.Error())
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "代理已更新"})
 }
 
@@ -4276,7 +4285,10 @@ func (h *Handler) BatchDeleteProxies(c *gin.Context) {
 		return
 	}
 
-	_ = h.store.ReloadProxyPool()
+	if err := h.store.ReloadProxyPool(); err != nil {
+		writeError(c, http.StatusInternalServerError, "代理已删除，但刷新代理池失败: "+err.Error())
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("已删除 %d 个代理", deleted), "deleted": deleted})
 }
 
