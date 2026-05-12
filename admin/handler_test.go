@@ -449,6 +449,45 @@ func TestImportAccountsCommonStoresATMetadataAtomically(t *testing.T) {
 	}
 }
 
+func TestImportAccountsCommonStoresRTMetadataAtomically(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	handler := &Handler{db: db, store: &auth.Store{}}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/import", nil)
+
+	handler.importAccountsCommon(ctx, []importToken{{
+		name:         "rt-with-metadata",
+		accountID:    "acct_rt_import",
+		email:        "rt-user@example.com",
+		refreshToken: "rt_import",
+		accessToken:  "at_rt_import",
+	}}, "")
+
+	rows, err := db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("active accounts = %d, want 1", len(rows))
+	}
+	if got := rows[0].GetCredential("account_id"); got != "acct_rt_import" {
+		t.Fatalf("account_id = %q, want acct_rt_import", got)
+	}
+	if got := rows[0].GetCredential("email"); got != "rt-user@example.com" {
+		t.Fatalf("email = %q, want rt-user@example.com", got)
+	}
+	if got := rows[0].GetCredential("refresh_token"); got != "rt_import" {
+		t.Fatalf("refresh_token = %q, want rt_import", got)
+	}
+	if got := rows[0].GetCredential("access_token"); got != "at_rt_import" {
+		t.Fatalf("access_token = %q, want at_rt_import", got)
+	}
+}
+
 func TestGetAccountAuthJSONRejectsInvalidID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

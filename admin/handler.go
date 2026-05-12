@@ -2100,29 +2100,24 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				if name == "" {
 					name = fmt.Sprintf("import-%d", idx+1)
 				}
+				seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
+					refreshToken:        tok.refreshToken,
+					sessionToken:        tok.sessionToken,
+					accessToken:         tok.accessToken,
+					idToken:             tok.idToken,
+					accountID:           tok.accountID,
+					email:               tok.email,
+					planType:            tok.planType,
+					expiresAtRaw:        tok.expiresAt,
+					codex7DUsedPercent:  tok.codex7DUsedPercent,
+					codex7DResetAt:      tok.codex7DResetAt,
+					codex5HUsedPercent:  tok.codex5HUsedPercent,
+					codex5HResetAt:      tok.codex5HResetAt,
+					codexUsageUpdatedAt: tok.codexUsageUpdatedAt,
+				})
 
 				insertCtx, insertCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				var id int64
-				var err error
-				if tok.refreshToken != "" {
-					id, err = h.db.InsertAccount(insertCtx, name, tok.refreshToken, proxyURL)
-				} else {
-					seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
-						sessionToken:        tok.sessionToken,
-						accessToken:         tok.accessToken,
-						idToken:             tok.idToken,
-						accountID:           tok.accountID,
-						email:               tok.email,
-						planType:            tok.planType,
-						expiresAtRaw:        tok.expiresAt,
-						codex7DUsedPercent:  tok.codex7DUsedPercent,
-						codex7DResetAt:      tok.codex7DResetAt,
-						codex5HUsedPercent:  tok.codex5HUsedPercent,
-						codex5HResetAt:      tok.codex5HResetAt,
-						codexUsageUpdatedAt: tok.codexUsageUpdatedAt,
-					})
-					id, err = h.db.InsertAccountWithCredentials(insertCtx, name, tokenCredentialMap(seed), proxyURL)
-				}
+				id, err := h.db.InsertAccountWithCredentials(insertCtx, name, tokenCredentialMap(seed), proxyURL)
 				insertCancel()
 
 				if err != nil {
@@ -2141,28 +2136,6 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				atomic.AddInt64(&current, 1)
 				h.db.InsertAccountEventAsync(id, "added", "import")
 
-				seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
-					refreshToken:        tok.refreshToken,
-					sessionToken:        tok.sessionToken,
-					accessToken:         tok.accessToken,
-					idToken:             tok.idToken,
-					accountID:           tok.accountID,
-					email:               tok.email,
-					planType:            tok.planType,
-					expiresAtRaw:        tok.expiresAt,
-					codex7DUsedPercent:  tok.codex7DUsedPercent,
-					codex7DResetAt:      tok.codex7DResetAt,
-					codex5HUsedPercent:  tok.codex5HUsedPercent,
-					codex5HResetAt:      tok.codex5HResetAt,
-					codexUsageUpdatedAt: tok.codexUsageUpdatedAt,
-				})
-				if len(tokenCredentialMap(seed)) > 0 {
-					credCtx, credCancel := context.WithTimeout(context.Background(), 3*time.Second)
-					if err := h.db.UpdateCredentials(credCtx, id, tokenCredentialMap(seed)); err != nil {
-						log.Printf("导入账号 %d 更新 token 信息失败: %v", id, err)
-					}
-					credCancel()
-				}
 				newAcc := accountFromCredentialSeed(id, proxyURL, seed)
 				h.store.AddAccount(newAcc)
 
