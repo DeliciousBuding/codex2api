@@ -2961,7 +2961,7 @@ func (h *Handler) CreateAPIKey(c *gin.Context) {
 	})
 }
 
-// UpdateAPIKey 重命名 API 密钥
+// UpdateAPIKey 重命名 API 密钥 / 设置允许调度的账号分组
 func (h *Handler) UpdateAPIKey(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -2970,37 +2970,74 @@ func (h *Handler) UpdateAPIKey(c *gin.Context) {
 	}
 
 	var req struct {
-		Name string `json:"name"`
+		Name            *string  `json:"name"`
+		AllowedGroupIDs *[]int64 `json:"allowed_group_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, http.StatusBadRequest, "请求格式错误")
 		return
 	}
 
-	req.Name = security.SanitizeInput(req.Name)
-	if req.Name == "" {
-		writeError(c, http.StatusBadRequest, "名称不能为空")
-		return
-	}
-	if utf8.RuneCountInString(req.Name) > 100 {
-		writeError(c, http.StatusBadRequest, "名称长度不能超过100字符")
-		return
-	}
-	if security.ContainsXSS(req.Name) {
-		writeError(c, http.StatusBadRequest, "名称包含非法字符")
+	if req.Name == nil && req.AllowedGroupIDs == nil {
+		writeError(c, http.StatusBadRequest, "请求字段为空")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	if err := h.db.UpdateAPIKeyName(ctx, id, req.Name); err != nil {
-		if err == sql.ErrNoRows {
-			writeError(c, http.StatusNotFound, "API Key 不存在")
+	if req.Name != nil {
+		name := security.SanitizeInput(*req.Name)
+		if name == "" {
+			writeError(c, http.StatusBadRequest, "名称不能为空")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, "更新失败: "+err.Error())
-		return
+		if utf8.RuneCountInString(name) > 100 {
+			writeError(c, http.StatusBadRequest, "名称长度不能超过100字符")
+			return
+		}
+		if security.ContainsXSS(name) {
+			writeError(c, http.StatusBadRequest, "名称包含非法字符")
+			return
+		}
+		if err := h.db.UpdateAPIKeyName(ctx, id, name); err != nil {
+			if err == sql.ErrNoRows {
+				writeError(c, http.StatusNotFound, "API Key 不存在")
+				return
+			}
+			writeError(c, http.StatusInternalServerError, "更新失败: "+err.Error())
+			return
+		}
+	}
+
+	if req.AllowedGroupIDs != nil {
+		dedup := dedupeInt64(*req.AllowedGroupIDs)
+		if len(dedup) > 0 {
+			missing, err := h.db.VerifyAccountGroupIDs(ctx, dedup)
+			if err != nil {
+				writeError(c, http.StatusInternalServerError, "校验分组 ID 失败: "+err.Error())
+				return
+			}
+			if len(missing) > 0 {
+				values := make([]string, 0, len(missing))
+				for _, value := range missing {
+					values = append(values, strconv.FormatInt(value, 10))
+				}
+				writeError(c, http.StatusBadRequest, "allowed_group_ids 包含不存在的分组 ID: "+strings.Join(values, ", "))
+				return
+			}
+		}
+		if err := h.db.UpdateAPIKeyAllowedGroups(ctx, id, dedup); err != nil {
+			if err == sql.ErrNoRows {
+				writeError(c, http.StatusNotFound, "API Key 不存在")
+				return
+			}
+			writeError(c, http.StatusInternalServerError, "更新失败: "+err.Error())
+			return
+		}
+		if h.store != nil {
+			h.store.SetAPIKeyAllowedGroups(id, dedup)
+		}
 	}
 
 	writeMessage(c, http.StatusOK, "API Key 已更新")

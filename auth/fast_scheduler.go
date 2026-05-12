@@ -33,11 +33,12 @@ type fastSchedulerPosition struct {
 // 调度策略：按健康层级分桶，桶内按调度分排序后 round-robin。
 // 验证过的账号只作为同分 tie-breaker，避免历史请求量盖过额度快重置优先级。
 type FastScheduler struct {
-	mu        sync.RWMutex
-	baseLimit int64
-	buckets   map[AccountHealthTier][]fastSchedulerEntry
-	positions map[int64]fastSchedulerPosition
-	cursors   [3]atomic.Uint64
+	mu          sync.RWMutex
+	baseLimit   int64
+	buckets     map[AccountHealthTier][]fastSchedulerEntry
+	positions   map[int64]fastSchedulerPosition
+	cursors     [3]atomic.Uint64
+	groupCheck  func(apiKeyID int64, acc *Account) bool
 }
 
 func NewFastScheduler(baseLimit int64) *FastScheduler {
@@ -162,6 +163,18 @@ func (s *FastScheduler) SetBaseLimit(baseLimit int64) {
 	s.mu.Unlock()
 }
 
+// SetGroupCheck installs a callback that returns true if the given account is
+// allowed to serve the API key, considering account-group scoping. Passing nil
+// disables group-scope filtering.
+func (s *FastScheduler) SetGroupCheck(check func(apiKeyID int64, acc *Account) bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.groupCheck = check
+	s.mu.Unlock()
+}
+
 func (s *FastScheduler) Acquire() *Account {
 	return s.AcquireExcluding(0, nil)
 }
@@ -224,6 +237,9 @@ func (s *FastScheduler) scanRangeLocked(expectedTier AccountHealthTier, rangeSta
 			continue
 		}
 		if !entry.acc.AllowsAPIKey(apiKeyID) {
+			continue
+		}
+		if s.groupCheck != nil && !s.groupCheck(apiKeyID, entry.acc) {
 			continue
 		}
 		if filter != nil && !filter(entry.acc) {

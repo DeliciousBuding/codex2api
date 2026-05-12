@@ -144,6 +144,44 @@ func TestFastSchedulerRoundRobinWithinTier(t *testing.T) {
 	}
 }
 
+func TestStoreNextExcludingRespectsAPIKeyAllowedGroups(t *testing.T) {
+	plusAcc := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
+	plusAcc.GroupIDs = []int64{10} // plus-pool
+	freeAcc := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
+	freeAcc.GroupIDs = []int64{20} // free-pool
+
+	store := &Store{
+		accounts:       []*Account{plusAcc, freeAcc},
+		maxConcurrency: 1,
+	}
+	// API Key 7 is restricted to free-pool (group 20)
+	store.SetAPIKeyAllowedGroups(7, []int64{20})
+
+	got := store.NextExcluding(7, nil)
+	if got == nil {
+		t.Fatal("NextExcluding(apikey=7) returned nil — expected free-pool account")
+	}
+	defer store.Release(got)
+	if got.DBID != 2 {
+		t.Fatalf("NextExcluding(apikey=7) picked dbID=%d, want 2 (free-pool)", got.DBID)
+	}
+
+	// API Key 8 is unrestricted — any account is fine
+	store.SetAPIKeyAllowedGroups(8, nil)
+	got2 := store.NextExcluding(8, nil)
+	if got2 == nil {
+		t.Fatal("NextExcluding(apikey=8, unrestricted) returned nil")
+	}
+	defer store.Release(got2)
+
+	// API Key 9 restricted to a non-existent group ID — should find nothing
+	store.SetAPIKeyAllowedGroups(9, []int64{999})
+	if leftover := store.NextExcluding(9, nil); leftover != nil {
+		store.Release(leftover)
+		t.Fatalf("NextExcluding(apikey=9, group=999) returned account %d, want nil", leftover.DBID)
+	}
+}
+
 func TestStoreNextExcludingRespectsAPIKeyWhitelist(t *testing.T) {
 	restricted := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
 	restricted.SetAllowedAPIKeyIDs([]int64{2})

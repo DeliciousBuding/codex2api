@@ -543,6 +543,8 @@ func (db *DB) migrate(ctx context.Context) error {
 		created_at TIMESTAMPTZ DEFAULT NOW()
 	);
 
+	ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS allowed_group_ids JSONB DEFAULT '[]'::jsonb;
+
 			CREATE TABLE IF NOT EXISTS system_settings (
 				id                 INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
 				site_name          TEXT DEFAULT 'CodexProxy',
@@ -762,15 +764,16 @@ func (db *DB) migrate(ctx context.Context) error {
 
 // APIKeyRow API 密钥行
 type APIKeyRow struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Key       string    `json:"key"`
-	CreatedAt time.Time `json:"created_at"`
+	ID              int64     `json:"id"`
+	Name            string    `json:"name"`
+	Key             string    `json:"key"`
+	AllowedGroupIDs []int64   `json:"allowed_group_ids"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // ListAPIKeys 获取所有 API 密钥
 func (db *DB) ListAPIKeys(ctx context.Context) ([]*APIKeyRow, error) {
-	rows, err := db.conn.QueryContext(ctx, `SELECT id, name, key, created_at FROM api_keys ORDER BY id`)
+	rows, err := db.conn.QueryContext(ctx, `SELECT id, name, key, allowed_group_ids, created_at FROM api_keys ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -780,9 +783,11 @@ func (db *DB) ListAPIKeys(ctx context.Context) ([]*APIKeyRow, error) {
 	for rows.Next() {
 		k := &APIKeyRow{}
 		var createdAtRaw interface{}
-		if err := rows.Scan(&k.ID, &k.Name, &k.Key, &createdAtRaw); err != nil {
+		var allowedGroupsRaw interface{}
+		if err := rows.Scan(&k.ID, &k.Name, &k.Key, &allowedGroupsRaw, &createdAtRaw); err != nil {
 			return nil, err
 		}
+		k.AllowedGroupIDs = decodeInt64SliceValue(allowedGroupsRaw)
 		k.CreatedAt, err = parseDBTimeValue(createdAtRaw)
 		if err != nil {
 			return nil, err
@@ -803,7 +808,7 @@ func (db *DB) CountAPIKeys(ctx context.Context) (int, error) {
 
 // GetAPIKeyByValue 通过完整 API Key 查找元数据，用于鉴权热路径的按 key 缓存。
 func (db *DB) GetAPIKeyByValue(ctx context.Context, key string) (*APIKeyRow, error) {
-	rows, err := db.conn.QueryContext(ctx, `SELECT id, name, key, created_at FROM api_keys WHERE key = $1`, key)
+	rows, err := db.conn.QueryContext(ctx, `SELECT id, name, key, allowed_group_ids, created_at FROM api_keys WHERE key = $1`, key)
 	if err != nil {
 		return nil, err
 	}
@@ -837,6 +842,57 @@ func (db *DB) UpdateAPIKeyName(ctx context.Context, id int64, name string) error
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// UpdateAPIKeyAllowedGroups persists the allowed-group scope for an API key.
+// Empty slice clears the scope (key may schedule any account).
+func (db *DB) UpdateAPIKeyAllowedGroups(ctx context.Context, id int64, groupIDs []int64) error {
+	payload := encodeInt64SliceJSON(groupIDs)
+	var (
+		res sql.Result
+		err error
+	)
+	if db.isSQLite() {
+		res, err = db.conn.ExecContext(ctx, `UPDATE api_keys SET allowed_group_ids = $1 WHERE id = $2`, payload, id)
+	} else {
+		res, err = db.conn.ExecContext(ctx, `UPDATE api_keys SET allowed_group_ids = $1::jsonb WHERE id = $2`, payload, id)
+	}
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// decodeInt64SliceValue parses a JSON array of integers from a JSONB or TEXT column.
+func decodeInt64SliceValue(raw interface{}) []int64 {
+	data := bytesFromDBValue(raw)
+	if len(data) == 0 {
+		return nil
+	}
+	var out []int64
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// encodeInt64SliceJSON marshals []int64 to JSON. Returns "[]" for nil/empty.
+func encodeInt64SliceJSON(values []int64) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // ==================== System Settings ====================

@@ -589,6 +589,7 @@ export interface APIKeyRow {
   name: string
   key: string
   raw_key: string
+  allowed_group_ids?: number[]
   created_at: ISODateString
 }
 

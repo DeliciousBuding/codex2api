@@ -49,21 +49,27 @@ type apiKeysResponse struct {
 
 // MaskedAPIKeyRow API Key 响应（含脱敏和完整 key）
 type MaskedAPIKeyRow struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	Key       string `json:"key"`
-	RawKey    string `json:"raw_key"`
-	CreatedAt string `json:"created_at"`
+	ID              int64   `json:"id"`
+	Name            string  `json:"name"`
+	Key             string  `json:"key"`
+	RawKey          string  `json:"raw_key"`
+	AllowedGroupIDs []int64 `json:"allowed_group_ids"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 // NewMaskedAPIKeyRow 创建 API Key 响应
 func NewMaskedAPIKeyRow(row *database.APIKeyRow) *MaskedAPIKeyRow {
+	groupIDs := append([]int64(nil), row.AllowedGroupIDs...)
+	if groupIDs == nil {
+		groupIDs = []int64{}
+	}
 	return &MaskedAPIKeyRow{
-		ID:        row.ID,
-		Name:      row.Name,
-		Key:       security.MaskAPIKey(row.Key),
-		RawKey:    row.Key,
-		CreatedAt: row.CreatedAt.Format(time.RFC3339),
+		ID:              row.ID,
+		Name:            row.Name,
+		Key:             security.MaskAPIKey(row.Key),
+		RawKey:          row.Key,
+		AllowedGroupIDs: groupIDs,
+		CreatedAt:       row.CreatedAt.Format(time.RFC3339),
 	}
 }
 

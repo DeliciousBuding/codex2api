@@ -1469,6 +1469,8 @@ type Store struct {
 	testModel                 atomic.Value // 测试连接使用的模型（string）
 	db                        *database.DB
 	tokenCache                cache.TokenCache
+	apiKeyGroupsMu            sync.RWMutex
+	apiKeyAllowedGroups       map[int64][]int64 // API Key 允许调度的账号分组 ID 集合（空切片 = 不限制）
 	usageProbeMu              sync.RWMutex
 	usageProbe                func(context.Context, *Account) error
 	usageProbeBatch           atomic.Bool
@@ -1926,7 +1928,9 @@ func (s *Store) rebuildFastScheduler() {
 	if s == nil || !s.fastSchedulerEnabled.Load() {
 		return
 	}
-	s.fastScheduler.Store(s.BuildFastScheduler())
+	scheduler := s.BuildFastScheduler()
+	scheduler.SetGroupCheck(s.APIKeyAllowsAccount)
+	s.fastScheduler.Store(scheduler)
 }
 
 func (s *Store) recomputeAllAccountSchedulerState() {
@@ -2226,6 +2230,11 @@ func (s *Store) Init(ctx context.Context) error {
 		s.ApplyAccountGroupMemberships(memberships)
 	} else {
 		log.Printf("⚠ 加载账号分组失败：%v", err)
+	}
+
+	// 1c. 加载 API Key 的分组限制
+	if err := s.LoadAPIKeyAllowedGroups(ctx); err != nil {
+		log.Printf("⚠ 加载 API Key 分组限制失败：%v", err)
 	}
 
 	s.rebuildFastScheduler()
@@ -2531,6 +2540,9 @@ func (s *Store) NextExcludingWithFilter(apiKeyID int64, exclude map[int64]bool, 
 			if !acc.AllowsAPIKey(apiKeyID) {
 				continue
 			}
+			if !s.APIKeyAllowsAccount(apiKeyID, acc) {
+				continue
+			}
 			if filter != nil && !filter(acc) {
 				continue
 			}
@@ -2725,6 +2737,9 @@ func (s *Store) takeByIDExcluding(id int64, apiKeyID int64, exclude map[int64]bo
 	if !target.AllowsAPIKey(apiKeyID) {
 		return nil
 	}
+	if !s.APIKeyAllowsAccount(apiKeyID, target) {
+		return nil
+	}
 	if filter != nil && !filter(target) {
 		return nil
 	}
@@ -2775,6 +2790,9 @@ func (s *Store) hasDispatchCandidateWithFilter(apiKeyID int64, exclude map[int64
 			continue
 		}
 		if !acc.AllowsAPIKey(apiKeyID) {
+			continue
+		}
+		if !s.APIKeyAllowsAccount(apiKeyID, acc) {
 			continue
 		}
 		if filter != nil && !filter(acc) {
@@ -3102,6 +3120,87 @@ func (s *Store) ApplyAccountGroupMemberships(memberships map[int64][]int64) {
 		acc.GroupIDs = cloneInt64Slice(ids)
 		acc.mu.Unlock()
 	}
+}
+
+// SetAPIKeyAllowedGroups 注册某个 API Key 允许调度到的账号分组。空切片 = 不限制。
+func (s *Store) SetAPIKeyAllowedGroups(apiKeyID int64, groupIDs []int64) {
+	if apiKeyID <= 0 {
+		return
+	}
+	cloned := cloneInt64Slice(groupIDs)
+	s.apiKeyGroupsMu.Lock()
+	if s.apiKeyAllowedGroups == nil {
+		s.apiKeyAllowedGroups = make(map[int64][]int64)
+	}
+	if len(cloned) == 0 {
+		delete(s.apiKeyAllowedGroups, apiKeyID)
+	} else {
+		s.apiKeyAllowedGroups[apiKeyID] = cloned
+	}
+	s.apiKeyGroupsMu.Unlock()
+}
+
+// GetAPIKeyAllowedGroups 返回 API Key 的允许分组 ID 列表的拷贝。
+// 返回空切片表示该 Key 未配置分组限制（即所有分组都允许）。
+func (s *Store) GetAPIKeyAllowedGroups(apiKeyID int64) []int64 {
+	if apiKeyID <= 0 {
+		return nil
+	}
+	s.apiKeyGroupsMu.RLock()
+	defer s.apiKeyGroupsMu.RUnlock()
+	values := s.apiKeyAllowedGroups[apiKeyID]
+	if len(values) == 0 {
+		return nil
+	}
+	return cloneInt64Slice(values)
+}
+
+// LoadAPIKeyAllowedGroups 从数据库批量加载所有 API Key 的分组限制。
+func (s *Store) LoadAPIKeyAllowedGroups(ctx context.Context) error {
+	if s.db == nil {
+		return nil
+	}
+	keys, err := s.db.ListAPIKeys(ctx)
+	if err != nil {
+		return err
+	}
+	s.apiKeyGroupsMu.Lock()
+	s.apiKeyAllowedGroups = make(map[int64][]int64, len(keys))
+	for _, k := range keys {
+		if len(k.AllowedGroupIDs) > 0 {
+			s.apiKeyAllowedGroups[k.ID] = cloneInt64Slice(k.AllowedGroupIDs)
+		}
+	}
+	s.apiKeyGroupsMu.Unlock()
+	return nil
+}
+
+// APIKeyAllowsAccount 检查 API Key 与账号在分组维度上的可调度性。
+// apiKeyID <= 0 或 Key 未设置分组限制时返回 true。
+func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
+	if apiKeyID <= 0 || acc == nil {
+		return true
+	}
+	allowed := s.GetAPIKeyAllowedGroups(apiKeyID)
+	if len(allowed) == 0 {
+		return true
+	}
+	acc.mu.RLock()
+	groupIDs := acc.GroupIDs
+	acc.mu.RUnlock()
+	if len(groupIDs) == 0 {
+		return false
+	}
+	allowedSet := make(map[int64]struct{}, len(allowed))
+	for _, id := range allowed {
+		allowedSet[id] = struct{}{}
+	}
+	for _, gid := range groupIDs {
+		if _, ok := allowedSet[gid]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) ApplyAccountProxyURL(dbID int64, proxyURL string) bool {

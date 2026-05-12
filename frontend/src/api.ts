@@ -300,7 +300,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, ...(key ? { key } : {}) }),
     }),
-  updateAPIKey: (id: number, data: { name: string }) =>
+  updateAPIKey: (id: number, data: { name?: string; allowed_group_ids?: number[] }) =>
     request<MessageResponse>(`/keys/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAPIKey: (id: number) =>
     request<MessageResponse>(`/keys/${id}`, { method: 'DELETE' }),
