@@ -1993,10 +1993,29 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 			return
 		}
 	}
+	hasAccountID := false
+	var existingAccountIDs map[string]bool
+	for _, token := range unique {
+		if strings.TrimSpace(token.accountID) != "" {
+			hasAccountID = true
+			break
+		}
+	}
+	if hasAccountID {
+		existingAccountIDs, err = h.db.GetAllAccountIDs(dedupeCtx)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "查询已有 account_id 失败")
+			return
+		}
+	}
 
 	var newTokens []importToken
 	duplicateCount := fileDuplicateCount
 	for _, t := range unique {
+		if t.accountID != "" && existingAccountIDs[t.accountID] {
+			duplicateCount++
+			continue
+		}
 		switch {
 		case t.refreshToken != "":
 			if existingRTs[t.refreshToken] {

@@ -3196,6 +3196,28 @@ func (db *DB) GetAllSessionTokens(ctx context.Context) (map[string]bool, error) 
 	return result, rows.Err()
 }
 
+// GetAllAccountIDs 获取所有已存在的上游 account_id（用于导入去重，排除已删除账号）
+func (db *DB) GetAllAccountIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := db.conn.QueryContext(ctx, `SELECT credentials FROM accounts WHERE status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]bool)
+	for rows.Next() {
+		var raw interface{}
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		accountID := strings.TrimSpace(credentialString(raw, "account_id"))
+		if accountID != "" {
+			result[accountID] = true
+		}
+	}
+	return result, rows.Err()
+}
+
 // ==================== 账号事件 ====================
 
 // InsertAccountEvent 插入一条账号事件记录

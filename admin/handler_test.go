@@ -369,6 +369,51 @@ func TestAddATAccountDeduplicatesRequestAndExistingAccessTokens(t *testing.T) {
 	}
 }
 
+func TestImportAccountsCommonPrefiltersExistingAccountIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	if _, err := db.InsertAccountWithCredentials(context.Background(), "existing-account-id", map[string]interface{}{
+		"account_id":   "acct_existing",
+		"access_token": "at_old",
+	}, ""); err != nil {
+		t.Fatalf("seed existing account_id: %v", err)
+	}
+	handler := &Handler{db: db, store: &auth.Store{}}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/import", nil)
+
+	handler.importAccountsCommon(ctx, []importToken{{
+		name:        "same-account-id-new-token",
+		accountID:   "acct_existing",
+		accessToken: "at_new",
+	}}, "")
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := int(payload["success"].(float64)); got != 0 {
+		t.Fatalf("success = %d, want 0", got)
+	}
+	if got := int(payload["duplicate"].(float64)); got != 1 {
+		t.Fatalf("duplicate = %d, want 1", got)
+	}
+
+	rows, err := db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("active accounts = %d, want 1", len(rows))
+	}
+}
+
 func TestGetAccountAuthJSONRejectsInvalidID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -205,6 +205,13 @@ func TestSQLiteAccountCredentialDuplicateChecks(t *testing.T) {
 	if _, err := db.InsertAccountWithCredentials(ctx, "account-id2", map[string]interface{}{"account_id": "acct-duplicate", "access_token": "at-new"}, ""); !errors.Is(err, ErrDuplicateAccountCredential) {
 		t.Fatalf("duplicate account_id error = %v, want ErrDuplicateAccountCredential", err)
 	}
+	accountIDs, err := db.GetAllAccountIDs(ctx)
+	if err != nil {
+		t.Fatalf("GetAllAccountIDs 返回错误: %v", err)
+	}
+	if len(accountIDs) != 1 || !accountIDs["acct-duplicate"] {
+		t.Fatalf("accountIDs = %#v, want acct-duplicate only", accountIDs)
+	}
 
 	rows, err := db.ListActive(ctx)
 	if err != nil {
