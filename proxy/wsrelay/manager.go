@@ -14,6 +14,7 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/proxy"
+	"github.com/codex2api/security"
 	"github.com/gorilla/websocket"
 )
 
@@ -441,9 +442,17 @@ func (m *Manager) createConnection(
 	proxyURL := effectiveProxyURL(account, proxyOverride)
 
 	if !proxy.IsResinEnabled() && proxyURL != "" {
+		if err := security.ValidateProxyURL(proxyURL); err != nil {
+			return nil, fmt.Errorf("invalid proxy URL: %w", err)
+		}
 		proxyURLParsed, err := url.Parse(proxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("parse proxy URL failed: %w", err)
+		}
+		switch strings.ToLower(strings.TrimSpace(proxyURLParsed.Scheme)) {
+		case "http", "https":
+		default:
+			return nil, fmt.Errorf("websocket transport only supports http/https proxy URLs, got %s", proxyURLParsed.Scheme)
 		}
 		dialer.Proxy = func(req *http.Request) (*url.URL, error) {
 			return proxyURLParsed, nil

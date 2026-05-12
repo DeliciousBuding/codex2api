@@ -1306,6 +1306,20 @@ func (a *Account) ClearModelCooldown(model string) bool {
 	return true
 }
 
+func (a *Account) ClearAllModelCooldowns() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.ModelCooldowns) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(a.ModelCooldowns))
+	for key := range a.ModelCooldowns {
+		keys = append(keys, key)
+	}
+	a.ModelCooldowns = make(map[string]ModelCooldown)
+	return keys
+}
+
 // GetDynamicConcurrencyLimit 获取当前动态并发上限
 func (a *Account) GetDynamicConcurrencyLimit() int64 {
 	a.mu.RLock()
@@ -2968,6 +2982,15 @@ func (s *Store) AddAccount(acc *Account) {
 	acc.mu.Lock()
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
+	if acc.DBID != 0 {
+		for i, existing := range s.accounts {
+			if existing != nil && existing.DBID == acc.DBID {
+				s.accounts[i] = acc
+				s.fastSchedulerUpdate(acc)
+				return
+			}
+		}
+	}
 	s.accounts = append(s.accounts, acc)
 	s.fastSchedulerUpdate(acc)
 }
@@ -3208,6 +3231,25 @@ func (s *Store) ClearModelCooldown(acc *Account, model string) {
 	defer cancel()
 	if err := s.db.ClearModelCooldown(ctx, acc.DBID, key); err != nil {
 		log.Printf("[账号 %d] 清理模型冷却失败 model=%s: %v", acc.DBID, key, err)
+	}
+}
+
+func (s *Store) ClearAllModelCooldowns(acc *Account) {
+	if acc == nil {
+		return
+	}
+	keys := acc.ClearAllModelCooldowns()
+	for _, key := range keys {
+		s.deleteCachedModelCooldown(acc.DBID, key)
+	}
+	s.fastSchedulerUpdate(acc)
+	if s.db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.db.ClearAllModelCooldowns(ctx, acc.DBID); err != nil {
+		log.Printf("[账号 %d] 清理全部模型冷却失败: %v", acc.DBID, err)
 	}
 }
 

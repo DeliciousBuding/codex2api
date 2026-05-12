@@ -23,6 +23,7 @@ type openAIRequest struct {
 	ReasoningEffort string            `json:"reasoning_effort"`
 	ServiceTier     string            `json:"service_tier"`
 	ServiceTierAlt  string            `json:"serviceTier"` // 兼容驼峰命名
+	PromptCacheKey  string            `json:"prompt_cache_key"`
 }
 
 // openAIMessage 表示一条 OpenAI 消息
@@ -978,6 +979,9 @@ func TranslateRequest(rawJSON []byte) ([]byte, error) {
 	normalizeResponsesContentPartTypes(out)
 	normalizeResponsesInputMessageContent(out)
 	normalizeResponsesInputItemIDs(out)
+	if promptCacheKey := strings.TrimSpace(req.PromptCacheKey); promptCacheKey != "" {
+		out["prompt_cache_key"] = promptCacheKey
+	}
 
 	// 2. reasoning effort
 	if effort := normalizeReasoningEffort(req.ReasoningEffort); effort != "" {
@@ -1116,19 +1120,16 @@ func PrepareResponsesBody(rawBody []byte) ([]byte, string) {
 	normalizeResponsesImageGenerationTools(body, promptText)
 	applyResponsesImageGenerationBridgeInstructions(body)
 
-	// 6. 展开 previous_response_id
-	prevID, _ := body["previous_response_id"].(string)
-	if prevID != "" {
-		if cached := getResponseCache(prevID); cached != nil {
-			var cachedItems []any
-			for _, item := range cached {
-				var v any
-				if json.Unmarshal(item, &v) == nil {
-					cachedItems = append(cachedItems, v)
+	// 6. 展开 previous_response_id。走 response_cache 的统一逻辑，避免
+	// 客户端已经自带 function_call 续链项时重复注入同一 call_id。
+	if prevID, _ := body["previous_response_id"].(string); strings.TrimSpace(prevID) != "" {
+		if currentBody, err := json.Marshal(body); err == nil {
+			if expandedBody, _ := expandPreviousResponse(currentBody); len(expandedBody) > 0 {
+				var expanded map[string]any
+				if json.Unmarshal(expandedBody, &expanded) == nil && expanded != nil {
+					body = expanded
 				}
 			}
-			currentInput, _ := body["input"].([]any)
-			body["input"] = append(cachedItems, currentInput...)
 		}
 	}
 	// 6b. 把 input[] 中的 compaction 项翻译为 developer message（上游不识别 compaction）

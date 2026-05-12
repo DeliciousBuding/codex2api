@@ -36,3 +36,20 @@ func TestConfigureTransportProxySOCKS5Proxy(t *testing.T) {
 		t.Fatal("expected SOCKS5 proxy dialer to be installed")
 	}
 }
+
+func TestConfigureTransportProxyRejectsInvalidProxyURL(t *testing.T) {
+	for _, raw := range []string{
+		"http://",
+		"proxy.example.com:8080",
+		"ftp://proxy.example.com:21",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			transport := &http.Transport{}
+			baseDialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+
+			if err := ConfigureTransportProxy(transport, raw, baseDialer); err == nil {
+				t.Fatalf("ConfigureTransportProxy(%q) expected error", raw)
+			}
+		})
+	}
+}

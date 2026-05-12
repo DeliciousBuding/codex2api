@@ -10,6 +10,20 @@ import (
 	"github.com/codex2api/auth"
 )
 
+func TestValidateEffectiveProxyURLRejectsInvalidNonEmptyProxy(t *testing.T) {
+	for _, raw := range []string{
+		"http://",
+		"proxy.example.com:8080",
+		"ftp://proxy.example.com:21",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if err := validateEffectiveProxyURL(raw); err == nil {
+				t.Fatalf("validateEffectiveProxyURL(%q) expected error", raw)
+			}
+		})
+	}
+}
+
 func TestReadSSEStream_MergesMultilineData(t *testing.T) {
 	input := strings.NewReader("data: {\"type\":\"response.output_text.delta\",\n" +
 		"data: \"delta\":\"hello\"}\n\n" +
@@ -384,7 +398,11 @@ func TestResolveSessionIDPrefersContinuityHeaders(t *testing.T) {
 
 	headers.Del("Conversation_id")
 	headers.Set("Idempotency-Key", "idempotency-key-1")
-	if got := ResolveSessionID(headers, []byte(`{"prompt_cache_key":"body-key"}`)); got != "idempotency-key-1" {
+	if got := ResolveSessionID(headers, []byte(`{"prompt_cache_key":"body-key"}`)); got != "body-key" {
+		t.Fatalf("ResolveSessionID() = %q, want %q", got, "body-key")
+	}
+
+	if got := ResolveSessionID(headers, []byte(`{}`)); got != "idempotency-key-1" {
 		t.Fatalf("ResolveSessionID() = %q, want %q", got, "idempotency-key-1")
 	}
 }

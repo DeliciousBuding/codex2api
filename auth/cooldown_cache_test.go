@@ -127,3 +127,32 @@ func TestCooldownCacheWritesAndDeletes(t *testing.T) {
 		t.Fatalf("model cooldown runtime cache after clear ok=%v err=%v, want miss", ok, err)
 	}
 }
+
+func TestClearAllModelCooldownsClearsRuntimeState(t *testing.T) {
+	tokenCache := cache.NewMemory(4)
+	defer tokenCache.Close()
+
+	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
+	store := &Store{
+		accounts:       []*Account{acc},
+		maxConcurrency: 1,
+		tokenCache:     tokenCache,
+	}
+
+	store.MarkModelCooldown(acc, "gpt-5.4", 5*time.Minute, "model_capacity")
+	store.MarkModelCooldown(acc, "gpt-5.4-codex", 5*time.Minute, "model_capacity")
+
+	store.ClearAllModelCooldowns(acc)
+
+	if acc.IsModelRateLimited("gpt-5.4") {
+		t.Fatal("gpt-5.4 model cooldown should be cleared")
+	}
+	if acc.IsModelRateLimited("gpt-5.4-codex") {
+		t.Fatal("gpt-5.4-codex model cooldown should be cleared")
+	}
+	for _, model := range []string{"gpt-5.4", "gpt-5.4-codex"} {
+		if _, ok, err := tokenCache.GetRuntime(context.Background(), modelCooldownCacheNamespace, modelCooldownRuntimeKey(acc.DBID, model)); err != nil || ok {
+			t.Fatalf("%s runtime cache after clear-all ok=%v err=%v, want miss", model, ok, err)
+		}
+	}
+}

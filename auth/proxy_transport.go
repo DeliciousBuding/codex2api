@@ -29,6 +29,9 @@ func ConfigureTransportProxy(transport *http.Transport, rawProxyURL string, base
 	if err != nil {
 		return fmt.Errorf("parse proxy url: %w", err)
 	}
+	if strings.TrimSpace(u.Scheme) == "" || strings.TrimSpace(u.Host) == "" {
+		return fmt.Errorf("proxy URL missing scheme/host")
+	}
 
 	switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
 	case "http", "https":

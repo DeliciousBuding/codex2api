@@ -156,6 +156,34 @@ func TestValidateModelName(t *testing.T) {
 	}
 }
 
+func TestValidateProxyURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		isError bool
+	}{
+		{name: "empty allowed", input: "", isError: false},
+		{name: "http", input: "http://proxy.example.com:8080", isError: false},
+		{name: "https", input: "https://user:pass@proxy.example.com:8443", isError: false},
+		{name: "socks5", input: "socks5://127.0.0.1:1080", isError: false},
+		{name: "socks5h", input: "socks5h://proxy.example.com:1080", isError: false},
+		{name: "missing host", input: "http://", isError: true},
+		{name: "missing scheme", input: "proxy.example.com:8080", isError: true},
+		{name: "unsupported scheme", input: "ftp://proxy.example.com:21", isError: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateProxyURL(tc.input)
+			if tc.isError && err == nil {
+				t.Fatalf("ValidateProxyURL(%q) expected error", tc.input)
+			}
+			if !tc.isError && err != nil {
+				t.Fatalf("ValidateProxyURL(%q) unexpected error: %v", tc.input, err)
+			}
+		})
+	}
+}
+
 func TestSecureCompare(t *testing.T) {
 	tests := []struct {
 		a        string

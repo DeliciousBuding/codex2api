@@ -3,6 +3,7 @@ package wsrelay
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,6 +79,20 @@ func TestPoolKeyIncludesProxyScope(t *testing.T) {
 	keyB := manager.poolKey(42, "wss://example.test/responses", "session-a", "http://proxy-b")
 	if keyA == keyB {
 		t.Fatal("expected different proxies to produce different pool keys")
+	}
+}
+
+func TestCreateConnectionRejectsUnsupportedWebsocketProxyScheme(t *testing.T) {
+	manager := NewManager()
+	t.Cleanup(manager.Stop)
+
+	account := &auth.Account{DBID: 42}
+	_, err := manager.createConnection(context.Background(), account, "wss://example.test/responses", "session-1", http.Header{}, "socks5://127.0.0.1:1080")
+	if err == nil {
+		t.Fatal("expected unsupported websocket proxy scheme error")
+	}
+	if !strings.Contains(err.Error(), "only supports http/https") {
+		t.Fatalf("error = %v, want http/https support message", err)
 	}
 }
 

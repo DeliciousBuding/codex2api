@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/codex2api/auth"
+	"github.com/codex2api/security"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -142,6 +143,13 @@ func newCodexTransport(proxyURL string) http.RoundTripper {
 	}
 }
 
+func validateEffectiveProxyURL(proxyURL string) error {
+	if strings.TrimSpace(proxyURL) == "" {
+		return nil
+	}
+	return security.ValidateProxyURL(proxyURL)
+}
+
 func codexFingerprintDebugEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEX_FINGERPRINT_DEBUG"))) {
 	case "1", "true", "yes", "y", "on":
@@ -265,6 +273,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if accessToken == "" {
 		return nil, ErrNoAvailableAccount()
 	}
+	if err := validateEffectiveProxyURL(proxyURL); err != nil {
+		return nil, ErrBadRequest(fmt.Sprintf("代理 URL 无效: %v", err))
+	}
 
 	// ==================== Codex 请求体优化 ====================
 	// 参考 CLIProxyAPI/codex_executor.go + sub2api 的实现
@@ -339,6 +350,9 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	if baseURL == "" || apiKey == "" {
 		return nil, ErrNoAvailableAccount()
 	}
+	if err := validateEffectiveProxyURL(proxyURL); err != nil {
+		return nil, ErrBadRequest(fmt.Sprintf("代理 URL 无效: %v", err))
+	}
 
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
@@ -383,6 +397,9 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 
 	if accessToken == "" {
 		return nil, ErrNoAvailableAccount()
+	}
+	if err := validateEffectiveProxyURL(proxyURL); err != nil {
+		return nil, ErrBadRequest(fmt.Sprintf("代理 URL 无效: %v", err))
 	}
 
 	// 与 ExecuteRequest 相同的请求体优化
@@ -572,8 +589,8 @@ func applyCodexRequestHeaders(req *http.Request, account *auth.Account, accessTo
 // 优先级：
 //  1. Header: Session_id
 //  2. Header: Conversation_id
-//  3. Header: Idempotency-Key
-//  4. Body:   prompt_cache_key
+//  3. Body:   prompt_cache_key
+//  4. Header: Idempotency-Key
 //  5. 基于 Bearer API Key 的确定性 UUID
 func ResolveSessionID(headers http.Header, body []byte) string {
 	if headers != nil {
@@ -583,13 +600,15 @@ func ResolveSessionID(headers http.Header, body []byte) string {
 		if v := strings.TrimSpace(headers.Get("Conversation_id")); v != "" {
 			return v
 		}
-		if v := strings.TrimSpace(headers.Get("Idempotency-Key")); v != "" {
-			return v
-		}
 	}
 	// 优先从 body 的 prompt_cache_key 提取
 	if v := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); v != "" {
 		return v
+	}
+	if headers != nil {
+		if v := strings.TrimSpace(headers.Get("Idempotency-Key")); v != "" {
+			return v
+		}
 	}
 
 	// 基于下游用户的 API Key 生成确定性 cache key（参考 CLIProxyAPI codex_executor.go:621）

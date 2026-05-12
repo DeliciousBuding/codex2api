@@ -96,6 +96,75 @@ func TestSQLiteAccountsEnabledDefaultsAndCanToggle(t *testing.T) {
 	if err := db.SetAccountEnabled(ctx, id+1, false); err != sql.ErrNoRows {
 		t.Fatalf("SetAccountEnabled missing account error = %v, want sql.ErrNoRows", err)
 	}
+
+	if err := db.SetAccountLocked(ctx, id, true); err != nil {
+		t.Fatalf("SetAccountLocked 返回错误: %v", err)
+	}
+	rows, err = db.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive 返回错误: %v", err)
+	}
+	if !rows[0].Locked {
+		t.Fatal("locked account Locked = false, want true")
+	}
+
+	if err := db.SetAccountLocked(ctx, id+1, true); err != sql.ErrNoRows {
+		t.Fatalf("SetAccountLocked missing account error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestSQLiteClearUsageSnapshotRemovesCodexUsageFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	id, err := db.InsertAccount(ctx, "usage-snapshot", "rt", "")
+	if err != nil {
+		t.Fatalf("InsertAccount 返回错误: %v", err)
+	}
+
+	now := time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)
+	if err := db.UpdateUsageSnapshotFull(ctx, id, 90, now.Add(24*time.Hour), 25, now.Add(5*time.Hour), now); err != nil {
+		t.Fatalf("UpdateUsageSnapshotFull 返回错误: %v", err)
+	}
+	if err := db.UpdateCredentials(ctx, id, map[string]interface{}{"custom": "keep"}); err != nil {
+		t.Fatalf("UpdateCredentials 返回错误: %v", err)
+	}
+
+	if err := db.ClearUsageSnapshot(ctx, id); err != nil {
+		t.Fatalf("ClearUsageSnapshot 返回错误: %v", err)
+	}
+
+	rows, err := db.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive 返回错误: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListActive 返回 %d 条，want 1", len(rows))
+	}
+	for _, key := range []string{
+		"codex_7d_used_percent",
+		"codex_7d_reset_at",
+		"codex_5h_used_percent",
+		"codex_5h_reset_at",
+		"codex_usage_updated_at",
+	} {
+		if got := rows[0].GetCredential(key); got != "" {
+			t.Fatalf("%s = %q, want empty", key, got)
+		}
+	}
+	if got := rows[0].GetCredential("custom"); got != "keep" {
+		t.Fatalf("custom credential = %q, want keep", got)
+	}
+
+	if err := db.ClearUsageSnapshot(ctx, id+1); err != sql.ErrNoRows {
+		t.Fatalf("ClearUsageSnapshot missing account error = %v, want sql.ErrNoRows", err)
+	}
 }
 
 func TestSQLiteUsageLogsHasAPIKeyColumns(t *testing.T) {
@@ -349,6 +418,26 @@ func TestSQLiteModelCooldownPersistence(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("ListActiveModelCooldowns 返回 %d 条，want 0", len(rows))
+	}
+
+	if err := db.SetModelCooldown(ctx, 42, "gpt-5.4", "model_capacity", resetAt); err != nil {
+		t.Fatalf("SetModelCooldown 返回错误: %v", err)
+	}
+	if err := db.SetModelCooldown(ctx, 42, "gpt-5.4-codex", "model_capacity", resetAt); err != nil {
+		t.Fatalf("SetModelCooldown 返回错误: %v", err)
+	}
+	if err := db.SetModelCooldown(ctx, 43, "gpt-5.4", "model_capacity", resetAt); err != nil {
+		t.Fatalf("SetModelCooldown 返回错误: %v", err)
+	}
+	if err := db.ClearAllModelCooldowns(ctx, 42); err != nil {
+		t.Fatalf("ClearAllModelCooldowns 返回错误: %v", err)
+	}
+	rows, err = db.ListActiveModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveModelCooldowns 返回错误: %v", err)
+	}
+	if len(rows) != 1 || rows[0].AccountID != 43 {
+		t.Fatalf("ListActiveModelCooldowns after clear-all = %#v, want only account 43", rows)
 	}
 }
 

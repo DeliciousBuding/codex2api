@@ -2291,6 +2291,10 @@ func (h *Handler) ToggleAccountLock(c *gin.Context) {
 	defer cancel()
 
 	if err := h.db.SetAccountLocked(ctx, id, req.Locked); err != nil {
+		if err == sql.ErrNoRows {
+			writeError(c, http.StatusNotFound, "账号不存在")
+			return
+		}
 		writeError(c, http.StatusInternalServerError, "更新锁定状态失败: "+err.Error())
 		return
 	}
@@ -2326,7 +2330,15 @@ func (h *Handler) ResetAccountStatus(c *gin.Context) {
 	}
 
 	h.store.ClearCooldown(acc)
+	h.store.ClearAllModelCooldowns(acc)
 	acc.ClearUsageCache()
+	if h.db != nil {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+		if err := h.db.ClearUsageSnapshot(ctx, id); err != nil {
+			log.Printf("[账号 %d] 清理持久化用量快照失败: %v", id, err)
+		}
+	}
 	writeMessage(c, http.StatusOK, "账号状态已重置")
 }
 
@@ -2349,7 +2361,15 @@ func (h *Handler) BatchResetStatus(c *gin.Context) {
 			continue
 		}
 		h.store.ClearCooldown(acc)
+		h.store.ClearAllModelCooldowns(acc)
 		acc.ClearUsageCache()
+		if h.db != nil {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+			if err := h.db.ClearUsageSnapshot(ctx, id); err != nil {
+				log.Printf("[账号 %d] 清理持久化用量快照失败: %v", id, err)
+			}
+			cancel()
+		}
 		success++
 	}
 
@@ -3196,6 +3216,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 
 	if req.ProxyURL != nil {
+		if err := security.ValidateProxyURL(*req.ProxyURL); err != nil {
+			writeError(c, http.StatusBadRequest, fmt.Sprintf("代理 URL 格式错误: %v", err))
+			return
+		}
 		h.store.SetProxyURL(*req.ProxyURL)
 		log.Printf("设置已更新: proxy_url = %s", *req.ProxyURL)
 	}
@@ -4062,6 +4086,10 @@ func (h *Handler) AddProxies(c *gin.Context) {
 	for _, u := range urls {
 		u = strings.TrimSpace(u)
 		if u != "" {
+			if err := security.ValidateProxyURL(u); err != nil {
+				writeError(c, http.StatusBadRequest, fmt.Sprintf("代理 URL 格式错误: %v", err))
+				return
+			}
 			cleaned = append(cleaned, u)
 		}
 	}

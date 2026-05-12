@@ -112,12 +112,26 @@ func ValidateEmail(email string) error {
 }
 
 // ValidateProxyURL validates a proxy URL
-func ValidateProxyURL(url string) error {
-	if url == "" {
+func ValidateProxyURL(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
 		return nil
 	}
-	if utf8.RuneCountInString(url) > MaxProxyURLLength {
+	if utf8.RuneCountInString(rawURL) > MaxProxyURLLength {
 		return &ValidationError{Field: "proxy_url", Message: "proxy URL too long"}
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return &ValidationError{Field: "proxy_url", Message: "invalid proxy URL"}
+	}
+	if strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+		return &ValidationError{Field: "proxy_url", Message: "proxy URL must include scheme and host"}
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+	case "http", "https", "socks5", "socks5h":
+		return nil
+	default:
+		return &ValidationError{Field: "proxy_url", Message: "unsupported proxy scheme"}
 	}
 	return nil
 }

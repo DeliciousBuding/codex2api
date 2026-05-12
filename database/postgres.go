@@ -2409,6 +2409,14 @@ func (db *DB) ClearModelCooldown(ctx context.Context, accountID int64, model str
 	return err
 }
 
+func (db *DB) ClearAllModelCooldowns(ctx context.Context, accountID int64) error {
+	if accountID == 0 {
+		return nil
+	}
+	_, err := db.conn.ExecContext(ctx, `DELETE FROM account_model_cooldowns WHERE account_id = $1`, accountID)
+	return err
+}
+
 func (db *DB) ClearExpiredModelCooldowns(ctx context.Context) error {
 	_, err := db.conn.ExecContext(ctx, `DELETE FROM account_model_cooldowns WHERE reset_at <= $1`, db.timeArg(time.Now()))
 	return err
@@ -2551,8 +2559,18 @@ func (db *DB) SetAccountEnabled(ctx context.Context, id int64, enabled bool) err
 
 // SetAccountLocked 设置账号的锁定状态
 func (db *DB) SetAccountLocked(ctx context.Context, id int64, locked bool) error {
-	_, err := db.conn.ExecContext(ctx, `UPDATE accounts SET locked = $1 WHERE id = $2`, locked, id)
-	return err
+	res, err := db.conn.ExecContext(ctx, `UPDATE accounts SET locked = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, locked, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // UpdateCredentials 原子合并更新账号的 credentials（JSONB || 运算符，不覆盖已有字段）
@@ -2649,6 +2667,58 @@ func (db *DB) UpdateUsageSnapshotFull(ctx context.Context, id int64, pct7d float
 		"codex_usage_updated_at": updatedAt.Format(time.RFC3339),
 	}
 	return db.UpdateCredentials(ctx, id, fields)
+}
+
+// ClearUsageSnapshot removes persisted Codex usage-window metadata from an account.
+func (db *DB) ClearUsageSnapshot(ctx context.Context, id int64) error {
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	selectQuery := `SELECT credentials FROM accounts WHERE id = $1`
+	if !db.isSQLite() {
+		selectQuery += ` FOR UPDATE`
+	}
+
+	var currentRaw interface{}
+	if err := tx.QueryRowContext(ctx, selectQuery, id).Scan(&currentRaw); err != nil {
+		return err
+	}
+
+	credentials := decodeCredentials(currentRaw)
+	for _, key := range []string{
+		"codex_7d_used_percent",
+		"codex_7d_reset_at",
+		"codex_5h_used_percent",
+		"codex_5h_reset_at",
+		"codex_usage_updated_at",
+	} {
+		delete(credentials, key)
+	}
+
+	credJSON, err := json.Marshal(credentials)
+	if err != nil {
+		return fmt.Errorf("序列化 credentials 失败: %w", err)
+	}
+
+	updateQuery := `UPDATE accounts SET credentials = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+	if !db.isSQLite() {
+		updateQuery = `UPDATE accounts SET credentials = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+	}
+	res, err := tx.ExecContext(ctx, updateQuery, credJSON, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }
 
 // SetError 标记账号错误状态

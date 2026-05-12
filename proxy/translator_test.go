@@ -132,6 +132,23 @@ func TestTranslateRequest_DropsUnsupportedClientServiceTier(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_PreservesPromptCacheKey(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"messages":[{"role":"user","content":"hello"}],
+		"prompt_cache_key":"session-explicit-123"
+	}`)
+
+	got, err := TranslateRequest(raw)
+	if err != nil {
+		t.Fatalf("TranslateRequest returned error: %v", err)
+	}
+
+	if key := gjson.GetBytes(got, "prompt_cache_key").String(); key != "session-explicit-123" {
+		t.Fatalf("prompt_cache_key mismatch: got %q want %q; body=%s", key, "session-explicit-123", got)
+	}
+}
+
 func TestPrepareResponsesBody_DropsUnsupportedClientServiceTier(t *testing.T) {
 	raw := []byte(`{
 		"model":"gpt-5.4",
@@ -1119,6 +1136,61 @@ func TestPrepareResponsesBody_StripsInputItemIDsForStoreFalse(t *testing.T) {
 	}
 	if callID := gjson.GetBytes(got, "input.2.call_id").String(); callID != "call_123" {
 		t.Fatalf("function_call call_id should be preserved, got %q; body=%s", callID, got)
+	}
+}
+
+func TestPrepareResponsesBody_ExpandsPreviousResponseFromCache(t *testing.T) {
+	resetResponseCacheForTest()
+
+	cacheCompletedResponse(
+		[]byte(`[{"type":"message","role":"user","content":"run mcp tool"}]`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_prepare_mcp","output":[{"type":"mcp_tool_call","call_id":"call_mcp","name":"read","arguments":"{}"}]}}`),
+	)
+
+	raw := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_prepare_mcp","input":[{"type":"mcp_tool_call_output","call_id":"call_mcp","output":"ok"}]}`)
+	got, expandedInputRaw := PrepareResponsesBody(raw)
+
+	if gjson.GetBytes(got, "previous_response_id").Exists() {
+		t.Fatalf("previous_response_id should be stripped before upstream, got %s", got)
+	}
+	input := gjson.GetBytes(got, "input").Array()
+	if len(input) != 3 {
+		t.Fatalf("input count = %d, want 3; body=%s", len(input), got)
+	}
+	if typ := input[1].Get("type").String(); typ != "mcp_tool_call" {
+		t.Fatalf("cached tool call type = %q, want mcp_tool_call; body=%s", typ, got)
+	}
+	if typ := gjson.Get(expandedInputRaw, "1.type").String(); typ != "mcp_tool_call" {
+		t.Fatalf("expandedInputRaw cached item type = %q, want mcp_tool_call; expanded=%s", typ, expandedInputRaw)
+	}
+}
+
+func TestPrepareResponsesBody_SkipsPreviousResponseInjectionWhenInputHasFunctionCall(t *testing.T) {
+	resetResponseCacheForTest()
+
+	cacheCompletedResponse(
+		[]byte(`[{"type":"message","role":"user","content":"call tool"}]`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_prepare_dup","output":[{"type":"function_call","call_id":"call_abc","name":"get_weather","arguments":"{}"}]}}`),
+	)
+
+	raw := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_prepare_dup","input":[` +
+		`{"type":"function_call","call_id":"call_abc","name":"get_weather","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_abc","output":"sunny"}` +
+		`]}`)
+	got, expandedInputRaw := PrepareResponsesBody(raw)
+
+	if gjson.GetBytes(got, "previous_response_id").Exists() {
+		t.Fatalf("previous_response_id should be stripped before upstream, got %s", got)
+	}
+	input := gjson.GetBytes(got, "input").Array()
+	if len(input) != 2 {
+		t.Fatalf("input count = %d, want 2 (no duplicate cache injection); body=%s", len(input), got)
+	}
+	if typ := input[0].Get("type").String(); typ != "function_call" {
+		t.Fatalf("input[0].type = %q, want function_call; body=%s", typ, got)
+	}
+	if count := len(gjson.Get(expandedInputRaw, "#(call_id==\"call_abc\")#").Array()); count != 2 {
+		t.Fatalf("expandedInputRaw should contain exactly current function_call pair, count=%d expanded=%s", count, expandedInputRaw)
 	}
 }
 

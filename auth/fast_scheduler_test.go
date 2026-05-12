@@ -20,6 +20,24 @@ func newFastSchedulerTestAccount(id int64, tier AccountHealthTier, score float64
 	}
 }
 
+func TestStoreAddAccountReplacesExistingDBID(t *testing.T) {
+	store := &Store{maxConcurrency: 1}
+	first := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
+	first.AccessToken = "first"
+	replacement := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
+	replacement.AccessToken = "replacement"
+
+	store.AddAccount(first)
+	store.AddAccount(replacement)
+
+	if len(store.accounts) != 1 {
+		t.Fatalf("len(accounts) = %d, want 1", len(store.accounts))
+	}
+	if got := store.FindByID(1); got != replacement {
+		t.Fatalf("FindByID returned %#v, want replacement", got)
+	}
+}
+
 func TestFastSchedulerAcquirePrefersHealthyTier(t *testing.T) {
 	warm := newFastSchedulerTestAccount(1, HealthTierWarm, 90, 2)
 	healthy := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 2)

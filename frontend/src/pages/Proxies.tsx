@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Globe, Plus, Trash2, Play, MapPin, Loader2, Zap, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react'
+import { Globe, Plus, Trash2, Play, MapPin, Loader2, Zap, ChevronLeft, ChevronRight, Eye, EyeOff, AlertTriangle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { api, type ProxyRow, type ProxyTestResult } from '../api'
 
 const PAGE_SIZE = 10
+const SLOW_PROXY_MS = 1500
+type ProxyFilter = 'all' | 'enabled' | 'disabled' | 'untested' | 'slow'
 
 function latencyColor(ms: number): string {
   if (ms <= 0) return 'text-muted-foreground'
@@ -31,6 +33,15 @@ function maskUrl(url: string): string {
   }
 }
 
+function validateProxyInput(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    return Boolean(parsed.hostname) && ['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol)
+  } catch {
+    return false
+  }
+}
+
 export default function Proxies() {
   const { t, i18n } = useTranslation()
   const [proxies, setProxies] = useState<ProxyRow[]>([])
@@ -45,6 +56,8 @@ export default function Proxies() {
   const [testAllLoading, setTestAllLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [revealedIds, setRevealedIds] = useState<Set<number>>(new Set())
+  const [filter, setFilter] = useState<ProxyFilter>('all')
+  const [addError, setAddError] = useState('')
 
   const ipApiLang = i18n.language?.startsWith('zh') ? 'zh-CN' : 'en'
 
@@ -59,8 +72,31 @@ export default function Proxies() {
 
   useEffect(() => { reload() }, [reload])
 
-  const totalPages = Math.max(1, Math.ceil(proxies.length / PAGE_SIZE))
-  const pagedProxies = proxies.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const proxyCounts = useMemo(() => ({
+    total: proxies.length,
+    enabled: proxies.filter(p => p.enabled).length,
+    disabled: proxies.filter(p => !p.enabled).length,
+    untested: proxies.filter(p => p.test_latency_ms <= 0).length,
+    slow: proxies.filter(p => p.test_latency_ms >= SLOW_PROXY_MS).length,
+  }), [proxies])
+
+  const filteredProxies = useMemo(() => {
+    switch (filter) {
+      case 'enabled':
+        return proxies.filter(p => p.enabled)
+      case 'disabled':
+        return proxies.filter(p => !p.enabled)
+      case 'untested':
+        return proxies.filter(p => p.test_latency_ms <= 0)
+      case 'slow':
+        return proxies.filter(p => p.test_latency_ms >= SLOW_PROXY_MS)
+      default:
+        return proxies
+    }
+  }, [filter, proxies])
+
+  const totalPages = Math.max(1, Math.ceil(filteredProxies.length / PAGE_SIZE))
+  const pagedProxies = filteredProxies.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages)
@@ -79,6 +115,12 @@ export default function Proxies() {
   const handleAdd = async () => {
     const urls = addInput.split('\n').map(s => s.trim()).filter(Boolean)
     if (urls.length === 0) return
+    const invalidURLs = urls.filter(url => !validateProxyInput(url))
+    if (invalidURLs.length > 0) {
+      setAddError(t('proxies.invalidProxyUrls', { count: invalidURLs.length }))
+      return
+    }
+    setAddError('')
     setAddLoading(true)
     try {
       await api.addProxies({ urls, label: addLabel })
@@ -86,7 +128,9 @@ export default function Proxies() {
       setAddLabel('')
       setShowAdd(false)
       await reload()
-    } catch { /* ignore */ }
+    } catch (error) {
+      setAddError(error instanceof Error ? error.message : t('proxies.addFailed'))
+    }
     setAddLoading(false)
   }
 
@@ -172,8 +216,14 @@ export default function Proxies() {
     }
   }
 
-  const enabledCount = proxies.filter(p => p.enabled).length
-  const canEnable = enabledCount > 0
+  const canEnable = proxyCounts.enabled > 0
+  const filterOptions: Array<{ value: ProxyFilter; label: string; count: number }> = [
+    { value: 'all', label: t('proxies.filterAll'), count: proxyCounts.total },
+    { value: 'enabled', label: t('proxies.filterEnabled'), count: proxyCounts.enabled },
+    { value: 'disabled', label: t('proxies.filterDisabled'), count: proxyCounts.disabled },
+    { value: 'untested', label: t('proxies.filterUntested'), count: proxyCounts.untested },
+    { value: 'slow', label: t('proxies.filterSlow'), count: proxyCounts.slow },
+  ]
 
   return (
     <div className="space-y-6">
@@ -248,10 +298,19 @@ export default function Proxies() {
             </p>
             <textarea
               value={addInput}
-              onChange={e => setAddInput(e.target.value)}
+              onChange={e => {
+                setAddInput(e.target.value)
+                if (addError) setAddError('')
+              }}
               placeholder={"http://user:pass@ip:port\nsocks5://ip:port"}
               className="w-full h-32 px-3 py-2 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground resize-none outline-none focus:ring-2 focus:ring-primary/30 font-mono"
             />
+            {addError && (
+              <div className="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
+                <AlertTriangle className="size-4 shrink-0" />
+                {addError}
+              </div>
+            )}
             <div className="flex items-center gap-3">
               <input
                 type="text"
@@ -276,13 +335,13 @@ export default function Proxies() {
       <div className="grid grid-cols-3 gap-4">
         <Card className="py-0">
           <CardContent className="p-4 text-center">
-            <div className="text-2xl font-bold text-foreground">{proxies.length}</div>
+            <div className="text-2xl font-bold text-foreground">{proxyCounts.total}</div>
             <div className="text-xs text-muted-foreground mt-1">{t('proxies.totalProxies')}</div>
           </CardContent>
         </Card>
         <Card className="py-0">
           <CardContent className="p-4 text-center">
-            <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">{enabledCount}</div>
+            <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">{proxyCounts.enabled}</div>
             <div className="text-xs text-muted-foreground mt-1">{t('proxies.enabledCount')}</div>
           </CardContent>
         </Card>
@@ -296,6 +355,26 @@ export default function Proxies() {
         </Card>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        {filterOptions.map(option => (
+          <button
+            key={option.value}
+            onClick={() => {
+              setFilter(option.value)
+              setPage(1)
+            }}
+            className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold transition-colors ${
+              filter === option.value
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-border text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+            }`}
+          >
+            <span>{option.label}</span>
+            <span className="font-mono text-xs">{option.count}</span>
+          </button>
+        ))}
+      </div>
+
       {/* Table */}
       <Card className="py-0">
         <CardContent className="p-0">
@@ -303,7 +382,7 @@ export default function Proxies() {
             <div className="flex justify-center items-center py-16">
               <Loader2 className="size-6 animate-spin text-primary" />
             </div>
-          ) : proxies.length === 0 ? (
+          ) : filteredProxies.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
               <Globe className="size-12 mx-auto mb-3 opacity-30" />
               <p className="text-sm font-medium">{t('proxies.noProxies')}</p>
@@ -440,7 +519,7 @@ export default function Proxies() {
               {totalPages > 1 && (
                 <div className="flex items-center justify-between px-4 py-3 border-t border-border">
                   <span className="text-xs text-muted-foreground">
-                    {t('proxies.pagination', { total: proxies.length, page, totalPages })}
+                    {t('proxies.pagination', { total: filteredProxies.length, page, totalPages })}
                   </span>
                   <div className="flex items-center gap-1">
                     <button

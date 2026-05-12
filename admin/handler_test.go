@@ -145,6 +145,46 @@ func TestRefreshAccountReturnsRefreshFailure(t *testing.T) {
 	}
 }
 
+func TestAddProxiesRejectsInvalidProxyURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := &Handler{}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/api/admin/proxies",
+		strings.NewReader(`{"url":"localhost:8080"}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.AddProxies(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	assertErrorContains(t, recorder, "代理 URL 格式错误")
+}
+
+func TestToggleAccountLockReturnsNotFoundForMissingAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	handler := &Handler{db: db}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: "999"}}
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/999/lock", strings.NewReader(`{"locked":true}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.ToggleAccountLock(ctx)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+	assertErrorMessage(t, recorder, "账号不存在")
+}
+
 func TestGetAccountAuthJSONRejectsInvalidID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -659,5 +699,17 @@ func assertErrorMessage(t *testing.T, recorder *httptest.ResponseRecorder, want 
 	}
 	if got := payload["error"]; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func assertErrorContains(t *testing.T, recorder *httptest.ResponseRecorder, want string) {
+	t.Helper()
+
+	var payload map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := payload["error"]; !strings.Contains(got, want) {
+		t.Fatalf("error = %q, want containing %q", got, want)
 	}
 }
