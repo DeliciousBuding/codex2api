@@ -114,6 +114,7 @@ type Account struct {
 	AllowedAPIKeyIDs        []int64
 	allowedAPIKeySet        map[int64]struct{}
 	Tags                    []string // 自由文本标签，仅用于过滤和显示
+	GroupIDs                []int64  // 该账号所属分组 ID（与 account_group_members 同步）
 	ModelCooldowns          map[string]ModelCooldown
 }
 
@@ -2220,6 +2221,13 @@ func (s *Store) Init(ctx context.Context) error {
 		return nil
 	}
 
+	// 1b. 加载账号分组成员关系
+	if memberships, err := s.db.ListAccountGroupMemberships(ctx); err == nil {
+		s.ApplyAccountGroupMemberships(memberships)
+	} else {
+		log.Printf("⚠ 加载账号分组失败：%v", err)
+	}
+
 	s.rebuildFastScheduler()
 
 	// 2. 统计可用账号，RT 账号的刷新交给 StartBackgroundRefresh 处理
@@ -3071,6 +3079,29 @@ func (s *Store) ApplyAccountTags(dbID int64, tags []string) bool {
 	acc.Tags = cloned
 	acc.mu.Unlock()
 	return true
+}
+
+// ApplyAccountGroups 替换运行时账号的分组列表。空切片表示清空。
+func (s *Store) ApplyAccountGroups(dbID int64, groupIDs []int64) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+	cloned := cloneInt64Slice(groupIDs)
+	acc.mu.Lock()
+	acc.GroupIDs = cloned
+	acc.mu.Unlock()
+	return true
+}
+
+// ApplyAccountGroupMemberships 批量重置所有账号的分组归属。仅在启动时或全局刷新调用。
+func (s *Store) ApplyAccountGroupMemberships(memberships map[int64][]int64) {
+	for _, acc := range s.Accounts() {
+		ids := memberships[acc.DBID]
+		acc.mu.Lock()
+		acc.GroupIDs = cloneInt64Slice(ids)
+		acc.mu.Unlock()
+	}
 }
 
 func (s *Store) ApplyAccountProxyURL(dbID int64, proxyURL string) bool {

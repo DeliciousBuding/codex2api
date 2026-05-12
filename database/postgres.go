@@ -457,6 +457,24 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS image_quota_reset_at TIMESTAMPTZ NULL;
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb;
 
+	CREATE TABLE IF NOT EXISTS account_groups (
+		id          SERIAL PRIMARY KEY,
+		name        VARCHAR(80) UNIQUE NOT NULL,
+		description TEXT DEFAULT '',
+		color       VARCHAR(20) DEFAULT '',
+		sort_order  INT DEFAULT 0,
+		created_at  TIMESTAMPTZ DEFAULT NOW(),
+		updated_at  TIMESTAMPTZ DEFAULT NOW()
+	);
+
+	CREATE TABLE IF NOT EXISTS account_group_members (
+		account_id BIGINT NOT NULL,
+		group_id   BIGINT NOT NULL,
+		PRIMARY KEY (account_id, group_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_account_group_members_group ON account_group_members(group_id);
+	CREATE INDEX IF NOT EXISTS idx_account_group_members_account ON account_group_members(account_id);
+
 	UPDATE accounts
 	SET status = 'deleted',
 		error_message = '',

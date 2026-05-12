@@ -257,6 +257,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/proxies/batch-delete", h.BatchDeleteProxies)
 	api.POST("/proxies/test", h.TestProxy)
 
+	// 账号分组
+	api.GET("/account-groups", h.ListAccountGroups)
+	api.POST("/account-groups", h.CreateAccountGroup)
+	api.PATCH("/account-groups/:id", h.UpdateAccountGroup)
+	api.DELETE("/account-groups/:id", h.DeleteAccountGroup)
+
 	// OAuth 授权流程
 	api.POST("/oauth/generate-auth-url", h.GenerateOAuthURL)
 	api.POST("/oauth/exchange-code", h.ExchangeOAuthCode)
@@ -423,6 +429,7 @@ type accountResponse struct {
 	Locked                   bool                       `json:"locked"`
 	AllowedAPIKeyIDs         []int64                    `json:"allowed_api_key_ids"`
 	Tags                     []string                   `json:"tags"`
+	GroupIDs                 []int64                    `json:"group_ids"`
 	// 图片配额信息
 	ImageQuotaRemaining *int   `json:"image_quota_remaining,omitempty"`
 	ImageQuotaTotal     *int   `json:"image_quota_total,omitempty"`
@@ -482,6 +489,9 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 	reqCounts := h.getCachedRequestCounts()
 	usage5h, usage7d := h.getAccountUsageWindows(ctx)
 
+	// 分组成员关系
+	memberships, _ := h.db.ListAccountGroupMemberships(ctx)
+
 	accounts := make([]accountResponse, 0, len(rows))
 	for _, row := range rows {
 		isOpenAIResponsesAccount := strings.EqualFold(strings.TrimSpace(row.GetCredential("upstream_type")), auth.UpstreamOpenAIResponses)
@@ -511,6 +521,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			Locked:                   row.Locked,
 			AllowedAPIKeyIDs:         row.GetCredentialInt64Slice("allowed_api_key_ids"),
 			Tags:                     append([]string(nil), row.Tags...),
+			GroupIDs:                 append([]int64{}, memberships[row.ID]...),
 			ScoreBiasOverride:        nullableInt64Pointer(row.ScoreBiasOverride),
 			ScoreBiasEffective:       effectiveScoreBias(planType, row.ScoreBiasOverride),
 			BaseConcurrencyOverride:  nullableInt64Pointer(row.BaseConcurrencyOverride),
@@ -632,6 +643,7 @@ type updateAccountSchedulerReq struct {
 	AllowedAPIKeyIDs        json.RawMessage `json:"allowed_api_key_ids"`
 	ProxyURL                *string         `json:"proxy_url"`
 	Tags                    *[]string       `json:"tags"`
+	GroupIDs                *[]int64        `json:"group_ids"`
 }
 
 // UpdateAccountScheduler 更新账号调度配置。
@@ -729,6 +741,32 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		}
 		if h.store != nil {
 			h.store.ApplyAccountTags(id, tags)
+		}
+	}
+
+	if req.GroupIDs != nil {
+		dedup := dedupeInt64(*req.GroupIDs)
+		if len(dedup) > 0 {
+			missing, err := h.db.VerifyAccountGroupIDs(ctx, dedup)
+			if err != nil {
+				writeError(c, http.StatusInternalServerError, "校验分组 ID 失败: "+err.Error())
+				return
+			}
+			if len(missing) > 0 {
+				values := make([]string, 0, len(missing))
+				for _, value := range missing {
+					values = append(values, strconv.FormatInt(value, 10))
+				}
+				writeError(c, http.StatusBadRequest, "group_ids 包含不存在的分组 ID: "+strings.Join(values, ", "))
+				return
+			}
+		}
+		if err := h.db.SetAccountGroups(ctx, id, dedup); err != nil {
+			writeError(c, http.StatusInternalServerError, "更新账号分组失败: "+err.Error())
+			return
+		}
+		if h.store != nil {
+			h.store.ApplyAccountGroups(id, dedup)
 		}
 	}
 

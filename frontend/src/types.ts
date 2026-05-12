@@ -44,6 +44,7 @@ export interface AccountRow {
   dynamic_concurrency_limit?: number
   allowed_api_key_ids?: number[]
   tags?: string[]
+  group_ids?: number[]
   scheduler_breakdown?: {
     unauthorized_penalty: number
     rate_limit_penalty: number
@@ -142,6 +143,36 @@ export interface UpdateAccountSchedulerRequest {
   allowed_api_key_ids?: number[] | null
   proxy_url?: string | null
   tags?: string[] | null
+  group_ids?: number[] | null
+}
+
+export interface AccountGroup {
+  id: number
+  name: string
+  description: string
+  color: string
+  sort_order: number
+  member_count: number
+  created_at: ISODateString
+  updated_at: ISODateString
+}
+
+export interface AccountGroupsResponse {
+  groups: AccountGroup[]
+}
+
+export interface CreateAccountGroupRequest {
+  name: string
+  description?: string
+  color?: string
+  sort_order?: number
+}
+
+export interface UpdateAccountGroupRequest {
+  name?: string
+  description?: string
+  color?: string
+  sort_order?: number
 }
 
 export interface AccountModelStat {

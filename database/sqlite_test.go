@@ -111,6 +111,109 @@ func TestSQLiteAPIKeyLookupAndCount(t *testing.T) {
 	}
 }
 
+func TestSQLiteAccountGroupsCRUD(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) returned error: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	accountID, err := db.InsertAccount(ctx, "g-account", "rt-g", "")
+	if err != nil {
+		t.Fatalf("InsertAccount returned error: %v", err)
+	}
+
+	// Create groups
+	plusID, err := db.CreateAccountGroup(ctx, "plus-pool", "Plus accounts", "#5b8def", 0)
+	if err != nil {
+		t.Fatalf("CreateAccountGroup(plus) returned error: %v", err)
+	}
+	freeID, err := db.CreateAccountGroup(ctx, "free-pool", "Free accounts", "#a3a3a3", 1)
+	if err != nil {
+		t.Fatalf("CreateAccountGroup(free) returned error: %v", err)
+	}
+
+	// Duplicate name should fail
+	if _, err := db.CreateAccountGroup(ctx, "plus-pool", "", "", 0); !errors.Is(err, ErrDuplicateAccountGroupName) {
+		t.Fatalf("CreateAccountGroup(duplicate) err = %v, want ErrDuplicateAccountGroupName", err)
+	}
+
+	// List has both
+	groups, err := db.ListAccountGroups(ctx)
+	if err != nil {
+		t.Fatalf("ListAccountGroups returned error: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("ListAccountGroups returned %d groups, want 2", len(groups))
+	}
+	if groups[0].Name != "plus-pool" || groups[1].Name != "free-pool" {
+		t.Fatalf("sort order wrong: %v", []string{groups[0].Name, groups[1].Name})
+	}
+	if groups[0].MemberCount != 0 {
+		t.Fatalf("plus group MemberCount = %d, want 0", groups[0].MemberCount)
+	}
+
+	// Update name + description
+	newName := "plus-tier"
+	newDesc := "Plus tier accounts"
+	if err := db.UpdateAccountGroup(ctx, plusID, &newName, &newDesc, nil, nil); err != nil {
+		t.Fatalf("UpdateAccountGroup returned error: %v", err)
+	}
+
+	// Set memberships
+	if err := db.SetAccountGroups(ctx, accountID, []int64{plusID, freeID, plusID}); err != nil {
+		t.Fatalf("SetAccountGroups returned error: %v", err)
+	}
+	got, err := db.GetAccountGroupIDs(ctx, accountID)
+	if err != nil {
+		t.Fatalf("GetAccountGroupIDs returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("GetAccountGroupIDs returned %v, want 2 unique entries", got)
+	}
+
+	// VerifyAccountGroupIDs flags missing
+	missing, err := db.VerifyAccountGroupIDs(ctx, []int64{plusID, 999})
+	if err != nil {
+		t.Fatalf("VerifyAccountGroupIDs returned error: %v", err)
+	}
+	if len(missing) != 1 || missing[0] != 999 {
+		t.Fatalf("missing = %v, want [999]", missing)
+	}
+
+	// Delete non-empty fails without force
+	if err := db.DeleteAccountGroup(ctx, plusID, false); !errors.Is(err, ErrAccountGroupNotEmpty) {
+		t.Fatalf("DeleteAccountGroup non-empty err = %v, want ErrAccountGroupNotEmpty", err)
+	}
+
+	// Delete with force succeeds
+	if err := db.DeleteAccountGroup(ctx, plusID, true); err != nil {
+		t.Fatalf("DeleteAccountGroup(force) returned error: %v", err)
+	}
+	got, err = db.GetAccountGroupIDs(ctx, accountID)
+	if err != nil {
+		t.Fatalf("GetAccountGroupIDs after delete returned error: %v", err)
+	}
+	if len(got) != 1 || got[0] != freeID {
+		t.Fatalf("after force-delete plus, account groups = %v, want [%d]", got, freeID)
+	}
+
+	// Clearing groups
+	if err := db.SetAccountGroups(ctx, accountID, nil); err != nil {
+		t.Fatalf("SetAccountGroups(nil) returned error: %v", err)
+	}
+	got, err = db.GetAccountGroupIDs(ctx, accountID)
+	if err != nil {
+		t.Fatalf("GetAccountGroupIDs after clear returned error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("after clear, groups = %v, want empty", got)
+	}
+}
+
 func TestSQLiteAccountTagsRoundTrip(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 
