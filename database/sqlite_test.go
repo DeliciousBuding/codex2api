@@ -212,6 +212,13 @@ func TestSQLiteAccountCredentialDuplicateChecks(t *testing.T) {
 	if len(accountIDs) != 1 || !accountIDs["acct-duplicate"] {
 		t.Fatalf("accountIDs = %#v, want acct-duplicate only", accountIDs)
 	}
+	index, err := db.GetAccountCredentialIndex(ctx)
+	if err != nil {
+		t.Fatalf("GetAccountCredentialIndex 返回错误: %v", err)
+	}
+	if !index.RefreshTokens["rt-duplicate"] || !index.AccessTokens["at-duplicate"] || !index.SessionTokens["st-duplicate"] || !index.AccountIDs["acct-duplicate"] {
+		t.Fatalf("credential index missing expected values: %#v", index)
+	}
 
 	rows, err := db.ListActive(ctx)
 	if err != nil {

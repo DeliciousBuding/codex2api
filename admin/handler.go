@@ -1956,87 +1956,40 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 
 	log.Printf("导入解析: 文件内 %d 条, 去重后 %d 条（%d 条文件内重复）", len(tokens), len(unique), fileDuplicateCount)
 
-	existingRTs, err := h.db.GetAllRefreshTokens(dedupeCtx)
+	credentialIndex, err := h.db.GetAccountCredentialIndex(dedupeCtx)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, "查询已有 RT 失败")
+		writeError(c, http.StatusInternalServerError, "查询已有账号凭证失败")
 		return
-	}
-
-	// 存在 AT-only token 时额外查询已有 AT
-	hasAT := false
-	var existingATs map[string]bool
-	for _, token := range unique {
-		if strings.TrimSpace(token.accessToken) != "" {
-			hasAT = true
-			break
-		}
-	}
-	if hasAT {
-		existingATs, err = h.db.GetAllAccessTokens(dedupeCtx)
-		if err != nil {
-			writeError(c, http.StatusInternalServerError, "查询已有 AT 失败")
-			return
-		}
-	}
-	hasST := false
-	var existingSTs map[string]bool
-	for _, token := range unique {
-		if strings.TrimSpace(token.sessionToken) != "" {
-			hasST = true
-			break
-		}
-	}
-	if hasST {
-		existingSTs, err = h.db.GetAllSessionTokens(dedupeCtx)
-		if err != nil {
-			writeError(c, http.StatusInternalServerError, "查询已有 ST 失败")
-			return
-		}
-	}
-	hasAccountID := false
-	var existingAccountIDs map[string]bool
-	for _, token := range unique {
-		if strings.TrimSpace(token.accountID) != "" {
-			hasAccountID = true
-			break
-		}
-	}
-	if hasAccountID {
-		existingAccountIDs, err = h.db.GetAllAccountIDs(dedupeCtx)
-		if err != nil {
-			writeError(c, http.StatusInternalServerError, "查询已有 account_id 失败")
-			return
-		}
 	}
 
 	var newTokens []importToken
 	duplicateCount := fileDuplicateCount
 	for _, t := range unique {
-		if t.accountID != "" && existingAccountIDs[t.accountID] {
+		if t.accountID != "" && credentialIndex.AccountIDs[t.accountID] {
 			duplicateCount++
 			continue
 		}
 		switch {
 		case t.refreshToken != "":
-			if existingRTs[t.refreshToken] {
+			if credentialIndex.RefreshTokens[t.refreshToken] {
 				duplicateCount++
-			} else if t.sessionToken != "" && existingSTs[t.sessionToken] {
+			} else if t.sessionToken != "" && credentialIndex.SessionTokens[t.sessionToken] {
 				duplicateCount++
-			} else if t.accessToken != "" && existingATs[t.accessToken] {
+			} else if t.accessToken != "" && credentialIndex.AccessTokens[t.accessToken] {
 				duplicateCount++
 			} else {
 				newTokens = append(newTokens, t)
 			}
 		case t.sessionToken != "":
-			if existingSTs[t.sessionToken] {
+			if credentialIndex.SessionTokens[t.sessionToken] {
 				duplicateCount++
-			} else if t.accessToken != "" && existingATs[t.accessToken] {
+			} else if t.accessToken != "" && credentialIndex.AccessTokens[t.accessToken] {
 				duplicateCount++
 			} else {
 				newTokens = append(newTokens, t)
 			}
 		case t.accessToken != "":
-			if existingATs[t.accessToken] {
+			if credentialIndex.AccessTokens[t.accessToken] {
 				duplicateCount++
 			} else {
 				newTokens = append(newTokens, t)

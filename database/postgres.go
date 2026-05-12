@@ -49,6 +49,13 @@ type OptionalInt64Slice struct {
 	Values []int64
 }
 
+type AccountCredentialIndex struct {
+	RefreshTokens map[string]bool
+	AccessTokens  map[string]bool
+	SessionTokens map[string]bool
+	AccountIDs    map[string]bool
+}
+
 // GetCredential 从 credentials JSONB 获取字符串字段
 func (a *AccountRow) GetCredential(key string) string {
 	if a.Credentials == nil {
@@ -3216,6 +3223,40 @@ func (db *DB) GetAllAccountIDs(ctx context.Context) (map[string]bool, error) {
 		}
 	}
 	return result, rows.Err()
+}
+
+func (db *DB) GetAccountCredentialIndex(ctx context.Context) (*AccountCredentialIndex, error) {
+	rows, err := db.conn.QueryContext(ctx, `SELECT credentials FROM accounts WHERE status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	index := &AccountCredentialIndex{
+		RefreshTokens: make(map[string]bool),
+		AccessTokens:  make(map[string]bool),
+		SessionTokens: make(map[string]bool),
+		AccountIDs:    make(map[string]bool),
+	}
+	for rows.Next() {
+		var raw interface{}
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		if rt := strings.TrimSpace(credentialString(raw, "refresh_token")); rt != "" {
+			index.RefreshTokens[rt] = true
+		}
+		if at := strings.TrimSpace(credentialString(raw, "access_token")); at != "" {
+			index.AccessTokens[at] = true
+		}
+		if st := strings.TrimSpace(credentialString(raw, "session_token")); st != "" {
+			index.SessionTokens[st] = true
+		}
+		if accountID := strings.TrimSpace(credentialString(raw, "account_id")); accountID != "" {
+			index.AccountIDs[accountID] = true
+		}
+	}
+	return index, rows.Err()
 }
 
 // ==================== 账号事件 ====================
