@@ -414,6 +414,41 @@ func TestImportAccountsCommonPrefiltersExistingAccountIDs(t *testing.T) {
 	}
 }
 
+func TestImportAccountsCommonStoresATMetadataAtomically(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	handler := &Handler{db: db, store: &auth.Store{}}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/import", nil)
+
+	handler.importAccountsCommon(ctx, []importToken{{
+		name:        "at-with-metadata",
+		accountID:   "acct_import",
+		email:       "user@example.com",
+		accessToken: "at_import",
+	}}, "")
+
+	rows, err := db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("active accounts = %d, want 1", len(rows))
+	}
+	if got := rows[0].GetCredential("account_id"); got != "acct_import" {
+		t.Fatalf("account_id = %q, want acct_import", got)
+	}
+	if got := rows[0].GetCredential("email"); got != "user@example.com" {
+		t.Fatalf("email = %q, want user@example.com", got)
+	}
+	if got := rows[0].GetCredential("access_token"); got != "at_import" {
+		t.Fatalf("access_token = %q, want at_import", got)
+	}
+}
+
 func TestGetAccountAuthJSONRejectsInvalidID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

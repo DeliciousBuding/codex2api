@@ -2058,9 +2058,23 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				if name == "" {
 					name = fmt.Sprintf("at-import-%d", idx+1)
 				}
+				seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
+					sessionToken:        tok.sessionToken,
+					accessToken:         tok.accessToken,
+					idToken:             tok.idToken,
+					accountID:           tok.accountID,
+					email:               tok.email,
+					planType:            tok.planType,
+					expiresAtRaw:        tok.expiresAt,
+					codex7DUsedPercent:  tok.codex7DUsedPercent,
+					codex7DResetAt:      tok.codex7DResetAt,
+					codex5HUsedPercent:  tok.codex5HUsedPercent,
+					codex5HResetAt:      tok.codex5HResetAt,
+					codexUsageUpdatedAt: tok.codexUsageUpdatedAt,
+				})
 
 				insertCtx, insertCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				id, err := h.db.InsertATAccount(insertCtx, name, tok.accessToken, proxyURL)
+				id, err := h.db.InsertAccountWithCredentials(insertCtx, name, tokenCredentialMap(seed), proxyURL)
 				insertCancel()
 
 				if err != nil {
@@ -2079,26 +2093,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				atomic.AddInt64(&current, 1)
 				h.db.InsertAccountEventAsync(id, "added", "import_at")
 
-				seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
-					sessionToken:        tok.sessionToken,
-					accessToken:         tok.accessToken,
-					idToken:             tok.idToken,
-					accountID:           tok.accountID,
-					email:               tok.email,
-					planType:            tok.planType,
-					expiresAtRaw:        tok.expiresAt,
-					codex7DUsedPercent:  tok.codex7DUsedPercent,
-					codex7DResetAt:      tok.codex7DResetAt,
-					codex5HUsedPercent:  tok.codex5HUsedPercent,
-					codex5HResetAt:      tok.codex5HResetAt,
-					codexUsageUpdatedAt: tok.codexUsageUpdatedAt,
-				})
 				newAcc := accountFromCredentialSeed(id, proxyURL, seed)
-				if len(tokenCredentialMap(seed)) > 0 {
-					credCtx, credCancel := context.WithTimeout(context.Background(), 3*time.Second)
-					_ = h.db.UpdateCredentials(credCtx, id, tokenCredentialMap(seed))
-					credCancel()
-				}
 				h.store.AddAccount(newAcc)
 			} else {
 				// RT 导入路径；如果导入文件里同时带 AT，则先沿用它，后台调度到期前再刷新。
