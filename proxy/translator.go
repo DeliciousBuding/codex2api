@@ -2173,8 +2173,29 @@ func extractUsageFromResult(usage gjson.Result) *UsageInfo {
 	inputTokens := int(usage.Get("input_tokens").Int())
 	outputTokens := int(usage.Get("output_tokens").Int())
 	reasoningTokens := int(usage.Get("output_tokens_details.reasoning_tokens").Int())
-	cachedTokens := int(usage.Get("input_tokens_details.cached_tokens").Int())
+	cachedTokens := extractCachedTokens(usage, inputTokens)
 	return newUsageInfo(inputTokens, outputTokens, reasoningTokens, cachedTokens)
+}
+
+func extractCachedTokens(usage gjson.Result, inputTokens int) int {
+	if !usage.Exists() {
+		return 0
+	}
+	for _, path := range []string{
+		"input_tokens_details.cached_tokens",
+		"prompt_tokens_details.cached_tokens",
+		"cached_tokens",
+		"prompt_cache_hit_tokens",
+		"cache_read_tokens",
+	} {
+		if value := int(usage.Get(path).Int()); value > 0 {
+			if inputTokens > 0 && value > inputTokens {
+				return inputTokens
+			}
+			return value
+		}
+	}
+	return 0
 }
 
 // ExtractToolCallsFromOutput 从 response.completed 事件的 output 数组中提取 function_call 项

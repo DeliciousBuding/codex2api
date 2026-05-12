@@ -1841,7 +1841,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		completionTokens := int(gjson.GetBytes(respBody, "usage.output_tokens").Int())
 		totalTokens := int(gjson.GetBytes(respBody, "usage.total_tokens").Int())
 		reasoningTokens := int(gjson.GetBytes(respBody, "usage.output_tokens_details.reasoning_tokens").Int())
-		cachedTokens := int(gjson.GetBytes(respBody, "usage.input_tokens_details.cached_tokens").Int())
+		cachedTokens := extractCachedTokens(gjson.GetBytes(respBody, "usage"), promptTokens)
 
 		actualServiceTier := gjson.GetBytes(respBody, "service_tier").String()
 		resolvedServiceTier := resolveServiceTier(actualServiceTier, serviceTier)

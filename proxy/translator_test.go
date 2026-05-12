@@ -1574,6 +1574,49 @@ func TestStreamTranslator_CachedTokenDetails(t *testing.T) {
 	}
 }
 
+func TestExtractCachedTokensFallbacks(t *testing.T) {
+	tests := []struct {
+		name       string
+		usage      string
+		input      int
+		wantCached int
+	}{
+		{
+			name:       "prompt details fallback",
+			usage:      `{"input_tokens":12,"prompt_tokens_details":{"cached_tokens":5}}`,
+			input:      12,
+			wantCached: 5,
+		},
+		{
+			name:       "top level fallback",
+			usage:      `{"input_tokens":12,"cached_tokens":4}`,
+			input:      12,
+			wantCached: 4,
+		},
+		{
+			name:       "prompt cache hit fallback",
+			usage:      `{"input_tokens":12,"prompt_cache_hit_tokens":3}`,
+			input:      12,
+			wantCached: 3,
+		},
+		{
+			name:       "cache read fallback is clamped",
+			usage:      `{"input_tokens":12,"cache_read_tokens":20}`,
+			input:      12,
+			wantCached: 12,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractCachedTokens(gjson.Parse(tc.usage), tc.input)
+			if got != tc.wantCached {
+				t.Fatalf("extractCachedTokens = %d, want %d", got, tc.wantCached)
+			}
+		})
+	}
+}
+
 func TestStreamTranslator_MultipleFunctionCalls(t *testing.T) {
 	st := NewStreamTranslator("chatcmpl-test", "gpt-5.4", 0)
 
