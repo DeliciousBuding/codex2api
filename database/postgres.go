@@ -1729,10 +1729,12 @@ type ChartTimelinePoint struct {
 	Bucket          string  `json:"bucket"`
 	Requests        int64   `json:"requests"`
 	AvgLatency      float64 `json:"avg_latency"`
+	PromptTokens    int64   `json:"prompt_tokens"`
 	InputTokens     int64   `json:"input_tokens"`
 	OutputTokens    int64   `json:"output_tokens"`
 	ReasoningTokens int64   `json:"reasoning_tokens"`
 	CachedTokens    int64   `json:"cached_tokens"`
+	CacheHitRate    float64 `json:"cache_hit_rate"`
 	Errors4xx       int64   `json:"errors_4xx"`
 	Errors5xx       int64   `json:"errors_5xx"`
 }
@@ -1795,10 +1797,19 @@ func (db *DB) GetChartAggregation(ctx context.Context, start, end time.Time, buc
 		) AS bucket,
 		COUNT(*)                              AS requests,
 		COALESCE(AVG(duration_ms), 0)         AS avg_latency,
-		COALESCE(SUM(input_tokens), 0)        AS input_tokens,
+		COALESCE(SUM(prompt_tokens), 0)       AS prompt_tokens,
+		COALESCE(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END), 0) AS input_tokens,
 		COALESCE(SUM(output_tokens), 0)       AS output_tokens,
 		COALESCE(SUM(reasoning_tokens), 0)    AS reasoning_tokens,
 		COALESCE(SUM(cached_tokens), 0)       AS cached_tokens,
+		COALESCE(
+			LEAST(
+				100.0,
+				(SUM(cached_tokens)::double precision * 100.0) /
+				NULLIF(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END), 0)
+			),
+			0
+		) AS cache_hit_rate,
 		COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0) AS errors_4xx,
 		COALESCE(SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END), 0) AS errors_5xx
 	FROM usage_logs
@@ -1815,7 +1826,7 @@ func (db *DB) GetChartAggregation(ctx context.Context, start, end time.Time, buc
 
 	for rows.Next() {
 		var p ChartTimelinePoint
-		if err := rows.Scan(&p.Bucket, &p.Requests, &p.AvgLatency, &p.InputTokens, &p.OutputTokens, &p.ReasoningTokens, &p.CachedTokens, &p.Errors4xx, &p.Errors5xx); err != nil {
+		if err := rows.Scan(&p.Bucket, &p.Requests, &p.AvgLatency, &p.PromptTokens, &p.InputTokens, &p.OutputTokens, &p.ReasoningTokens, &p.CachedTokens, &p.CacheHitRate, &p.Errors4xx, &p.Errors5xx); err != nil {
 			return nil, err
 		}
 		result.Timeline = append(result.Timeline, p)

@@ -38,7 +38,7 @@ interface TimelinePoint {
   outputTokens: number
   reasoningTokens: number
   cachedTokens: number
-  cacheHitRate: number | null
+  cacheHitRate: number
   errors4xx: number
   errors5xx: number
 }
@@ -97,7 +97,7 @@ export default function DashboardUsageCharts({
         outputTokens: point.output_tokens,
         reasoningTokens: point.reasoning_tokens,
         cachedTokens: point.cached_tokens,
-        cacheHitRate: point.input_tokens > 0 ? Math.min(100, (point.cached_tokens / point.input_tokens) * 100) : null,
+        cacheHitRate: point.cache_hit_rate,
         errors4xx: point.errors_4xx,
         errors5xx: point.errors_5xx,
       }

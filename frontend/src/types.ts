@@ -521,10 +521,12 @@ export interface ChartTimelinePoint {
   bucket: string
   requests: number
   avg_latency: number
+  prompt_tokens: number
   input_tokens: number
   output_tokens: number
   reasoning_tokens: number
   cached_tokens: number
+  cache_hit_rate: number
   errors_4xx: number
   errors_5xx: number
 }

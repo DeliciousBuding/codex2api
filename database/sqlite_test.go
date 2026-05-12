@@ -459,6 +459,46 @@ func TestUsageLogModeOffSkipsAllLogs(t *testing.T) {
 	}
 }
 
+func TestChartAggregationIncludesCacheHitRateWithPromptFallback(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Minute)
+	if _, err := db.conn.ExecContext(ctx, `
+		INSERT INTO usage_logs (
+			account_id, endpoint, model, status_code, duration_ms,
+			total_tokens, prompt_tokens, completion_tokens, input_tokens, output_tokens, cached_tokens, created_at
+		)
+		VALUES
+			(1, '/v1/responses', 'gpt-5.5', 200, 100, 600, 400, 200, 400, 200, 200, $1),
+			(1, '/v1/responses', 'gpt-5.5', 200, 120, 300, 200, 100, 0, 100, 100, $1),
+			(1, '/v1/responses', 'gpt-5.5', 499, 80, 900, 900, 0, 900, 0, 900, $1)
+	`, sqliteTimeParam(now)); err != nil {
+		t.Fatalf("insert usage logs 返回错误: %v", err)
+	}
+
+	charts, err := db.GetChartAggregation(ctx, now.Add(-time.Minute), now.Add(time.Minute), 5)
+	if err != nil {
+		t.Fatalf("GetChartAggregation 返回错误: %v", err)
+	}
+	if len(charts.Timeline) != 1 {
+		t.Fatalf("len(Timeline) = %d, want 1", len(charts.Timeline))
+	}
+	point := charts.Timeline[0]
+	if point.PromptTokens != 600 || point.InputTokens != 600 || point.CachedTokens != 300 {
+		t.Fatalf("tokens = prompt %d input %d cached %d, want 600/600/300", point.PromptTokens, point.InputTokens, point.CachedTokens)
+	}
+	if point.CacheHitRate != 50 {
+		t.Fatalf("CacheHitRate = %.2f, want 50.00", point.CacheHitRate)
+	}
+}
+
 func TestSQLiteModelCooldownPersistence(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
