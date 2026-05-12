@@ -3370,7 +3370,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.ProxyPoolEnabled != nil {
 		h.store.SetProxyPoolEnabled(*req.ProxyPoolEnabled)
 		if *req.ProxyPoolEnabled {
-			_ = h.store.ReloadProxyPool()
+			if err := h.store.ReloadProxyPool(); err != nil {
+				writeError(c, http.StatusInternalServerError, "代理池已启用，但刷新代理池失败: "+err.Error())
+				return
+			}
 		}
 		log.Printf("设置已更新: proxy_pool_enabled = %t", *req.ProxyPoolEnabled)
 	}
