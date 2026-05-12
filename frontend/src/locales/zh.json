@@ -652,6 +652,8 @@
     "totalTokensCard": "总 Token 数",
     "inputTokens": "输入",
     "outputTokens": "输出",
+    "cachedTokens": "缓存",
+    "cacheHitRate": "命中率",
     "totalCostCard": "总计费",
     "todayCost": "今日",
     "accountCost": "账号",

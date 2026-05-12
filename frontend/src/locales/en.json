@@ -652,6 +652,8 @@
     "totalTokensCard": "Total Tokens",
     "inputTokens": "Input",
     "outputTokens": "Output",
+    "cachedTokens": "Cached",
+    "cacheHitRate": "Hit Rate",
     "totalCostCard": "Total Cost",
     "todayCost": "Today",
     "accountCost": "Account",

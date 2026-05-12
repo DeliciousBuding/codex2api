@@ -121,6 +121,11 @@ function formatTokenPricePerMillion(value?: number | null): string {
   return `$${safeNumber(value).toFixed(4)} / 1M Token`
 }
 
+function formatPercent(value?: number | null): string {
+  const percent = safeNumber(value)
+  return `${percent.toFixed(percent >= 10 ? 1 : 2)}%`
+}
+
 function UsageCostCell({ log }: { log: UsageLog }) {
   const { t } = useTranslation()
   const accountBilled = safeNumber(log.account_billed)
@@ -404,6 +409,8 @@ export default function Usage() {
   const totalTokens = stats?.total_tokens ?? 0
   const totalPromptTokens = stats?.total_prompt_tokens ?? 0
   const totalCompletionTokens = stats?.total_completion_tokens ?? 0
+  const totalCachedTokens = stats?.total_cached_tokens ?? 0
+  const totalCacheRate = stats?.total_cache_rate ?? 0
   const totalAccountBilled = stats?.total_account_billed ?? 0
   const totalUserBilled = stats?.total_user_billed ?? 0
   const todayRequests = stats?.today_requests ?? 0
@@ -471,6 +478,8 @@ export default function Usage() {
               <div className="text-[12px] text-muted-foreground leading-relaxed">
                 <span>{t('usage.inputTokens')}: {formatTokens(totalPromptTokens)}</span>
                 <span className="ml-2">{t('usage.outputTokens')}: {formatTokens(totalCompletionTokens)}</span>
+                <span className="ml-2">{t('usage.cachedTokens')}: {formatTokens(totalCachedTokens)}</span>
+                <span className="ml-2">{t('usage.cacheHitRate')}: {formatPercent(totalCacheRate)}</span>
               </div>
             </CardContent>
           </Card>
