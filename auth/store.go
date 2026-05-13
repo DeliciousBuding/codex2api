@@ -112,6 +112,8 @@ type Account struct {
 	BaseConcurrencyOverride *int64
 	AllowedAPIKeyIDs        []int64
 	allowedAPIKeySet        map[int64]struct{}
+	Tags                    []string
+	GroupIDs                []int64
 	ModelCooldowns          map[string]ModelCooldown
 }
 
@@ -1452,6 +1454,8 @@ type Store struct {
 	testModel                 atomic.Value // 测试连接使用的模型（string）
 	db                        *database.DB
 	tokenCache                cache.TokenCache
+	apiKeyGroupsMu            sync.RWMutex
+	apiKeyAllowedGroups       map[int64][]int64
 	usageProbeMu              sync.RWMutex
 	usageProbe                func(context.Context, *Account) error
 	usageProbeBatch           atomic.Bool
@@ -1909,7 +1913,9 @@ func (s *Store) rebuildFastScheduler() {
 	if s == nil || !s.fastSchedulerEnabled.Load() {
 		return
 	}
-	s.fastScheduler.Store(s.BuildFastScheduler())
+	scheduler := s.BuildFastScheduler()
+	scheduler.SetGroupCheck(s.APIKeyAllowsAccount)
+	s.fastScheduler.Store(scheduler)
 }
 
 func (s *Store) recomputeAllAccountSchedulerState() {
@@ -2267,6 +2273,7 @@ func (s *Store) loadFromDB(ctx context.Context) error {
 		account.ScoreBiasOverride = reflectOptionalInt64Field(row, "ScoreBiasOverride")
 		account.BaseConcurrencyOverride = reflectOptionalInt64Field(row, "BaseConcurrencyOverride")
 		account.setAllowedAPIKeyIDsLocked(row.GetCredentialInt64Slice("allowed_api_key_ids"))
+		account.Tags = cloneStringSlice(row.Tags)
 		if row.Locked {
 			atomic.StoreInt32(&account.Locked, 1)
 		}
@@ -2349,6 +2356,14 @@ func (s *Store) loadFromDB(ctx context.Context) error {
 	}
 
 	log.Printf("从数据库加载了 %d 个账号", len(s.accounts))
+	if memberships, err := s.db.ListAccountGroupMemberships(ctx); err == nil {
+		s.ApplyAccountGroupMemberships(memberships)
+	} else {
+		log.Printf("加载账号分组失败: %v", err)
+	}
+	if err := s.LoadAPIKeyAllowedGroups(ctx); err != nil {
+		log.Printf("加载 API Key 分组限制失败: %v", err)
+	}
 	return nil
 }
 
@@ -3031,6 +3046,106 @@ func (s *Store) ApplyAccountAllowedAPIKeys(dbID int64, allowedAPIKeyIDs []int64)
 	return true
 }
 
+func (s *Store) ApplyAccountTags(dbID int64, tags []string) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+	acc.mu.Lock()
+	acc.Tags = cloneStringSlice(tags)
+	acc.mu.Unlock()
+	return true
+}
+
+func (s *Store) ApplyAccountGroups(dbID int64, groupIDs []int64) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+	acc.mu.Lock()
+	acc.GroupIDs = cloneInt64Slice(groupIDs)
+	acc.mu.Unlock()
+	s.fastSchedulerUpdate(acc)
+	return true
+}
+
+func (s *Store) ApplyAccountGroupMemberships(memberships map[int64][]int64) {
+	for _, acc := range s.Accounts() {
+		acc.mu.Lock()
+		acc.GroupIDs = cloneInt64Slice(memberships[acc.DBID])
+		acc.mu.Unlock()
+		s.fastSchedulerUpdate(acc)
+	}
+}
+
+func (s *Store) SetAPIKeyAllowedGroups(apiKeyID int64, groupIDs []int64) {
+	if apiKeyID <= 0 {
+		return
+	}
+	s.apiKeyGroupsMu.Lock()
+	if s.apiKeyAllowedGroups == nil {
+		s.apiKeyAllowedGroups = make(map[int64][]int64)
+	}
+	if len(groupIDs) == 0 {
+		delete(s.apiKeyAllowedGroups, apiKeyID)
+	} else {
+		s.apiKeyAllowedGroups[apiKeyID] = cloneInt64Slice(groupIDs)
+	}
+	s.apiKeyGroupsMu.Unlock()
+	s.rebuildFastScheduler()
+}
+
+func (s *Store) GetAPIKeyAllowedGroups(apiKeyID int64) []int64 {
+	if apiKeyID <= 0 {
+		return nil
+	}
+	s.apiKeyGroupsMu.RLock()
+	defer s.apiKeyGroupsMu.RUnlock()
+	return cloneInt64Slice(s.apiKeyAllowedGroups[apiKeyID])
+}
+
+func (s *Store) LoadAPIKeyAllowedGroups(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	keys, err := s.db.ListAPIKeys(ctx)
+	if err != nil {
+		return err
+	}
+	s.apiKeyGroupsMu.Lock()
+	s.apiKeyAllowedGroups = make(map[int64][]int64, len(keys))
+	for _, key := range keys {
+		if len(key.AllowedGroupIDs) > 0 {
+			s.apiKeyAllowedGroups[key.ID] = cloneInt64Slice(key.AllowedGroupIDs)
+		}
+	}
+	s.apiKeyGroupsMu.Unlock()
+	s.rebuildFastScheduler()
+	return nil
+}
+
+func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
+	if s == nil || apiKeyID <= 0 || acc == nil {
+		return true
+	}
+	allowed := s.GetAPIKeyAllowedGroups(apiKeyID)
+	if len(allowed) == 0 {
+		return true
+	}
+	allowedSet := make(map[int64]struct{}, len(allowed))
+	for _, id := range allowed {
+		allowedSet[id] = struct{}{}
+	}
+	acc.mu.RLock()
+	defer acc.mu.RUnlock()
+	for _, id := range acc.GroupIDs {
+		if _, ok := allowedSet[id]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) ApplyOpenAIResponsesConfig(dbID int64, baseURL, apiKey string, models []string, proxyURL string) bool {
 	acc := s.FindByID(dbID)
 	if acc == nil {
@@ -3053,6 +3168,17 @@ func (s *Store) ApplyOpenAIResponsesConfig(dbID int64, baseURL, apiKey string, m
 	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
+	return true
+}
+
+func (s *Store) ApplyAccountProxyURL(dbID int64, proxyURL string) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+	acc.mu.Lock()
+	acc.ProxyURL = strings.TrimSpace(proxyURL)
+	acc.mu.Unlock()
 	return true
 }
 

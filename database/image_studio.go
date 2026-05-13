@@ -586,8 +586,8 @@ func scanAPIKeyRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (*APIKeyRow, error) {
 	row := &APIKeyRow{}
-	var createdAtRaw, expiresAtRaw interface{}
-	if err := scanner.Scan(&row.ID, &row.Name, &row.Key, &createdAtRaw, &row.QuotaLimit, &row.QuotaUsed, &expiresAtRaw); err != nil {
+	var createdAtRaw, expiresAtRaw, allowedGroupsRaw interface{}
+	if err := scanner.Scan(&row.ID, &row.Name, &row.Key, &createdAtRaw, &row.QuotaLimit, &row.QuotaUsed, &expiresAtRaw, &allowedGroupsRaw); err != nil {
 		return nil, err
 	}
 	createdAt, err := parseDBTimeValue(createdAtRaw)
@@ -600,5 +600,6 @@ func scanAPIKeyRow(scanner interface {
 	}
 	row.CreatedAt = createdAt
 	row.ExpiresAt = expiresAt
+	row.AllowedGroupIDs = decodeInt64SliceValue(allowedGroupsRaw)
 	return row, nil
 }
