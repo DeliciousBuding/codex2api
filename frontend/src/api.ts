@@ -42,6 +42,10 @@ import type {
   UsageLogsResponse,
   UsageLogsPagedResponse,
   UsageStats,
+  AccountGroup,
+  AccountGroupsResponse,
+  CreateAccountGroupRequest,
+  UpdateAccountGroupRequest,
 } from './types'
 
 const BASE = '/api/admin'
@@ -100,6 +104,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const res = await fetch(BASE + path, {
     ...options,
+    cache: options.cache ?? 'no-store',
     headers,
   })
 
@@ -201,6 +206,13 @@ export const api = {
     request<MessageResponse>(`/accounts/${id}/refresh`, { method: 'POST' }),
   updateAccountScheduler: (id: number, data: UpdateAccountSchedulerRequest) =>
     request<MessageResponse>(`/accounts/${id}/scheduler`, { method: 'PATCH', body: JSON.stringify(data) }),
+  listAccountGroups: () => request<AccountGroupsResponse>('/account-groups'),
+  createAccountGroup: (data: CreateAccountGroupRequest) =>
+    request<{ id: number; message: string }>('/account-groups', { method: 'POST', body: JSON.stringify(data) }),
+  updateAccountGroup: (id: number, data: UpdateAccountGroupRequest) =>
+    request<MessageResponse>(`/account-groups/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteAccountGroup: (id: number, force = false) =>
+    request<MessageResponse>(`/account-groups/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
   toggleAccountEnabled: (id: number, enabled: boolean) =>
     request<MessageResponse>(`/accounts/${id}/enable`, { method: 'POST', body: JSON.stringify({ enabled }) }),
   toggleAccountLock: (id: number, locked: boolean) =>
@@ -311,6 +323,8 @@ export const api = {
     }),
   deleteAPIKey: (id: number) =>
     request<MessageResponse>(`/keys/${id}`, { method: 'DELETE' }),
+  updateAPIKey: (id: number, data: { name?: string; allowed_group_ids?: number[] }) =>
+    request<MessageResponse>(`/keys/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   getImagePromptTemplates: (params: { q?: string; tag?: string } = {}) => {
     const sp = new URLSearchParams()
     if (params.q) sp.set('q', params.q)
