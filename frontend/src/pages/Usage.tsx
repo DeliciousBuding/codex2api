@@ -289,9 +289,9 @@ function ModelSharePie({ stats }: { stats: UsageModelStat[] }) {
               cy="50%"
               innerRadius="54%"
               outerRadius="78%"
-              paddingAngle={2}
-              stroke="var(--color-card)"
-              strokeWidth={2}
+              paddingAngle={0}
+              stroke="none"
+              strokeWidth={0}
             >
               {pieData.map((_, index) => (
                 <Cell key={index} fill={modelPieColors[index % modelPieColors.length]} />
