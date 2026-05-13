@@ -41,7 +41,7 @@ export function CodeBlock({ label, content, lang }: { label?: string; content: s
             className={`code-panel-copy ${
               copied ? 'bg-emerald-500/20 text-emerald-300' : ''
             }`}
-            aria-label={copied ? 'Copied' : 'Copy'}
+            aria-label={copied ? '已复制' : '复制'}
           >
             {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
           </button>
@@ -52,7 +52,7 @@ export function CodeBlock({ label, content, lang }: { label?: string; content: s
           <button
             onClick={() => void handleCopy()}
             className={`code-panel-copy ${copied ? 'bg-emerald-500/20 text-emerald-300' : ''}`}
-            aria-label={copied ? 'Copied' : 'Copy'}
+            aria-label={copied ? '已复制' : '复制'}
           >
             {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
           </button>
@@ -196,7 +196,7 @@ function TryItDialog({ open, onClose, method, path, defaultBody, apiKey, baseUrl
             className="gap-2 bg-emerald-600 px-5 text-white shrink-0 hover:bg-emerald-600/90 dark:bg-emerald-500/90 dark:hover:bg-emerald-500"
           >
             {loading ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-            {loading ? t('apiRef.tryIt.sending') : 'Send'}
+            {loading ? t('apiRef.tryIt.sending') : t('apiRef.tryIt.send')}
           </Button>
         </div>
 
@@ -204,7 +204,7 @@ function TryItDialog({ open, onClose, method, path, defaultBody, apiKey, baseUrl
           <div className="flex-1 overflow-visible p-5 space-y-4 border-r border-border">
             <div className="rounded-xl border border-border overflow-visible">
               <div className="px-4 py-2.5 bg-muted/30 border-b border-border">
-                <span className="text-sm font-semibold text-foreground">Authorization</span>
+                <span className="text-sm font-semibold text-foreground">认证信息</span>
               </div>
               <div className="p-4 space-y-3">
                 <div className="flex items-center justify-between gap-3">
@@ -215,11 +215,11 @@ function TryItDialog({ open, onClose, method, path, defaultBody, apiKey, baseUrl
                       </span>
                       <span className="code-inline text-[11px]">string</span>
                     </div>
-                    <Badge variant="destructive" className="mt-1 text-[10px] px-1.5 py-0">required</Badge>
+                    <Badge variant="destructive" className="mt-1 text-[10px] px-1.5 py-0">必填</Badge>
                   </div>
                   <input
                     className="w-52 px-3 py-1.5 rounded-lg border border-border bg-background text-sm font-medium focus:outline-none focus:ring-2 focus:ring-primary/30"
-                    placeholder="enter token"
+                    placeholder="输入密钥"
                     value={token}
                     onChange={e => setToken(e.target.value)}
                   />
@@ -243,7 +243,7 @@ function TryItDialog({ open, onClose, method, path, defaultBody, apiKey, baseUrl
             {method !== 'GET' && method !== 'DELETE' && (
               <div className="rounded-xl border border-border overflow-hidden">
                 <div className="px-4 py-2.5 bg-muted/30 border-b border-border">
-                  <span className="text-sm font-semibold text-foreground">Request Body</span>
+                  <span className="text-sm font-semibold text-foreground">请求体</span>
                 </div>
                 <textarea
                   className="w-full h-56 resize-none border-0 bg-background p-4 text-[15px] leading-relaxed outline-none"
@@ -259,7 +259,7 @@ function TryItDialog({ open, onClose, method, path, defaultBody, apiKey, baseUrl
           <div className="flex-1 overflow-auto p-5">
             <div className="rounded-xl border border-border overflow-hidden h-full flex flex-col">
               <div className="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center justify-between">
-                <span className="text-sm font-semibold text-foreground">Response</span>
+                <span className="text-sm font-semibold text-foreground">响应结果</span>
                 {status !== null && (
                   <div className="flex items-center gap-2.5">
                     <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${statusColor} ${statusBg}`}>{status}</span>

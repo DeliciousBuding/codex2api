@@ -70,8 +70,7 @@ export default function DocsTOC({ items, title }: DocsTOCProps) {
   }
 
   return (
-    <aside className="hidden xl:block">
-      <div className="sticky top-4 rounded-lg border border-border bg-card/90 p-3 shadow-sm backdrop-blur-sm">
+    <div className="rounded-lg border border-border bg-card/90 p-3 shadow-sm backdrop-blur-sm">
         <div className="mb-2 px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {title}
         </div>
@@ -149,7 +148,6 @@ export default function DocsTOC({ items, title }: DocsTOCProps) {
             )
           })}
         </nav>
-      </div>
-    </aside>
+    </div>
   )
 }

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Copy, Check, ClipboardCheck, ExternalLink, Sparkles, Terminal, KeyRound, Wand2, Server } from 'lucide-react'
 import { api } from '../api'
-import PageHeader from '../components/PageHeader'
 import ToastNotice from '../components/ToastNotice'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -13,8 +12,36 @@ import { CodeBlock, EndpointDoc } from './docs/EndpointDoc'
 import DocsTOC, { type DocsTOCItem } from './docs/DocsTOC'
 import { QUICK_TOOLS, resolveTemplate, type QuickTool } from './docs/quickStartTools'
 import { buildAdminSpecs, buildDocsMarkdown, buildEndpointSpecs } from './docs/docsContent'
+import type { SystemSettings } from '../types'
 
 const FALLBACK_MODELS = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'claude-sonnet-4-5-20250514']
+type CCSwitchApp = 'claude' | 'codex' | 'gemini'
+
+const CC_SWITCH_APPS: Record<CCSwitchApp, { label: string; suffix: string; endpoint: (baseUrl: string) => string; fields: { key: string; label: string }[] }> = {
+  claude: {
+    label: 'Claude Code',
+    suffix: 'Claude',
+    endpoint: (baseUrl) => baseUrl,
+    fields: [
+      { key: 'model', label: '主模型' },
+      { key: 'haikuModel', label: 'Haiku 模型' },
+      { key: 'sonnetModel', label: 'Sonnet 模型' },
+      { key: 'opusModel', label: 'Opus 模型' },
+    ],
+  },
+  codex: {
+    label: 'Codex CLI',
+    suffix: 'Codex',
+    endpoint: (baseUrl) => `${baseUrl}/v1`,
+    fields: [{ key: 'model', label: '主模型' }],
+  },
+  gemini: {
+    label: 'Gemini CLI',
+    suffix: 'Gemini',
+    endpoint: (baseUrl) => baseUrl,
+    fields: [{ key: 'model', label: '主模型' }],
+  },
+}
 
 const SECTION_ICON: Record<string, ReactNode> = {
   'quick-start': <Sparkles className="size-4" />,
@@ -58,6 +85,19 @@ function OsTabs({ active, onChange }: { active: 'unix' | 'windows'; onChange: (v
           Windows
         </button>
       </nav>
+    </div>
+  )
+}
+
+const FIELD_LABEL = 'mb-1.5 block text-[11px] font-bold text-muted-foreground'
+const FIELD_INPUT = 'h-8 w-full rounded-lg border border-input bg-background px-2.5 text-[13px] font-medium text-foreground shadow-xs outline-none transition-[border-color,box-shadow,background-color] placeholder:text-muted-foreground hover:border-primary/30 hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20'
+const CONFIG_PANEL = 'grid gap-3 rounded-lg border border-border bg-muted/20 p-3'
+
+function FieldBox({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <label className={FIELD_LABEL}>{label}</label>
+      {children}
     </div>
   )
 }
@@ -182,14 +222,14 @@ function buildCCSwitchImportUrl({
   name,
   endpoint,
   apiKey,
-  model,
+  models,
   homepage,
 }: {
-  app: 'claude' | 'codex'
+  app: CCSwitchApp
   name: string
   endpoint: string
   apiKey: string
-  model: string
+  models: Record<string, string>
   homepage: string
 }) {
   const params = new URLSearchParams()
@@ -198,10 +238,32 @@ function buildCCSwitchImportUrl({
   params.set('name', name)
   params.set('endpoint', endpoint)
   params.set('apiKey', apiKey)
-  params.set('model', model)
+  Object.entries(models).forEach(([key, value]) => {
+    if (value) params.set(key, value)
+  })
   params.set('homepage', homepage)
   params.set('enabled', 'true')
   return `ccswitch://v1/import?${params.toString()}`
+}
+
+function parseModelMapping(settings?: SystemSettings | null): Record<string, string> {
+  if (!settings?.model_mapping) return {}
+  try {
+    const parsed = JSON.parse(settings.model_mapping)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === 'string')) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+
+function slugProviderId(name: string) {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug || 'codexproxy'
 }
 
 function encodeBase64(text: string): string {
@@ -210,7 +272,7 @@ function encodeBase64(text: string): string {
 
 function SectionHeader({ id, icon, tone, eyebrow, title, description }: { id: string; icon: ReactNode; tone: { text: string; bg: string; ring: string }; eyebrow?: string; title: string; description?: string }) {
   return (
-    <div id={id} className="scroll-mt-20 mt-6 mb-4 first:mt-2">
+    <div id={id} className="scroll-mt-20 mt-4 mb-3 first:mt-0">
       <div className="flex items-start gap-3">
         <span className={`mt-0.5 inline-flex size-9 shrink-0 items-center justify-center rounded-xl ring-1 ${tone.bg} ${tone.text} ${tone.ring}`}>
           {icon}
@@ -230,6 +292,7 @@ function SectionHeader({ id, icon, tone, eyebrow, title, description }: { id: st
 export default function Docs() {
   const { t } = useTranslation()
   const baseUrl = useMemo(() => window.location.origin, [])
+  const [quickBaseUrl, setQuickBaseUrl] = useState(baseUrl)
   const [codexOs, setCodexOs] = useState<'unix' | 'windows'>('unix')
   const [claudeOs, setClaudeOs] = useState<'unix' | 'windows'>('unix')
   const [firstKey, setFirstKey] = useState('')
@@ -239,6 +302,13 @@ export default function Docs() {
   const [selectedKey, setSelectedKey] = useState('')
   const [activeToolTab, setActiveToolTab] = useState<'codex-cli' | 'claude-code' | 'cc-switch' | 'cherry-studio'>('codex-cli')
   const [quickStartModel, setQuickStartModel] = useState('gpt-5.4')
+  const [settings, setSettings] = useState<SystemSettings | null>(null)
+  const [ccSwitchApp, setCcSwitchApp] = useState<CCSwitchApp>('codex')
+  const [ccSwitchName, setCcSwitchName] = useState('')
+  const [ccSwitchNameEdited, setCcSwitchNameEdited] = useState(false)
+  const [ccSwitchModels, setCcSwitchModels] = useState<Record<string, string>>({ model: 'gpt-5.4' })
+  const [cherryProviderId, setCherryProviderId] = useState('')
+  const [cherryProviderEdited, setCherryProviderEdited] = useState(false)
   const [activeCurl, setActiveCurl] = useState<'responses' | 'chat' | 'messages'>('responses')
   const [curlModel, setCurlModel] = useState('gpt-5.4')
   const [models, setModels] = useState(FALLBACK_MODELS)
@@ -255,7 +325,11 @@ export default function Docs() {
   }, [])
 
   useEffect(() => {
-    api.getModels().then((res) => {
+    Promise.all([
+      api.getModels().catch(() => ({ models: [], items: [] })),
+      api.getSettings().catch(() => null),
+    ]).then(([res, nextSettings]) => {
+      setSettings(nextSettings)
       const next = [
         ...(res.models ?? []),
         ...((res.items ?? []).map((item) => item.id)),
@@ -263,11 +337,53 @@ export default function Docs() {
       const unique = Array.from(new Set(next))
       if (unique.length === 0) return
       setModels(unique)
-      const preferred = unique.includes('gpt-5.4') ? 'gpt-5.4' : unique[0]
+      const configuredModel = nextSettings?.test_model
+      const preferred = configuredModel && unique.includes(configuredModel)
+        ? configuredModel
+        : unique.includes('gpt-5.4') ? 'gpt-5.4' : unique[0]
       setQuickStartModel((current) => unique.includes(current) ? current : preferred)
       setCurlModel((current) => unique.includes(current) ? current : preferred)
+      setCcSwitchModels((current) => ({ ...current, model: unique.includes(current.model) ? current.model : preferred }))
     }).catch(() => {})
   }, [])
+
+  const modelMapping = useMemo(() => parseModelMapping(settings), [settings])
+  const mappedClaudeModels = useMemo(() => Object.keys(modelMapping), [modelMapping])
+  const modelOptions = useMemo(() => models.map((model) => ({ label: model, value: model })), [models])
+  const claudeModelOptions = useMemo(() => {
+    const merged = Array.from(new Set([...mappedClaudeModels, ...models.filter((model) => model.startsWith('claude-')), 'claude-sonnet-4-5-20250514']))
+    return merged.map((model) => ({ label: model, value: model }))
+  }, [mappedClaudeModels, models])
+  const ccSwitchModelOptions = ccSwitchApp === 'claude' ? claudeModelOptions : modelOptions
+  const ccSwitchConfig = CC_SWITCH_APPS[ccSwitchApp]
+  const siteName = settings?.site_name?.trim() || 'CodexProxy'
+  const defaultCcSwitchName = `${siteName} ${ccSwitchConfig.suffix}`
+  const defaultCherryProviderId = slugProviderId(siteName)
+
+  useEffect(() => {
+    if (!ccSwitchNameEdited) setCcSwitchName(defaultCcSwitchName)
+  }, [ccSwitchNameEdited, defaultCcSwitchName])
+
+  useEffect(() => {
+    if (!cherryProviderEdited) setCherryProviderId(defaultCherryProviderId)
+  }, [cherryProviderEdited, defaultCherryProviderId])
+
+  useEffect(() => {
+    const config = CC_SWITCH_APPS[ccSwitchApp]
+    if (!ccSwitchNameEdited) setCcSwitchName(`${siteName} ${config.suffix}`)
+    setCcSwitchModels((current) => {
+      const preferredClaude = mappedClaudeModels.find((model) => model.includes('sonnet')) ?? mappedClaudeModels[0] ?? 'claude-sonnet-4-5-20250514'
+      const preferredCodex = models.includes(quickStartModel) ? quickStartModel : models[0] ?? FALLBACK_MODELS[0]
+      const next: Record<string, string> = {}
+      config.fields.forEach((field) => {
+        if (field.key === 'haikuModel') next[field.key] = mappedClaudeModels.find((model) => model.includes('haiku')) ?? preferredClaude
+        else if (field.key === 'opusModel') next[field.key] = mappedClaudeModels.find((model) => model.includes('opus')) ?? preferredClaude
+        else if (field.key === 'sonnetModel') next[field.key] = mappedClaudeModels.find((model) => model.includes('sonnet')) ?? preferredClaude
+        else next[field.key] = current[field.key] || (ccSwitchApp === 'claude' ? preferredClaude : preferredCodex)
+      })
+      return next
+    })
+  }, [ccSwitchApp, ccSwitchNameEdited, mappedClaudeModels, models, quickStartModel, siteName])
 
   const modelEndpoints = useMemo(() => buildEndpointSpecs(baseUrl), [baseUrl])
   const adminEndpoints = useMemo(() => buildAdminSpecs(baseUrl), [baseUrl])
@@ -332,6 +448,9 @@ export default function Docs() {
 
   const codexConfigDir = codexOs === 'windows' ? '%userprofile%\\.codex' : '~/.codex'
   const claudeConfigDir = claudeOs === 'windows' ? '%userprofile%\\.claude' : '~/.claude'
+  const codexConfigPath = codexOs === 'windows' ? `${codexConfigDir}\\config.toml` : `${codexConfigDir}/config.toml`
+  const codexAuthPath = codexOs === 'windows' ? `${codexConfigDir}\\auth.json` : `${codexConfigDir}/auth.json`
+  const claudeSettingsPath = claudeOs === 'windows' ? `${claudeConfigDir}\\settings.json` : `${claudeConfigDir}/settings.json`
   const activeKey = selectedKey || firstKey || 'YOUR_API_KEY'
 
   const codexConfigToml = `model_provider = "OpenAI"
@@ -345,7 +464,7 @@ model_auto_compact_token_limit = 900000
 
 [model_providers.OpenAI]
 name = "OpenAI"
-base_url = "${baseUrl}"
+base_url = "${quickBaseUrl}"
 wire_api = "responses"
 requires_openai_auth = true`
 
@@ -355,21 +474,21 @@ requires_openai_auth = true`
 
   const claudeSettingsJson = `{
   "env": {
-    "ANTHROPIC_BASE_URL": "${baseUrl}",
+    "ANTHROPIC_BASE_URL": "${quickBaseUrl}",
     "ANTHROPIC_AUTH_TOKEN": "${activeKey}",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   }
 }`
 
-  const claudeEnvUnix = `export ANTHROPIC_BASE_URL="${baseUrl}"
+  const claudeEnvUnix = `export ANTHROPIC_BASE_URL="${quickBaseUrl}"
 export ANTHROPIC_AUTH_TOKEN="${activeKey}"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
 
-  const claudeEnvWindows = `set ANTHROPIC_BASE_URL=${baseUrl}
+  const claudeEnvWindows = `set ANTHROPIC_BASE_URL=${quickBaseUrl}
 set ANTHROPIC_AUTH_TOKEN=${activeKey}
 set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
 
-  const responsesCurl = `curl -X POST ${baseUrl}/v1/responses \\
+  const responsesCurl = `curl -X POST ${quickBaseUrl}/v1/responses \\
   -H "Authorization: Bearer ${activeKey}" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -377,7 +496,7 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
     "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
     "stream": true
   }'`
-  const chatCurl = `curl -X POST ${baseUrl}/v1/chat/completions \\
+  const chatCurl = `curl -X POST ${quickBaseUrl}/v1/chat/completions \\
   -H "Authorization: Bearer ${activeKey}" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -385,7 +504,7 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
     "messages": [{"role": "user", "content": "Hello"}],
     "stream": true
   }'`
-  const messagesCurl = `curl -X POST ${baseUrl}/v1/messages \\
+  const messagesCurl = `curl -X POST ${quickBaseUrl}/v1/messages \\
   -H "x-api-key: ${activeKey}" \\
   -H "Content-Type: application/json" \\
   -H "anthropic-version: 2023-06-01" \\
@@ -399,62 +518,65 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
     chat: chatCurl,
     messages: messagesCurl,
   }
-  const ccSwitchApp = quickStartModel.startsWith('claude-') ? 'claude' : 'codex'
   const ccSwitchUrl = buildCCSwitchImportUrl({
     app: ccSwitchApp,
-    name: ccSwitchApp === 'codex' ? 'Codex2API Codex' : 'Codex2API Claude',
-    endpoint: ccSwitchApp === 'codex' ? `${baseUrl}/v1` : baseUrl,
+    name: ccSwitchName,
+    endpoint: ccSwitchConfig.endpoint(quickBaseUrl),
     apiKey: activeKey,
-    model: quickStartModel,
-    homepage: baseUrl,
+    models: ccSwitchModels,
+    homepage: quickBaseUrl,
   })
   const cherryConfig = `cherrystudio://providers/api-keys?v=1&data=${encodeURIComponent(encodeBase64(JSON.stringify({
-    id: 'codex2api',
-    baseUrl,
+    id: cherryProviderId || defaultCherryProviderId,
+    baseUrl: quickBaseUrl,
     apiKey: activeKey,
   })))}`
   return (
     <>
-      <PageHeader
-        title={t('docs.title')}
-        description={t('docs.description')}
-        actions={
-          <Button variant="outline" onClick={() => void handleCopyMarkdown()} disabled={copyingMd} className="gap-1.5">
+      <div className="mb-4 max-w-[760px]">
+        <div className="max-w-[760px]">
+          <h2 className="text-2xl font-semibold leading-tight text-foreground sm:text-[28px]">
+            {t('docs.title')}
+          </h2>
+          <p className="mt-2 max-w-[640px] text-sm leading-relaxed text-muted-foreground">
+            {t('docs.description')}
+          </p>
+        </div>
+        <div className="mt-3 xl:hidden">
+          <Button variant="outline" size="sm" onClick={() => void handleCopyMarkdown()} disabled={copyingMd} className="gap-1.5">
             {copyingMd ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
             {t('docs.copyMarkdown')}
           </Button>
-        }
-      />
+        </div>
+      </div>
 
       <ToastNotice toast={toast} />
 
+      <div className="xl:hidden mb-3 -mx-2 overflow-x-auto px-2">
+        <div className="flex gap-1.5 pb-1">
+          {tocItems.map((parent) => (
+            <a
+              key={parent.id}
+              href={`#${parent.id}`}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            >
+              {parent.label}
+            </a>
+          ))}
+        </div>
+      </div>
+
+      <SectionHeader
+        id="quick-start"
+        icon={SECTION_ICON['quick-start']}
+        tone={SECTION_TONE['quick-start']}
+        eyebrow={t('docs.section1Eyebrow')}
+        title={t('docs.quickStart.title')}
+        description={t('docs.quickStart.description')}
+      />
+
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_260px]">
         <div className="min-w-0">
-          {/* Mobile horizontal nav */}
-          <div className="xl:hidden mb-4 -mx-2 overflow-x-auto px-2">
-            <div className="flex gap-1.5 pb-1">
-              {tocItems.map((parent) => (
-                <a
-                  key={parent.id}
-                  href={`#${parent.id}`}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-[12px] font-semibold text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-                >
-                  {parent.label}
-                </a>
-              ))}
-            </div>
-          </div>
-
-          {/* Section 1: Quick Start */}
-          <SectionHeader
-            id="quick-start"
-            icon={SECTION_ICON['quick-start']}
-            tone={SECTION_TONE['quick-start']}
-            eyebrow={t('docs.section1Eyebrow')}
-            title={t('docs.quickStart.title')}
-            description={t('docs.quickStart.description')}
-          />
-
           <Card id="qs-tools" className="mb-4 scroll-mt-20 py-0">
             <CardContent className="p-5">
               <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
@@ -499,45 +621,85 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
                   ]}
                 />
               </div>
-              <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
-                <div className="rounded-xl border border-border bg-muted/30 p-3">
-                  <div className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Endpoint</div>
-                  <code className="mt-1 block truncate text-sm font-semibold text-foreground">
-                    {activeToolTab === 'cc-switch' && ccSwitchApp === 'codex' ? `${baseUrl}/v1` : baseUrl}
-                  </code>
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Model</label>
+              <div className={`mb-4 ${CONFIG_PANEL} md:grid-cols-[minmax(0,1fr)_260px]`}>
+                <FieldBox label="端点地址">
+                  <input
+                    className={`${FIELD_INPUT} font-mono`}
+                    value={activeToolTab === 'cc-switch' ? ccSwitchConfig.endpoint(quickBaseUrl) : quickBaseUrl}
+                    onChange={(event) => {
+                      const value = event.target.value
+                      if (activeToolTab === 'cc-switch' && ccSwitchApp === 'codex' && value.endsWith('/v1')) {
+                        setQuickBaseUrl(value.slice(0, -3))
+                      } else {
+                        setQuickBaseUrl(value)
+                      }
+                    }}
+                  />
+                </FieldBox>
+                <FieldBox label="默认模型">
                   <Select
                     compact
                     value={quickStartModel}
                     onValueChange={setQuickStartModel}
-                    options={models.map((model) => ({ label: model, value: model }))}
+                    options={modelOptions}
                   />
-                </div>
+                </FieldBox>
               </div>
               <div className="space-y-4">
                 {activeToolTab === 'codex-cli' && (
                   <>
                     <OsTabs active={codexOs} onChange={setCodexOs} />
-                    <CodeBlock label={`${codexConfigDir}/config.toml`} content={codexConfigToml} lang="toml" />
-                    <CodeBlock label={`${codexConfigDir}/auth.json`} content={codexAuthJson} lang="json" />
+                    <CodeBlock label={codexConfigPath} content={codexConfigToml} lang="toml" />
+                    <CodeBlock label={codexAuthPath} content={codexAuthJson} lang="json" />
                   </>
                 )}
                 {activeToolTab === 'claude-code' && (
                   <>
                     <OsTabs active={claudeOs} onChange={setClaudeOs} />
                     <CodeBlock
-                      label={claudeOs === 'unix' ? 'Terminal' : 'Command Prompt'}
+                      label={claudeOs === 'unix' ? '终端' : '命令提示符'}
                       content={claudeOs === 'unix' ? claudeEnvUnix : claudeEnvWindows}
                       lang="bash"
                     />
-                    <CodeBlock label={`${claudeConfigDir}/settings.json`} content={claudeSettingsJson} lang="json" />
+                    <CodeBlock label={claudeSettingsPath} content={claudeSettingsJson} lang="json" />
                   </>
                 )}
                 {activeToolTab === 'cc-switch' && (
                   <>
-                    <CodeBlock label="CC Switch deeplink" content={ccSwitchUrl} lang="bash" />
+                    <div className={`${CONFIG_PANEL} md:grid-cols-2`}>
+                      <FieldBox label="导入目标">
+                        <Select
+                          compact
+                          value={ccSwitchApp}
+                          onValueChange={(value) => setCcSwitchApp(value as CCSwitchApp)}
+                          options={(Object.keys(CC_SWITCH_APPS) as CCSwitchApp[]).map((app) => ({
+                            label: CC_SWITCH_APPS[app].label,
+                            value: app,
+                          }))}
+                        />
+                      </FieldBox>
+                      <FieldBox label="配置名称">
+                        <input
+                          className={FIELD_INPUT}
+                          value={ccSwitchName}
+                          onChange={(event) => {
+                            setCcSwitchNameEdited(true)
+                            setCcSwitchName(event.target.value)
+                          }}
+                        />
+                      </FieldBox>
+                      {ccSwitchConfig.fields.map((field) => (
+                        <FieldBox key={field.key} label={field.label}>
+                          <Select
+                            compact
+                            value={ccSwitchModels[field.key] || ''}
+                            onValueChange={(value) => setCcSwitchModels((current) => ({ ...current, [field.key]: value }))}
+                            options={ccSwitchModelOptions}
+                          />
+                        </FieldBox>
+                      ))}
+                    </div>
+                    <CodeBlock label="CC Switch 导入链接" content={ccSwitchUrl} lang="bash" />
                     <Button
                       type="button"
                       disabled={!selectedKey && !firstKey}
@@ -554,7 +716,22 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
                 )}
                 {activeToolTab === 'cherry-studio' && (
                   <>
-                    <CodeBlock label="Cherry Studio deeplink" content={cherryConfig} lang="bash" />
+                    <div className={`${CONFIG_PANEL} md:grid-cols-2`}>
+                      <FieldBox label="导入目标">
+                        <code className={`${FIELD_INPUT} flex items-center truncate font-mono`}>Cherry Studio</code>
+                      </FieldBox>
+                      <FieldBox label="Provider ID">
+                        <input
+                          className={`${FIELD_INPUT} font-mono`}
+                          value={cherryProviderId}
+                          onChange={(event) => {
+                            setCherryProviderEdited(true)
+                            setCherryProviderId(event.target.value)
+                          }}
+                        />
+                      </FieldBox>
+                    </div>
+                    <CodeBlock label="Cherry Studio 导入链接" content={cherryConfig} lang="bash" />
                     <Button
                       type="button"
                       disabled={!selectedKey && !firstKey}
@@ -586,11 +763,8 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
                   value={curlModel}
                   onValueChange={setCurlModel}
                   options={[
-                    { label: 'gpt-5.5', value: 'gpt-5.5' },
-                    { label: 'gpt-5.4', value: 'gpt-5.4' },
-                    { label: 'gpt-5.4-mini', value: 'gpt-5.4-mini' },
-                    { label: 'gpt-5.3-codex', value: 'gpt-5.3-codex' },
-                    { label: 'claude-sonnet-4-5', value: 'claude-sonnet-4-5-20250514' },
+                    ...modelOptions,
+                    ...claudeModelOptions.filter((option) => !models.includes(option.value)),
                   ]}
                 />
               </div>
@@ -631,8 +805,8 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
                 ⓘ {t('docs.clientConfig.codexConfigHint')}
               </p>
               <div className="space-y-4">
-                <CodeBlock label={`${codexConfigDir}/config.toml`} content={codexConfigToml} lang="toml" />
-                <CodeBlock label={`${codexConfigDir}/auth.json`} content={codexAuthJson} lang="json" />
+                <CodeBlock label={codexConfigPath} content={codexConfigToml} lang="toml" />
+                <CodeBlock label={codexAuthPath} content={codexAuthJson} lang="json" />
               </div>
               <p className="mt-3 text-xs text-muted-foreground">
                 {codexOs === 'windows' ? t('docs.clientConfig.codexNoteWindows') : t('docs.clientConfig.codexNoteUnix')}
@@ -647,12 +821,12 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
               <OsTabs active={claudeOs} onChange={setClaudeOs} />
               <div className="space-y-4">
                 <CodeBlock
-                  label={claudeOs === 'unix' ? 'Terminal' : 'Command Prompt'}
+                  label={claudeOs === 'unix' ? '终端' : '命令提示符'}
                   content={claudeOs === 'unix' ? claudeEnvUnix : claudeEnvWindows}
                   lang="bash"
                 />
                 <p className="text-xs text-muted-foreground">{t('docs.clientConfig.claudeEnvNote')}</p>
-                <CodeBlock label={`${claudeConfigDir}/settings.json`} content={claudeSettingsJson} lang="json" />
+                <CodeBlock label={claudeSettingsPath} content={claudeSettingsJson} lang="json" />
                 <p className="text-xs text-muted-foreground">{t('docs.clientConfig.claudeSettingsNote')}</p>
               </div>
             </CardContent>
@@ -752,7 +926,17 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
           ))}
         </div>
 
-        <DocsTOC items={tocItems} title={t('docs.tocTitle')} />
+        <aside className="relative hidden xl:block">
+          <div className="absolute -top-16 right-0">
+            <Button variant="outline" size="sm" onClick={() => void handleCopyMarkdown()} disabled={copyingMd} className="gap-1.5">
+              {copyingMd ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+              {t('docs.copyMarkdown')}
+            </Button>
+          </div>
+          <div className="sticky top-4">
+            <DocsTOC items={tocItems} title={t('docs.tocTitle')} />
+          </div>
+        </aside>
       </div>
     </>
   )

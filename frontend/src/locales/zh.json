@@ -1397,10 +1397,10 @@
       "desc": "列出所有账号及其状态、用量等信息。"
     },
     "tryIt": {
-      "button": "Try it",
+      "button": "调试",
       "send": "发送请求",
       "sending": "发送中…",
-      "placeholder": "点击 Send 发送请求",
+      "placeholder": "点击发送请求开始调试",
       "selectKey": "选择密钥："
     }
   },

@@ -17,8 +17,8 @@ export function buildEndpointSpecs(baseUrl: string): EndpointSpec[] {
       id: 'api-responses',
       method: 'POST',
       path: '/v1/responses',
-      title: 'Create Response',
-      description: 'Codex Responses API native endpoint. Streams to and from the upstream service.',
+      title: '创建 Responses 响应',
+      description: 'Codex Responses API 原生端点，支持流式响应，直接转发到上游服务。',
       defaultBody: `{
   "model": "gpt-5.4",
   "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
@@ -65,8 +65,8 @@ export function buildEndpointSpecs(baseUrl: string): EndpointSpec[] {
       id: 'api-chat',
       method: 'POST',
       path: '/v1/chat/completions',
-      title: 'Create Chat Completion',
-      description: 'OpenAI Chat Completions compatible. Translates OpenAI ↔ Codex Responses formats.',
+      title: '创建 Chat Completions 响应',
+      description: 'OpenAI Chat Completions 兼容端点，会在 OpenAI 与 Codex Responses 格式之间自动转换。',
       defaultBody: `{
   "model": "gpt-5.4",
   "messages": [{"role": "user", "content": "Hello"}],
@@ -107,8 +107,8 @@ export function buildEndpointSpecs(baseUrl: string): EndpointSpec[] {
       id: 'api-messages',
       method: 'POST',
       path: '/v1/messages',
-      title: 'Create Message',
-      description: 'Anthropic Messages API compatible. Translates Claude ↔ Codex Responses formats. Model names are mapped per the Settings table.',
+      title: '创建 Messages 响应',
+      description: 'Anthropic Messages API 兼容端点，会在 Claude 与 Codex Responses 格式之间自动转换，模型名按系统设置映射。',
       defaultBody: `{
   "model": "claude-sonnet-4-5-20250514",
   "max_tokens": 1024,
@@ -153,8 +153,8 @@ export function buildEndpointSpecs(baseUrl: string): EndpointSpec[] {
       id: 'api-images-gen',
       method: 'POST',
       path: '/v1/images/generations',
-      title: 'Create Image',
-      description: 'OpenAI Images compatible endpoint, backed by Codex Responses image_generation.',
+      title: '生成图片',
+      description: 'OpenAI Images 兼容端点，底层使用 Codex Responses 的 image_generation 能力。',
       defaultBody: `{
   "model": "gpt-image-2",
   "prompt": "Draw a small orange cat",
@@ -183,8 +183,8 @@ export function buildEndpointSpecs(baseUrl: string): EndpointSpec[] {
       id: 'api-images-edit',
       method: 'POST',
       path: '/v1/images/edits',
-      title: 'Edit Image',
-      description: 'OpenAI Images edit-compatible endpoint. Supports both JSON image_url and multipart uploads.',
+      title: '编辑图片',
+      description: 'OpenAI Images 编辑兼容端点，支持 JSON image_url 和 multipart 文件上传。',
       defaultBody: `{
   "model": "gpt-image-2",
   "prompt": "Replace the background with aurora lights",
@@ -212,8 +212,8 @@ export function buildEndpointSpecs(baseUrl: string): EndpointSpec[] {
       id: 'api-models',
       method: 'GET',
       path: '/v1/models',
-      title: 'List Models',
-      description: 'List models exposed by this proxy.',
+      title: '列出模型',
+      description: '列出当前代理对外暴露的可用模型。',
       curl: `curl --request GET \\
   --url ${baseUrl}/v1/models \\
   --header 'Authorization: Bearer <token>'`,
@@ -239,8 +239,8 @@ export function buildEndpointSpecs(baseUrl: string): EndpointSpec[] {
       id: 'api-health',
       method: 'GET',
       path: '/health',
-      title: 'Health Check',
-      description: 'Service status and available account count. Does not require authentication.',
+      title: '健康检查',
+      description: '查看服务状态和可用账号数量；该端点不需要认证。',
       curl: `curl --request GET \\
   --url ${baseUrl}/health`,
       responses: [
@@ -260,8 +260,8 @@ export function buildAdminSpecs(baseUrl: string): EndpointSpec[] {
       id: 'admin-add-rt',
       method: 'POST',
       path: '/api/admin/accounts',
-      title: 'Add Account (Refresh Token)',
-      description: 'Add a single account by Refresh Token. Auto-refreshes the AT and joins the pool.',
+      title: '添加账号（Refresh Token）',
+      description: '通过 Refresh Token 添加账号，系统会自动刷新 Access Token 并加入号池。',
       defaultBody: `{
   "name": "my-account",
   "refresh_token": "rt_XPqsKO3Ld...",
@@ -290,8 +290,8 @@ export function buildAdminSpecs(baseUrl: string): EndpointSpec[] {
       id: 'admin-add-at',
       method: 'POST',
       path: '/api/admin/accounts/at',
-      title: 'Add Account (Access Token)',
-      description: 'Add an AT-only account. Supports batch via newline-separated tokens.',
+      title: '添加账号（Access Token）',
+      description: '添加 AT-only 账号；access_token 字段支持用换行分隔多个 Token。',
       defaultBody: `{
   "name": "at-account",
   "access_token": "eyJhbGciOi...",
@@ -319,8 +319,8 @@ export function buildAdminSpecs(baseUrl: string): EndpointSpec[] {
       id: 'admin-import',
       method: 'POST',
       path: '/api/admin/accounts/import',
-      title: 'Import Accounts (File Upload)',
-      description: 'Batch import via file upload. Supports txt (RT-per-line), json (CLIProxyAPI export), at_txt (AT-per-line). Max 2MB.',
+      title: '文件批量导入账号',
+      description: '通过文件批量导入账号，支持 txt、CLIProxyAPI 导出的 json、以及每行一个 AT 的 at_txt，文件最大 2MB。',
       curl: `# TXT — one Refresh Token per line
 curl --request POST \\
   --url ${baseUrl}/api/admin/accounts/import \\
@@ -359,8 +359,8 @@ curl --request POST \\
       id: 'admin-delete',
       method: 'DELETE',
       path: '/api/admin/accounts/:id',
-      title: 'Delete Account',
-      description: 'Delete an account by ID and remove it from the pool.',
+      title: '删除账号',
+      description: '按账号 ID 删除账号，并从可用号池中移除。',
       curl: `curl --request DELETE \\
   --url ${baseUrl}/api/admin/accounts/1 \\
   --header 'X-Admin-Key: <admin_secret>'`,
@@ -373,8 +373,8 @@ curl --request POST \\
       id: 'admin-list',
       method: 'GET',
       path: '/api/admin/accounts',
-      title: 'List Accounts',
-      description: 'List all accounts with status, usage, and metadata.',
+      title: '列出账号',
+      description: '列出所有账号的状态、用量和基础元数据。',
       curl: `curl --request GET \\
   --url ${baseUrl}/api/admin/accounts \\
   --header 'X-Admin-Key: <admin_secret>'`,
