@@ -491,7 +491,7 @@ func TestUpdateAccountSchedulerResetsToAutoOnNull(t *testing.T) {
 	db := newTestAdminDB(t)
 	accountID := insertTestAccount(t, db)
 	ctx := context.Background()
-	if err := db.UpdateAccountSchedulerConfig(ctx, accountID, sql.NullInt64{Int64: 20, Valid: true}, sql.NullInt64{Int64: 4, Valid: true}, database.OptionalInt64Slice{}); err != nil {
+	if err := db.UpdateAccountSchedulerConfig(ctx, accountID, database.OptionalNullInt64{Set: true, Value: sql.NullInt64{Int64: 20, Valid: true}}, database.OptionalNullInt64{Set: true, Value: sql.NullInt64{Int64: 4, Valid: true}}, database.OptionalInt64Slice{}); err != nil {
 		t.Fatalf("seed scheduler config: %v", err)
 	}
 
@@ -520,6 +520,49 @@ func TestUpdateAccountSchedulerResetsToAutoOnNull(t *testing.T) {
 	}
 	if rows[0].BaseConcurrencyOverride.Valid {
 		t.Fatalf("base_concurrency_override = %+v, want null", rows[0].BaseConcurrencyOverride)
+	}
+}
+
+func TestUpdateAccountSchedulerPartialMetadataPatchPreservesSchedulerConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	accountID := insertTestAccount(t, db)
+	keyID := insertTestAPIKey(t, db, "Team A")
+	ctx := context.Background()
+	if err := db.UpdateAccountSchedulerConfig(ctx, accountID,
+		database.OptionalNullInt64{Set: true, Value: sql.NullInt64{Int64: 20, Valid: true}},
+		database.OptionalNullInt64{Set: true, Value: sql.NullInt64{Int64: 4, Valid: true}},
+		database.OptionalInt64Slice{Set: true, Values: []int64{keyID}},
+	); err != nil {
+		t.Fatalf("seed scheduler config: %v", err)
+	}
+
+	handler := &Handler{db: db}
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
+	ginCtx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(`{"tags":["ops"]}`))
+	ginCtx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.UpdateAccountScheduler(ginCtx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	rows, err := db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if !rows[0].ScoreBiasOverride.Valid || rows[0].ScoreBiasOverride.Int64 != 20 {
+		t.Fatalf("score_bias_override = %+v, want 20", rows[0].ScoreBiasOverride)
+	}
+	if !rows[0].BaseConcurrencyOverride.Valid || rows[0].BaseConcurrencyOverride.Int64 != 4 {
+		t.Fatalf("base_concurrency_override = %+v, want 4", rows[0].BaseConcurrencyOverride)
+	}
+	if got := rows[0].GetCredentialInt64Slice("allowed_api_key_ids"); len(got) != 1 || got[0] != keyID {
+		t.Fatalf("allowed_api_key_ids = %v, want [%d]", got, keyID)
 	}
 }
 

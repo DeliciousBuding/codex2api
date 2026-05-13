@@ -138,8 +138,8 @@ export interface FetchOpenAIResponsesModelsResponse {
 }
 
 export interface UpdateAccountSchedulerRequest {
-  score_bias_override: number | null
-  base_concurrency_override: number | null
+  score_bias_override?: number | null
+  base_concurrency_override?: number | null
   allowed_api_key_ids?: number[] | null
   proxy_url?: string | null
   tags?: string[] | null
@@ -646,6 +646,7 @@ export interface CreateAPIKeyRequest {
   quota_limit?: number
   expires_at?: string
   expires_in_days?: number
+  allowed_group_ids?: number[]
 }
 
 export interface CreateAPIKeyResponse {
@@ -655,6 +656,7 @@ export interface CreateAPIKeyResponse {
   quota_limit: number
   quota_used: number
   expires_at?: ISODateString | null
+  allowed_group_ids?: number[]
 }
 
 export interface ImagePromptTemplate {

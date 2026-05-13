@@ -201,35 +201,27 @@ func (h *Handler) DeleteAccountGroup(c *gin.Context) {
 			h.store.ApplyAccountGroups(acc.DBID, groups)
 		}
 	}
-	if err := h.removeDeletedGroupFromAPIKeyScopes(ctx, id); err != nil {
-		writeInternalError(c, err)
-		return
-	}
+	h.refreshAPIKeyAllowedGroupsAfterGroupDelete(ctx, id)
 	writeMessage(c, http.StatusOK, "分组已删除")
 }
 
-func (h *Handler) removeDeletedGroupFromAPIKeyScopes(ctx context.Context, groupID int64) error {
+func (h *Handler) refreshAPIKeyAllowedGroupsAfterGroupDelete(ctx context.Context, groupID int64) {
 	if h == nil || h.db == nil || groupID <= 0 {
-		return nil
+		return
 	}
 	keys, err := h.db.ListAPIKeys(ctx)
 	if err != nil {
-		return err
+		return
 	}
 	for _, key := range keys {
-		if key == nil || !containsInt64(key.AllowedGroupIDs, groupID) {
+		if key == nil {
 			continue
 		}
-		next := removeInt64(key.AllowedGroupIDs, groupID)
-		if err := h.db.UpdateAPIKeyAllowedGroupIDs(ctx, key.ID, next); err != nil {
-			return err
-		}
 		if h.store != nil {
-			h.store.SetAPIKeyAllowedGroups(key.ID, next)
+			h.store.SetAPIKeyAllowedGroups(key.ID, key.AllowedGroupIDs)
 		}
 		h.invalidateAPIKeyRuntimeCaches(ctx, key.Key)
 	}
-	return nil
 }
 
 func sanitizeAccountGroupName(raw string) (string, error) {

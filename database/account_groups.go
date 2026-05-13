@@ -156,6 +156,9 @@ func (db *DB) DeleteAccountGroup(ctx context.Context, id int64, force ...bool) e
 	if _, err := tx.ExecContext(ctx, "DELETE FROM account_group_members WHERE group_id = "+ph, id); err != nil {
 		return err
 	}
+	if err := pruneDeletedGroupFromAPIKeyScopes(ctx, tx, db.isSQLite(), id); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, "DELETE FROM account_groups WHERE id = "+ph, id)
 	if err != nil {
 		return err
@@ -168,6 +171,65 @@ func (db *DB) DeleteAccountGroup(ctx context.Context, id int64, force ...bool) e
 		return sql.ErrNoRows
 	}
 	return tx.Commit()
+}
+
+func pruneDeletedGroupFromAPIKeyScopes(ctx context.Context, tx *sql.Tx, sqlite bool, groupID int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(allowed_group_ids, '[]') FROM api_keys`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type update struct {
+		id     int64
+		groups []int64
+	}
+	updates := make([]update, 0)
+	for rows.Next() {
+		var id int64
+		var raw interface{}
+		if err := rows.Scan(&id, &raw); err != nil {
+			return err
+		}
+		groups := decodeInt64SliceValue(raw)
+		if !containsInt64(groups, groupID) {
+			continue
+		}
+		updates = append(updates, update{id: id, groups: removeInt64(groups, groupID)})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	query := `UPDATE api_keys SET allowed_group_ids = $1::jsonb WHERE id = $2`
+	if sqlite {
+		query = `UPDATE api_keys SET allowed_group_ids = ? WHERE id = ?`
+	}
+	for _, item := range updates {
+		if _, err := tx.ExecContext(ctx, query, encodeInt64SliceJSON(item.groups), item.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeInt64(slice []int64, target int64) []int64 {
+	out := make([]int64, 0, len(slice))
+	for _, v := range slice {
+		if v != target {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func containsInt64(slice []int64, target int64) bool {
+	for _, v := range slice {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (db *DB) SetAccountGroups(ctx context.Context, accountID int64, groupIDs []int64) error {

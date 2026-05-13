@@ -50,6 +50,11 @@ type OptionalInt64Slice struct {
 	Values []int64
 }
 
+type OptionalNullInt64 struct {
+	Set   bool
+	Value sql.NullInt64
+}
+
 // AccountCredentialIndex holds pre-built sets of existing credentials for fast import dedup.
 type AccountCredentialIndex struct {
 	RefreshTokens map[string]bool
@@ -783,11 +788,12 @@ type APIKeyRow struct {
 }
 
 type APIKeyInput struct {
-	Name       string
-	Key        string
-	QuotaLimit float64
-	QuotaUsed  float64
-	ExpiresAt  sql.NullTime
+	Name            string
+	Key             string
+	QuotaLimit      float64
+	QuotaUsed       float64
+	ExpiresAt       sql.NullTime
+	AllowedGroupIDs []int64
 }
 
 const apiKeySelectColumns = `id, name, key, created_at, COALESCE(quota_limit, 0), COALESCE(quota_used, 0), expires_at, COALESCE(allowed_group_ids, '[]')`
@@ -846,9 +852,9 @@ func (db *DB) InsertAPIKeyWithOptions(ctx context.Context, input APIKeyInput) (i
 		input.QuotaUsed = 0
 	}
 	return db.insertRowID(ctx,
-		`INSERT INTO api_keys (name, key, quota_limit, quota_used, expires_at) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		`INSERT INTO api_keys (name, key, quota_limit, quota_used, expires_at) VALUES ($1, $2, $3, $4, $5)`,
-		input.Name, input.Key, input.QuotaLimit, input.QuotaUsed, nullableTimeArg(input.ExpiresAt),
+		`INSERT INTO api_keys (name, key, quota_limit, quota_used, expires_at, allowed_group_ids) VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING id`,
+		`INSERT INTO api_keys (name, key, quota_limit, quota_used, expires_at, allowed_group_ids) VALUES ($1, $2, $3, $4, $5, $6)`,
+		input.Name, input.Key, input.QuotaLimit, input.QuotaUsed, nullableTimeArg(input.ExpiresAt), encodeInt64SliceJSON(input.AllowedGroupIDs),
 	)
 }
 
@@ -2965,29 +2971,59 @@ func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error)
 }
 
 // UpdateAccountSchedulerConfig 更新账号调度配置。
-func (db *DB) UpdateAccountSchedulerConfig(ctx context.Context, id int64, scoreBiasOverride sql.NullInt64, baseConcurrencyOverride sql.NullInt64, allowedAPIKeyIDs OptionalInt64Slice) error {
+func (db *DB) UpdateAccountSchedulerConfig(ctx context.Context, id int64, scoreBiasOverride OptionalNullInt64, baseConcurrencyOverride OptionalNullInt64, allowedAPIKeyIDs OptionalInt64Slice) error {
 	tx, err := db.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `
-		UPDATE accounts
-		SET score_bias_override = $1,
-		    base_concurrency_override = $2,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $3
-	`, nullableInt64Value(scoreBiasOverride), nullableInt64Value(baseConcurrencyOverride), id)
-	if err != nil {
-		return err
-	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return sql.ErrNoRows
+	if scoreBiasOverride.Set || baseConcurrencyOverride.Set {
+		sets := make([]string, 0, 3)
+		args := make([]interface{}, 0, 3)
+		add := func(column string, value interface{}) {
+			args = append(args, value)
+			ph := "?"
+			if !db.isSQLite() {
+				ph = fmt.Sprintf("$%d", len(args))
+			}
+			sets = append(sets, column+" = "+ph)
+		}
+		if scoreBiasOverride.Set {
+			add("score_bias_override", nullableInt64Value(scoreBiasOverride.Value))
+		}
+		if baseConcurrencyOverride.Set {
+			add("base_concurrency_override", nullableInt64Value(baseConcurrencyOverride.Value))
+		}
+		sets = append(sets, "updated_at = CURRENT_TIMESTAMP")
+		args = append(args, id)
+		ph := "?"
+		if !db.isSQLite() {
+			ph = fmt.Sprintf("$%d", len(args))
+		}
+		result, err := tx.ExecContext(ctx, "UPDATE accounts SET "+strings.Join(sets, ", ")+" WHERE id = "+ph, args...)
+		if err != nil {
+			return err
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rowsAffected == 0 {
+			return sql.ErrNoRows
+		}
+	} else {
+		query := `SELECT 1 FROM accounts WHERE id = $1 AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`
+		if db.isSQLite() {
+			query = `SELECT 1 FROM accounts WHERE id = ? AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`
+		}
+		var exists int
+		if err := tx.QueryRowContext(ctx, query, id).Scan(&exists); err != nil {
+			if err == sql.ErrNoRows {
+				return sql.ErrNoRows
+			}
+			return err
+		}
 	}
 
 	if allowedAPIKeyIDs.Set {

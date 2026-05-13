@@ -37,7 +37,7 @@ const ACCOUNT_BATCH_CONCURRENCY = 6
 const ACCOUNT_REFRESH_BATCH_CONCURRENCY = 4
 const ACCOUNT_ANALYSIS_VISIBILITY_KEY = 'codex2api:accounts:analysis-visible'
 const ACCOUNT_VISIBLE_COLUMNS_KEY = 'codex2api:accounts:visible-columns'
-const ACCOUNT_TABLE_COLUMNS = ['sequence', 'email', 'plan', 'status', 'requests', 'usage', 'importTime', 'updatedAt', 'actions'] as const
+const ACCOUNT_TABLE_COLUMNS = ['sequence', 'email', 'tags', 'groups', 'plan', 'status', 'requests', 'usage', 'importTime', 'updatedAt', 'actions'] as const
 const ACCOUNT_GROUP_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#64748b'] as const
 type AccountTableColumn = typeof ACCOUNT_TABLE_COLUMNS[number]
 type AccountGroupDraft = {
@@ -47,8 +47,12 @@ type AccountGroupDraft = {
   color: string
 }
 
+function getDefaultAccountVisibleColumns(): Record<AccountTableColumn, boolean> {
+  return Object.fromEntries(ACCOUNT_TABLE_COLUMNS.map((column) => [column, column !== 'tags' && column !== 'groups'])) as Record<AccountTableColumn, boolean>
+}
+
 function getInitialAccountVisibleColumns(): Record<AccountTableColumn, boolean> {
-  const fallback = Object.fromEntries(ACCOUNT_TABLE_COLUMNS.map((column) => [column, true])) as Record<AccountTableColumn, boolean>
+  const fallback = getDefaultAccountVisibleColumns()
   try {
     const raw = window.localStorage.getItem(ACCOUNT_VISIBLE_COLUMNS_KEY)
     if (!raw) return fallback
@@ -227,6 +231,10 @@ export default function Accounts() {
   const [showGroupManager, setShowGroupManager] = useState(false)
   const [groupDraft, setGroupDraft] = useState<AccountGroupDraft>({ id: null, name: '', description: '', color: ACCOUNT_GROUP_COLORS[0] })
   const [groupSubmitting, setGroupSubmitting] = useState(false)
+  const [showBatchMetaEditor, setShowBatchMetaEditor] = useState(false)
+  const [batchTags, setBatchTags] = useState<string[]>([])
+  const [batchGroupIds, setBatchGroupIds] = useState<number[]>([])
+  const [batchMetaSubmitting, setBatchMetaSubmitting] = useState(false)
   const [visibleColumns, setVisibleColumns] = useState<Record<AccountTableColumn, boolean>>(getInitialAccountVisibleColumns)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const jsonInputRef = useRef<HTMLInputElement>(null)
@@ -271,6 +279,13 @@ export default function Accounts() {
   useEffect(() => {
     persistAccountVisibleColumns(visibleColumns)
   }, [visibleColumns])
+
+  useEffect(() => {
+    if (groupFilter === null) return
+    if (!allGroups.some((group) => group.id === groupFilter)) {
+      setGroupFilter(null)
+    }
+  }, [allGroups, groupFilter])
 
   useEffect(() => {
     const needsUsageReload = (account: AccountRow) => {
@@ -1154,6 +1169,38 @@ export default function Accounts() {
     }
   }
 
+  const openBatchMetaEditor = () => {
+    const selectedAccounts = accounts.filter((account) => selected.has(account.id))
+    const tagSet = new Set<string>()
+    const groupSet = new Set<number>()
+    for (const account of selectedAccounts) {
+      for (const tag of account.tags ?? []) tagSet.add(tag)
+      for (const id of account.group_ids ?? []) groupSet.add(id)
+    }
+    setBatchTags(Array.from(tagSet).sort())
+    setBatchGroupIds(Array.from(groupSet).sort((a, b) => a - b))
+    setShowBatchMetaEditor(true)
+  }
+
+  const handleBatchSaveMeta = async () => {
+    const ids = Array.from(selected)
+    if (ids.length === 0) return
+    setBatchMetaSubmitting(true)
+    try {
+      const { success, fail } = await runAccountBatch(ids, (id) => api.updateAccountScheduler(id, {
+        tags: batchTags,
+        group_ids: batchGroupIds,
+      }))
+      showToast(t('accounts.batchMetaDone', { success, fail }))
+      setShowBatchMetaEditor(false)
+      await Promise.all([reload(), reloadGroups()])
+    } catch (error) {
+      showToast(t('accounts.batchMetaFailed', { error: getErrorMessage(error) }), 'error')
+    } finally {
+      setBatchMetaSubmitting(false)
+    }
+  }
+
   const handleBatchTest = async (ids?: number[]) => {
     if (ids && ids.length === 0) return
     setBatchTesting(true)
@@ -1320,7 +1367,7 @@ export default function Accounts() {
       }
       await api.updateAccountScheduler(editingAccount.id, payload)
       showToast(t('accounts.schedulerSaveSuccess'))
-      await reload()
+      await Promise.all([reload(), reloadGroups()])
       closeSchedulerEditor(true)
     } catch (error) {
       showToast(t('accounts.schedulerSaveFailed', { error: getErrorMessage(error) }), 'error')
@@ -1693,11 +1740,15 @@ export default function Accounts() {
             <ColumnSettingsMenu
               columns={visibleColumns}
               onToggle={(column) => setVisibleColumns((current) => ({ ...current, [column]: !current[column] }))}
+              onReset={() => setVisibleColumns(getDefaultAccountVisibleColumns())}
+              resetTitle={t('accounts.columnReset')}
               labels={{
                 sequence: t('accounts.sequence'),
                 email: t('accounts.email'),
-                plan: t('accounts.plan'),
-                status: t('accounts.status'),
+              plan: t('accounts.plan'),
+              tags: t('accounts.tagsLabel'),
+              groups: t('accounts.groupsLabel'),
+              status: t('accounts.status'),
                 requests: t('accounts.requests'),
                 usage: t('accounts.usage'),
                 importTime: t('accounts.importTime'),
@@ -1730,6 +1781,9 @@ export default function Accounts() {
               </Button>
               <Button variant="outline" size="sm" disabled={batchLoading || batchTesting} onClick={() => void handleBatchLock(false)}>
                 <Unlock className="size-3 mr-1" />{t('accounts.unlock')}
+              </Button>
+              <Button variant="outline" size="sm" disabled={batchLoading || batchTesting} onClick={openBatchMetaEditor}>
+                <FolderOpen className="size-3 mr-1" />{t('accounts.batchMetaEdit')}
               </Button>
               <Button variant="outline" size="sm" disabled={batchLoading || batchTesting} onClick={() => void handleBatchResetStatus()}>
                 <RotateCcw className="size-3 mr-1" />{t('accounts.batchResetStatus')}
@@ -1768,6 +1822,8 @@ export default function Accounts() {
                       </TableHead>
                       {visibleColumns.sequence && <TableHead className="text-[13px] font-semibold">{t('accounts.sequence')}</TableHead>}
                       {visibleColumns.email && <TableHead className="text-[13px] font-semibold">{t('accounts.email')}</TableHead>}
+                      {visibleColumns.tags && <TableHead className="text-[13px] font-semibold">{t('accounts.tagsLabel')}</TableHead>}
+                      {visibleColumns.groups && <TableHead className="text-[13px] font-semibold">{t('accounts.groupsLabel')}</TableHead>}
                       {visibleColumns.plan && <TableHead className="text-[13px] font-semibold">{t('accounts.plan')}</TableHead>}
                       {visibleColumns.status && <TableHead className="text-[13px] font-semibold">{t('accounts.status')}</TableHead>}
                       {visibleColumns.requests && <TableHead
@@ -1830,7 +1886,11 @@ export default function Accounts() {
                                 <Lock className="size-2.5 mr-0.5" />{t('accounts.lock')}
                               </span>
                             )}
+                          </TableCell>}
+                          {visibleColumns.tags && <TableCell className="min-w-[120px]">
                             <ChipList items={account.tags ?? []} tone="purple" />
+                          </TableCell>}
+                          {visibleColumns.groups && <TableCell className="min-w-[140px]">
                             <GroupChipList groups={resolveAccountGroups(account.group_ids ?? [], allGroups)} />
                           </TableCell>}
                           {visibleColumns.plan && <TableCell>
@@ -2853,6 +2913,69 @@ export default function Accounts() {
         </Modal>
 
         <Modal
+          show={showBatchMetaEditor}
+          title={t('accounts.batchMetaTitle')}
+          contentClassName="sm:max-w-[560px]"
+          onClose={() => {
+            if (batchMetaSubmitting) return
+            setShowBatchMetaEditor(false)
+          }}
+          footer={(
+            <>
+              <Button type="button" variant="outline" onClick={() => setShowBatchMetaEditor(false)} disabled={batchMetaSubmitting}>
+                {t('common.cancel')}
+              </Button>
+              <Button type="button" onClick={() => void handleBatchSaveMeta()} disabled={batchMetaSubmitting}>
+                {batchMetaSubmitting ? t('common.saving') : t('common.save')}
+              </Button>
+            </>
+          )}
+        >
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+              {t('accounts.batchMetaDesc', { count: selected.size })}
+            </div>
+            <div className="rounded-xl border border-border p-4">
+              <div className="text-sm font-semibold text-foreground">{t('accounts.tagsLabel')}</div>
+              <ChipInput
+                className="mt-3"
+                value={batchTags}
+                onChange={setBatchTags}
+                placeholder={t('accounts.tagsPlaceholder')}
+                maxVisible={6}
+              />
+            </div>
+            <div className="rounded-xl border border-border p-4">
+              <div className="text-sm font-semibold text-foreground">{t('accounts.groupsLabel')}</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {allGroups.length === 0 ? (
+                  <span className="text-sm text-muted-foreground">{t('accounts.groupsNone')}</span>
+                ) : allGroups.map((group) => {
+                  const active = batchGroupIds.includes(group.id)
+                  const color = normalizeGroupColor(group.color)
+                  return (
+                    <button
+                      key={group.id}
+                      type="button"
+                      onClick={() => setBatchGroupIds((current) => active ? current.filter((id) => id !== group.id) : [...current, group.id])}
+                      className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors"
+                      style={{
+                        borderColor: active ? color : `${color}55`,
+                        backgroundColor: active ? color : `${color}14`,
+                        color: active ? '#ffffff' : color,
+                      }}
+                    >
+                      <span className="size-1.5 rounded-full bg-current" />
+                      {group.name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        </Modal>
+
+        <Modal
           show={showGroupManager}
           title={t('accounts.groupManageTitle')}
           contentClassName="sm:max-w-[760px]"
@@ -3720,11 +3843,15 @@ function GroupChipList({ groups }: { groups: AccountGroup[] }) {
 function ColumnSettingsMenu({
   columns,
   onToggle,
+  onReset,
+  resetTitle,
   labels,
   title,
 }: {
   columns: Record<AccountTableColumn, boolean>
   onToggle: (column: AccountTableColumn) => void
+  onReset: () => void
+  resetTitle: string
   labels: Record<AccountTableColumn, string>
   title: string
 }) {
@@ -3750,6 +3877,13 @@ function ColumnSettingsMenu({
       </Button>
       {open ? (
         <div className="absolute right-0 top-[calc(100%+0.5rem)] z-50 w-48 overflow-hidden rounded-lg border border-border bg-popover p-1.5 shadow-lg">
+          <button
+            type="button"
+            className="mb-1 flex w-full items-center justify-center rounded-md px-2.5 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-accent/70"
+            onClick={onReset}
+          >
+            {resetTitle}
+          </button>
           {ACCOUNT_TABLE_COLUMNS.map((column) => (
             <button
               key={column}

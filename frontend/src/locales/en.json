@@ -426,6 +426,7 @@
     "groupDeleteEmpty": "Delete this empty group?",
     "groupDeleteForce": "Force delete",
     "columnSettings": "Columns",
+    "columnReset": "Reset columns",
     "schedulerPreviewTitle": "Current Scheduler Preview",
     "schedulerPreviewRawScore": "Raw Score",
     "schedulerPreviewDispatchScore": "Dispatch Score",
@@ -543,6 +544,11 @@
     "resetStatusFailed": "Reset failed: {{error}}",
     "batchResetStatus": "Reset Status",
     "batchResetStatusDone": "Batch reset complete: {{success}} succeeded, {{fail}} failed",
+    "batchMetaEdit": "Tags & Groups",
+    "batchMetaTitle": "Batch Edit Tags and Groups",
+    "batchMetaDesc": "The following tags and groups will be saved to {{count}} selected accounts. Leaving a field empty clears it.",
+    "batchMetaDone": "Batch metadata save complete: {{success}} succeeded, {{fail}} failed",
+    "batchMetaFailed": "Batch metadata save failed: {{error}}",
     "testAutoReset": "Test passed, account status has been automatically restored to normal"
   },
   "status": {
@@ -1167,8 +1173,11 @@
     "allowedGroupsPlaceholder": "Choose allowed groups",
     "allowedGroupsAll": "All groups",
     "allowedGroupsNone": "No group limit",
+    "allowedGroupsMissing": "Group no longer exists",
     "allowedGroupsSaved": "Allowed groups saved",
     "allowedGroupsSaveFailed": "Failed to save allowed groups",
+    "permissionTitle": "Key Permissions",
+    "permissionDesc": "Restrict this key to specific account groups. Leaving it empty allows all groups.",
     "renameKey": "Rename key",
     "keyRenamed": "Key renamed",
     "renameFailed": "Rename failed"

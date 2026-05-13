@@ -9,7 +9,7 @@ import ToastNotice from '../components/ToastNotice'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
-import type { APIKeyRow } from '../types'
+import type { AccountGroup, APIKeyRow } from '../types'
 import { getErrorMessage } from '../utils/error'
 import { formatBeijingTime, formatRelativeTime } from '../utils/time'
 import { Badge } from '@/components/ui/badge'
@@ -50,6 +50,7 @@ interface CreateKeyFormState {
   quotaLimit: string
   expireMode: ExpireMode
   expiresAt: string
+  allowedGroupIds: number[]
 }
 
 const initialCreateForm: CreateKeyFormState = {
@@ -58,6 +59,7 @@ const initialCreateForm: CreateKeyFormState = {
   quotaLimit: '',
   expireMode: 'never',
   expiresAt: '',
+  allowedGroupIds: [],
 }
 
 export default function APIKeys() {
@@ -70,19 +72,29 @@ export default function APIKeys() {
   const [deletingIds, setDeletingIds] = useState<Set<number>>(new Set())
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editingName, setEditingName] = useState('')
+  const [permissionKey, setPermissionKey] = useState<APIKeyRow | null>(null)
+  const [permissionGroupIds, setPermissionGroupIds] = useState<number[]>([])
   const [saving, setSaving] = useState(false)
   const { toast, showToast } = useToast()
   const { confirm, confirmDialog } = useConfirmDialog()
 
   const loadKeys = useCallback(async () => {
-    const response = await api.getAPIKeys()
-    return response.keys ?? []
+    const [keysResponse, groupsResponse] = await Promise.all([
+      api.getAPIKeys(),
+      api.listAccountGroups().catch(() => ({ groups: [] })),
+    ])
+    return {
+      keys: keysResponse.keys ?? [],
+      groups: groupsResponse.groups ?? [],
+    }
   }, [])
 
-  const { data: keys, loading, error, reload } = useDataLoader<APIKeyRow[]>({
-    initialData: [],
+  const { data, loading, error, reload } = useDataLoader<{ keys: APIKeyRow[]; groups: AccountGroup[] }>({
+    initialData: { keys: [], groups: [] },
     load: loadKeys,
   })
+  const keys = data.keys
+  const groups = data.groups
 
   const latestKey = useMemo(() => {
     return keys
@@ -128,6 +140,7 @@ export default function APIKeys() {
         name: createForm.name.trim() || t('apiKeys.defaultName'),
         ...(createForm.key.trim() ? { key: createForm.key.trim() } : {}),
         ...(quotaLimit && quotaLimit > 0 ? { quota_limit: quotaLimit } : {}),
+        allowed_group_ids: createForm.allowedGroupIds,
         ...buildExpirationPayload(createForm, t),
       }
 
@@ -234,6 +247,33 @@ export default function APIKeys() {
     setEditingName(keyRow.name)
   }
 
+  const openPermissionEditor = (keyRow: APIKeyRow) => {
+    setPermissionKey(keyRow)
+    setPermissionGroupIds(keyRow.allowed_group_ids ?? [])
+  }
+
+  const closePermissionEditor = () => {
+    if (saving) return
+    setPermissionKey(null)
+    setPermissionGroupIds([])
+  }
+
+  const handleSavePermissions = async () => {
+    if (!permissionKey) return
+    setSaving(true)
+    try {
+      await api.updateAPIKey(permissionKey.id, { allowed_group_ids: permissionGroupIds })
+      showToast(t('apiKeys.allowedGroupsSaved'))
+      setPermissionKey(null)
+      setPermissionGroupIds([])
+      void reload()
+    } catch (error) {
+      showToast(`${t('apiKeys.allowedGroupsSaveFailed')}: ${getErrorMessage(error)}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <StateShell
       variant="page"
@@ -283,8 +323,8 @@ export default function APIKeys() {
 
         <div className="space-y-4">
           <Card>
-            <CardContent className="p-4">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <CardContent className="p-3 sm:p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h3 className="text-base font-semibold text-foreground">{t('apiKeys.tableTitle')}</h3>
                   <p className="mt-1 text-sm text-muted-foreground">{t('apiKeys.tableDesc')}</p>
@@ -306,6 +346,7 @@ export default function APIKeys() {
                       <TableRow>
                         <TableHead>{t('common.name')}</TableHead>
                         <TableHead>{t('apiKeys.keyColumn')}</TableHead>
+                        <TableHead>{t('apiKeys.allowedGroups')}</TableHead>
                         <TableHead>{t('apiKeys.quotaColumn')}</TableHead>
                         <TableHead>{t('apiKeys.expiresColumn')}</TableHead>
                         <TableHead>{t('common.createdAt')}</TableHead>
@@ -384,6 +425,9 @@ export default function APIKeys() {
                                 </Button>
                               </div>
                             </TableCell>
+                            <TableCell className="min-w-[180px]">
+                              <AllowedGroupsDisplay ids={keyRow.allowed_group_ids ?? []} groups={groups} t={t} />
+                            </TableCell>
                             <TableCell className="min-w-[150px] text-sm text-muted-foreground">
                               <div className="space-y-1">
                                 <div className="font-medium text-foreground">{formatQuotaLimit(keyRow, t)}</div>
@@ -404,7 +448,15 @@ export default function APIKeys() {
                               {formatRelativeTime(keyRow.created_at, { variant: 'compact' })}
                             </TableCell>
                             <TableCell>
-                              <div className="flex justify-end">
+                              <div className="flex justify-end gap-1.5">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => openPermissionEditor(keyRow)}
+                                >
+                                  <ShieldCheck className="size-3.5" />
+                                  {t('apiKeys.allowedGroups')}
+                                </Button>
                                 <Button
                                   variant="destructive"
                                   size="sm"
@@ -518,7 +570,54 @@ export default function APIKeys() {
                 />
               </FormField>
             ) : null}
+
+            <FormField label={t('apiKeys.allowedGroupsLabel')} icon={<ShieldCheck className="size-3.5" />}>
+              <GroupMultiSelect
+                groups={groups}
+                value={createForm.allowedGroupIds}
+                onChange={(allowedGroupIds) => updateCreateForm({ allowedGroupIds })}
+                allLabel={t('apiKeys.allowedGroupsAll')}
+                placeholder={t('apiKeys.allowedGroupsPlaceholder')}
+                emptyLabel={t('accounts.groupsNone')}
+              />
+              <p className="mt-1.5 text-xs text-muted-foreground">{t('apiKeys.allowedGroupsHint')}</p>
+            </FormField>
           </form>
+        </Modal>
+
+        <Modal
+          show={Boolean(permissionKey)}
+          title={t('apiKeys.permissionTitle')}
+          onClose={closePermissionEditor}
+          contentClassName="sm:max-w-[520px]"
+          footer={(
+            <>
+              <Button type="button" variant="outline" onClick={closePermissionEditor} disabled={saving}>
+                {t('common.cancel')}
+              </Button>
+              <Button type="button" onClick={() => void handleSavePermissions()} disabled={saving}>
+                {saving ? t('common.saving') : t('common.save')}
+              </Button>
+            </>
+          )}
+        >
+          {permissionKey ? (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border bg-muted/20 p-3">
+                <div className="text-sm font-semibold text-foreground">{permissionKey.name}</div>
+                <p className="mt-1 text-sm text-muted-foreground">{t('apiKeys.permissionDesc')}</p>
+              </div>
+              <GroupMultiSelect
+                groups={groups}
+                value={permissionGroupIds}
+                onChange={setPermissionGroupIds}
+                allLabel={t('apiKeys.allowedGroupsAll')}
+                placeholder={t('apiKeys.allowedGroupsPlaceholder')}
+                emptyLabel={t('accounts.groupsNone')}
+              />
+              <p className="text-xs text-muted-foreground">{t('apiKeys.allowedGroupsHint')}</p>
+            </div>
+          ) : null}
         </Modal>
 
         <ToastNotice toast={toast} />
@@ -583,6 +682,98 @@ function formatUSD(value: number) {
   if (value >= 1) return `$${value.toFixed(2)}`
   if (value >= 0.01) return `$${value.toFixed(4)}`
   return `$${value.toFixed(6)}`
+}
+
+function AllowedGroupsDisplay({ ids, groups, t }: { ids: number[]; groups: AccountGroup[]; t: Translator }) {
+  const selected = resolveGroups(ids, groups)
+  if (ids.length === 0) {
+    return <Badge variant="secondary">{t('apiKeys.allowedGroupsNone')}</Badge>
+  }
+  if (selected.length === 0) {
+    return <Badge variant="destructive">{t('apiKeys.allowedGroupsMissing')}</Badge>
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {selected.slice(0, 2).map((group) => (
+        <span key={group.id} className="inline-flex items-center rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-semibold text-primary">
+          {group.name}
+        </span>
+      ))}
+      {selected.length > 2 ? (
+        <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
+          +{selected.length - 2}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+function resolveGroups(ids: number[], groups: AccountGroup[]): AccountGroup[] {
+  const byID = new Map(groups.map((group) => [group.id, group]))
+  return ids.map((id) => byID.get(id)).filter(Boolean) as AccountGroup[]
+}
+
+function GroupMultiSelect({
+  groups,
+  value,
+  onChange,
+  allLabel,
+  placeholder,
+  emptyLabel,
+}: {
+  groups: AccountGroup[]
+  value: number[]
+  onChange: (value: number[]) => void
+  allLabel: string
+  placeholder: string
+  emptyLabel: string
+}) {
+  const selected = resolveGroups(value, groups)
+  const summary = value.length === 0
+    ? allLabel
+    : selected.length > 0
+      ? selected.map((group) => group.name).join(', ')
+      : placeholder
+
+  return (
+    <div className="rounded-lg border border-border bg-background p-2">
+      <div className="mb-2 truncate text-sm font-medium text-foreground">{summary}</div>
+      {groups.length === 0 ? (
+        <div className="rounded-md bg-muted/50 px-2 py-2 text-sm text-muted-foreground">{emptyLabel}</div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className={`rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors ${
+              value.length === 0
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border bg-muted/30 text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {allLabel}
+          </button>
+          {groups.map((group) => {
+            const active = value.includes(group.id)
+            return (
+              <button
+                key={group.id}
+                type="button"
+                onClick={() => onChange(active ? value.filter((id) => id !== group.id) : [...value, group.id])}
+                className={`rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors ${
+                  active
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-muted/30 text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {group.name}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function FormField({

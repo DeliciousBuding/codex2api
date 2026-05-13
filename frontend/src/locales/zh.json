@@ -426,6 +426,7 @@
     "groupDeleteEmpty": "确认删除该空分组？",
     "groupDeleteForce": "强制删除",
     "columnSettings": "列设置",
+    "columnReset": "重置列",
     "schedulerPreviewTitle": "当前调度预览",
     "schedulerPreviewRawScore": "原始分",
     "schedulerPreviewDispatchScore": "当前调度分",
@@ -543,6 +544,11 @@
     "resetStatusFailed": "重置失败：{{error}}",
     "batchResetStatus": "重置状态",
     "batchResetStatusDone": "批量重置完成：成功 {{success}}，失败 {{fail}}",
+    "batchMetaEdit": "标签分组",
+    "batchMetaTitle": "批量编辑标签与分组",
+    "batchMetaDesc": "将为 {{count}} 个选中账号统一保存以下标签和分组。留空会清空对应字段。",
+    "batchMetaDone": "批量保存完成：成功 {{success}}，失败 {{fail}}",
+    "batchMetaFailed": "批量保存失败：{{error}}",
     "testAutoReset": "测试成功，账号状态已自动恢复为正常"
   },
   "status": {
@@ -1167,8 +1173,11 @@
     "allowedGroupsPlaceholder": "选择允许调用的分组",
     "allowedGroupsAll": "全部分组",
     "allowedGroupsNone": "不限制分组",
+    "allowedGroupsMissing": "分组已不存在",
     "allowedGroupsSaved": "允许分组已保存",
     "allowedGroupsSaveFailed": "允许分组保存失败",
+    "permissionTitle": "密钥权限",
+    "permissionDesc": "限制该密钥只能调度指定账号分组；不选择则可使用全部分组。",
     "renameKey": "重命名密钥",
     "keyRenamed": "密钥已重命名",
     "renameFailed": "重命名失败"

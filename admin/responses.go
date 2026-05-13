@@ -89,12 +89,13 @@ func NewMaskedAPIKeyRow(row *database.APIKeyRow) *MaskedAPIKeyRow {
 }
 
 type createAPIKeyResponse struct {
-	ID         int64   `json:"id"`
-	Key        string  `json:"key"`
-	Name       string  `json:"name"`
-	QuotaLimit float64 `json:"quota_limit"`
-	QuotaUsed  float64 `json:"quota_used"`
-	ExpiresAt  *string `json:"expires_at"`
+	ID              int64   `json:"id"`
+	Key             string  `json:"key"`
+	Name            string  `json:"name"`
+	QuotaLimit      float64 `json:"quota_limit"`
+	QuotaUsed       float64 `json:"quota_used"`
+	ExpiresAt       *string `json:"expires_at"`
+	AllowedGroupIDs []int64 `json:"allowed_group_ids"`
 }
 
 type opsOverviewResponse struct {
