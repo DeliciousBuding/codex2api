@@ -43,6 +43,8 @@ export interface AccountRow {
   base_concurrency_effective?: number
   dynamic_concurrency_limit?: number
   allowed_api_key_ids?: number[]
+  tags?: string[]
+  group_ids?: number[]
   scheduler_breakdown?: {
     unauthorized_penalty: number
     rate_limit_penalty: number
@@ -136,9 +138,41 @@ export interface FetchOpenAIResponsesModelsResponse {
 }
 
 export interface UpdateAccountSchedulerRequest {
-  score_bias_override: number | null
-  base_concurrency_override: number | null
+  score_bias_override?: number | null
+  base_concurrency_override?: number | null
   allowed_api_key_ids?: number[] | null
+  proxy_url?: string | null
+  tags?: string[] | null
+  group_ids?: number[] | null
+}
+
+export interface AccountGroup {
+  id: number
+  name: string
+  description: string
+  color: string
+  sort_order: number
+  member_count: number
+  created_at: ISODateString
+  updated_at: ISODateString
+}
+
+export interface AccountGroupsResponse {
+  groups: AccountGroup[]
+}
+
+export interface CreateAccountGroupRequest {
+  name: string
+  description?: string
+  color?: string
+  sort_order?: number
+}
+
+export interface UpdateAccountGroupRequest {
+  name?: string
+  description?: string
+  color?: string
+  sort_order?: number
 }
 
 export interface AccountModelStat {
@@ -154,6 +188,7 @@ export interface AccountUsageDetail {
   output_tokens: number
   reasoning_tokens: number
   cached_tokens: number
+  cache_hit_rate: number
   models: AccountModelStat[]
 }
 
@@ -436,18 +471,24 @@ export interface UsageStats {
   total_tokens: number
   total_prompt_tokens: number
   total_completion_tokens: number
+  total_input_tokens?: number
   total_cached_tokens: number
+  total_cache_rate?: number
   total_account_billed: number
   total_user_billed: number
   avg_account_billed_per_request: number
   avg_user_billed_per_request: number
   today_requests: number
   today_tokens: number
+  today_input_tokens?: number
+  today_cached_tokens?: number
+  today_cache_rate?: number
   today_account_billed: number
   today_user_billed: number
   rpm: number
   tpm: number
   avg_duration_ms: number
+  avg_first_token_ms?: number
   error_rate: number
   feature_stats: UsageFeatureStats
   model_stats: UsageModelStat[]
@@ -593,6 +634,7 @@ export interface APIKeyRow {
   quota_used: number
   expires_at?: ISODateString | null
   status?: 'active' | 'expired' | 'quota_exhausted'
+  allowed_group_ids?: number[]
   created_at: ISODateString
 }
 
@@ -602,8 +644,19 @@ export interface CreateAPIKeyRequest {
   name: string
   key?: string
   quota_limit?: number
+  quota?: number
   expires_at?: string
   expires_in_days?: number
+  allowed_group_ids?: number[]
+}
+
+export interface UpdateAPIKeyRequest {
+  name?: string
+  quota_limit?: number | null
+  quota?: number | null
+  expires_at?: string | null
+  expires_in_days?: number
+  allowed_group_ids?: number[]
 }
 
 export interface CreateAPIKeyResponse {
@@ -613,6 +666,7 @@ export interface CreateAPIKeyResponse {
   quota_limit: number
   quota_used: number
   expires_at?: ISODateString | null
+  allowed_group_ids?: number[]
 }
 
 export interface ImagePromptTemplate {
