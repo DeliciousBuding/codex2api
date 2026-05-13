@@ -868,7 +868,7 @@ func (row *APIKeyRow) IsQuotaExhausted() bool {
 }
 
 func (row *APIKeyRow) HasAccessConstraints() bool {
-	return row != nil && (row.QuotaLimit > 0 || row.ExpiresAt.Valid)
+	return row != nil && (row.QuotaLimit > 0 || row.ExpiresAt.Valid || len(row.AllowedGroupIDs) > 0)
 }
 
 // UpdateAPIKeyName updates the display name of an API key without changing the key value.

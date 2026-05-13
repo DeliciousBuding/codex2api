@@ -2515,7 +2515,7 @@ func (s *Store) NextExcludingWithFilter(apiKeyID int64, exclude map[int64]bool, 
 			if !acc.IsAvailable() {
 				continue
 			}
-			if !acc.AllowsAPIKey(apiKeyID) {
+			if !s.accountAllowedForAPIKey(acc, apiKeyID) {
 				continue
 			}
 			if filter != nil && !filter(acc) {
@@ -2709,7 +2709,7 @@ func (s *Store) takeByIDExcluding(id int64, apiKeyID int64, exclude map[int64]bo
 	if s.accountHasCachedCooldown(target) {
 		return nil
 	}
-	if !target.AllowsAPIKey(apiKeyID) {
+	if !s.accountAllowedForAPIKey(target, apiKeyID) {
 		return nil
 	}
 	if filter != nil && !filter(target) {
@@ -2761,7 +2761,7 @@ func (s *Store) hasDispatchCandidateWithFilter(apiKeyID int64, exclude map[int64
 		if s.accountHasCachedCooldown(acc) {
 			continue
 		}
-		if !acc.AllowsAPIKey(apiKeyID) {
+		if !s.accountAllowedForAPIKey(acc, apiKeyID) {
 			continue
 		}
 		if filter != nil && !filter(acc) {
@@ -3144,6 +3144,13 @@ func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 		}
 	}
 	return false
+}
+
+func (s *Store) accountAllowedForAPIKey(acc *Account, apiKeyID int64) bool {
+	if acc == nil {
+		return false
+	}
+	return acc.AllowsAPIKey(apiKeyID) && s.APIKeyAllowsAccount(apiKeyID, acc)
 }
 
 func (s *Store) ApplyOpenAIResponsesConfig(dbID int64, baseURL, apiKey string, models []string, proxyURL string) bool {

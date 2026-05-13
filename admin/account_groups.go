@@ -201,7 +201,35 @@ func (h *Handler) DeleteAccountGroup(c *gin.Context) {
 			h.store.ApplyAccountGroups(acc.DBID, groups)
 		}
 	}
+	if err := h.removeDeletedGroupFromAPIKeyScopes(ctx, id); err != nil {
+		writeInternalError(c, err)
+		return
+	}
 	writeMessage(c, http.StatusOK, "分组已删除")
+}
+
+func (h *Handler) removeDeletedGroupFromAPIKeyScopes(ctx context.Context, groupID int64) error {
+	if h == nil || h.db == nil || groupID <= 0 {
+		return nil
+	}
+	keys, err := h.db.ListAPIKeys(ctx)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if key == nil || !containsInt64(key.AllowedGroupIDs, groupID) {
+			continue
+		}
+		next := removeInt64(key.AllowedGroupIDs, groupID)
+		if err := h.db.UpdateAPIKeyAllowedGroupIDs(ctx, key.ID, next); err != nil {
+			return err
+		}
+		if h.store != nil {
+			h.store.SetAPIKeyAllowedGroups(key.ID, next)
+		}
+		h.invalidateAPIKeyRuntimeCaches(ctx, key.Key)
+	}
+	return nil
 }
 
 func sanitizeAccountGroupName(raw string) (string, error) {
@@ -228,6 +256,15 @@ func removeInt64(slice []int64, target int64) []int64 {
 		}
 	}
 	return out
+}
+
+func containsInt64(slice []int64, target int64) bool {
+	for _, v := range slice {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }
 
 func dedupeInt64(ids []int64) []int64 {

@@ -353,6 +353,7 @@ func (h *Handler) resolveAPIKey(key string) (*database.APIKeyRow, bool) {
 		}, true
 	}
 	if row, ok := h.resolveAPIKeyFromRuntimeCache(key); ok {
+		h.syncAPIKeyAllowedGroups(row)
 		return row, true
 	}
 	if h.db == nil {
@@ -368,6 +369,7 @@ func (h *Handler) resolveAPIKey(key string) (*database.APIKeyRow, bool) {
 		return nil, false
 	}
 	h.setAPIKeyRuntimeCache(row)
+	h.syncAPIKeyAllowedGroups(row)
 	return row, true
 }
 
@@ -422,6 +424,13 @@ func (h *Handler) setAPIKeyRuntimeCache(row *database.APIKeyRow) {
 	if err := h.cache.SetRuntime(ctx, apiKeyCacheNamespace, row.Key, payload, apiKeyCacheTTL); err != nil {
 		log.Printf("写入 API Key Redis 缓存失败: id=%d err=%v", row.ID, err)
 	}
+}
+
+func (h *Handler) syncAPIKeyAllowedGroups(row *database.APIKeyRow) {
+	if h == nil || h.store == nil || row == nil || row.ID <= 0 {
+		return
+	}
+	h.store.SetAPIKeyAllowedGroups(row.ID, row.AllowedGroupIDs)
 }
 
 // isValidKey 检查 key 是否有效（配置文件 + DB）

@@ -38,7 +38,14 @@ const ACCOUNT_REFRESH_BATCH_CONCURRENCY = 4
 const ACCOUNT_ANALYSIS_VISIBILITY_KEY = 'codex2api:accounts:analysis-visible'
 const ACCOUNT_VISIBLE_COLUMNS_KEY = 'codex2api:accounts:visible-columns'
 const ACCOUNT_TABLE_COLUMNS = ['sequence', 'email', 'plan', 'status', 'requests', 'usage', 'importTime', 'updatedAt', 'actions'] as const
+const ACCOUNT_GROUP_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#64748b'] as const
 type AccountTableColumn = typeof ACCOUNT_TABLE_COLUMNS[number]
+type AccountGroupDraft = {
+  id: number | null
+  name: string
+  description: string
+  color: string
+}
 
 function getInitialAccountVisibleColumns(): Record<AccountTableColumn, boolean> {
   const fallback = Object.fromEntries(ACCOUNT_TABLE_COLUMNS.map((column) => [column, true])) as Record<AccountTableColumn, boolean>
@@ -217,6 +224,9 @@ export default function Accounts() {
   const [tagFilter, setTagFilter] = useState<string>('')
   const [groupFilter, setGroupFilter] = useState<number | null>(null)
   const [allGroups, setAllGroups] = useState<AccountGroup[]>([])
+  const [showGroupManager, setShowGroupManager] = useState(false)
+  const [groupDraft, setGroupDraft] = useState<AccountGroupDraft>({ id: null, name: '', description: '', color: ACCOUNT_GROUP_COLORS[0] })
+  const [groupSubmitting, setGroupSubmitting] = useState(false)
   const [visibleColumns, setVisibleColumns] = useState<Record<AccountTableColumn, boolean>>(getInitialAccountVisibleColumns)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const jsonInputRef = useRef<HTMLInputElement>(null)
@@ -1327,6 +1337,78 @@ export default function Accounts() {
     await handleSaveScheduler()
   }
 
+  const reloadGroups = async () => {
+    const res = await api.listAccountGroups()
+    setAllGroups(res.groups ?? [])
+  }
+
+  const resetGroupDraft = () => {
+    setGroupDraft({ id: null, name: '', description: '', color: ACCOUNT_GROUP_COLORS[0] })
+  }
+
+  const startEditGroup = (group: AccountGroup) => {
+    setGroupDraft({
+      id: group.id,
+      name: group.name,
+      description: group.description ?? '',
+      color: group.color || ACCOUNT_GROUP_COLORS[0],
+    })
+  }
+
+  const handleSaveGroup = async () => {
+    const name = groupDraft.name.trim()
+    if (!name) {
+      showToast(t('accounts.groupNameRequired'), 'error')
+      return
+    }
+    setGroupSubmitting(true)
+    try {
+      const payload = {
+        name,
+        description: groupDraft.description.trim(),
+        color: groupDraft.color.trim() || ACCOUNT_GROUP_COLORS[0],
+      }
+      if (groupDraft.id === null) {
+        await api.createAccountGroup(payload)
+        showToast(t('accounts.groupCreated'))
+      } else {
+        await api.updateAccountGroup(groupDraft.id, payload)
+        showToast(t('accounts.groupUpdated'))
+      }
+      await reloadGroups()
+      resetGroupDraft()
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setGroupSubmitting(false)
+    }
+  }
+
+  const handleDeleteGroup = async (group: AccountGroup) => {
+    const force = group.member_count > 0
+    const confirmed = await confirm({
+      title: t('accounts.groupDeleteTitle'),
+      description: force ? t('accounts.groupDeleteWithMembers') : t('accounts.groupDeleteEmpty'),
+      confirmText: force ? t('accounts.groupDeleteForce') : t('common.delete'),
+      tone: 'destructive',
+      confirmVariant: 'destructive',
+    })
+    if (!confirmed) return
+    setGroupSubmitting(true)
+    try {
+      await api.deleteAccountGroup(group.id, force)
+      showToast(t('accounts.groupDeleted'))
+      setEditGroupIds((current) => current.filter((id) => id !== group.id))
+      if (groupFilter === group.id) setGroupFilter(null)
+      if (groupDraft.id === group.id) resetGroupDraft()
+      await reloadGroups()
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error')
+    } finally {
+      setGroupSubmitting(false)
+    }
+  }
+
   return (
     <div
       className="relative"
@@ -1597,6 +1679,16 @@ export default function Accounts() {
               ...allGroups.map((group) => ({ value: String(group.id), label: group.name })),
             ]}
           />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={() => setShowGroupManager(true)}
+          >
+            <FolderOpen className="size-3.5" />
+            {t('accounts.groupManage')}
+          </Button>
           <div className="ml-auto shrink-0">
             <ColumnSettingsMenu
               columns={visibleColumns}
@@ -1739,7 +1831,7 @@ export default function Accounts() {
                               </span>
                             )}
                             <ChipList items={account.tags ?? []} tone="purple" />
-                            <ChipList items={(account.group_ids ?? []).map((id) => allGroups.find((group) => group.id === id)?.name).filter(Boolean) as string[]} tone="blue" />
+                            <GroupChipList groups={resolveAccountGroups(account.group_ids ?? [], allGroups)} />
                           </TableCell>}
                           {visibleColumns.plan && <TableCell>
                             <PlanBadge planType={account.plan_type} />
@@ -2708,24 +2800,35 @@ export default function Accounts() {
                 </div>
 
                 <div className="rounded-xl border border-border p-4">
-                  <div className="text-sm font-semibold text-foreground">{t('accounts.groupsLabel')}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{t('accounts.groupsHint')}</div>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-foreground">{t('accounts.groupsLabel')}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">{t('accounts.groupsHint')}</div>
+                    </div>
+                    <Button type="button" variant="outline" size="xs" onClick={() => setShowGroupManager(true)}>
+                      <FolderOpen className="size-3" />
+                      {t('accounts.groupManage')}
+                    </Button>
+                  </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {allGroups.length === 0 ? (
                       <span className="text-sm text-muted-foreground">{t('accounts.groupsNone')}</span>
                     ) : allGroups.map((group) => {
                       const active = editGroupIds.includes(group.id)
+                      const color = normalizeGroupColor(group.color)
                       return (
                         <button
                           key={group.id}
                           type="button"
                           onClick={() => setEditGroupIds((current) => active ? current.filter((id) => id !== group.id) : [...current, group.id])}
-                          className={`rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
-                            active
-                              ? 'border-blue-500 bg-blue-500 text-white'
-                              : 'border-border bg-muted/30 text-muted-foreground hover:text-foreground'
-                          }`}
+                          className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors"
+                          style={{
+                            borderColor: active ? color : `${color}55`,
+                            backgroundColor: active ? color : `${color}14`,
+                            color: active ? '#ffffff' : color,
+                          }}
                         >
+                          <span className="size-1.5 rounded-full bg-current" />
                           {group.name}
                         </button>
                       )
@@ -2747,6 +2850,132 @@ export default function Accounts() {
               )}
             </div>
           ) : null}
+        </Modal>
+
+        <Modal
+          show={showGroupManager}
+          title={t('accounts.groupManageTitle')}
+          contentClassName="sm:max-w-[760px]"
+          bodyClassName="space-y-4"
+          onClose={() => {
+            if (groupSubmitting) return
+            setShowGroupManager(false)
+            resetGroupDraft()
+          }}
+          footer={(
+            <>
+              <Button type="button" variant="outline" onClick={() => { setShowGroupManager(false); resetGroupDraft() }} disabled={groupSubmitting}>
+                {t('common.close')}
+              </Button>
+              <Button type="button" onClick={() => void handleSaveGroup()} disabled={groupSubmitting || !groupDraft.name.trim()}>
+                {groupSubmitting ? t('common.saving') : groupDraft.id === null ? t('accounts.groupCreate') : t('common.save')}
+              </Button>
+            </>
+          )}
+        >
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(280px,0.55fr)]">
+            <div className="min-h-[220px] rounded-xl border border-border bg-muted/10 p-3">
+              {allGroups.length === 0 ? (
+                <div className="flex min-h-[190px] flex-col items-center justify-center rounded-lg border border-dashed border-border px-4 text-center">
+                  <FolderOpen className="mb-3 size-8 text-muted-foreground" />
+                  <div className="text-sm font-semibold text-foreground">{t('accounts.groupEmpty')}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">{t('accounts.groupEmptyDesc')}</div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {allGroups.map((group) => {
+                    const active = groupDraft.id === group.id
+                    const color = normalizeGroupColor(group.color)
+                    return (
+                      <div
+                        key={group.id}
+                        className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors ${
+                          active ? 'border-primary/40 bg-primary/5' : 'border-border bg-card/70'
+                        }`}
+                      >
+                        <span className="size-3 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-semibold text-foreground">{group.name}</span>
+                            <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                              {t('accounts.groupMembers')} {group.member_count}
+                            </span>
+                          </div>
+                          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                            {group.description || t('accounts.groupNoDescription')}
+                          </div>
+                        </div>
+                        <Button type="button" variant="ghost" size="icon-sm" onClick={() => startEditGroup(group)} title={t('accounts.groupEdit')}>
+                          <Pencil className="size-3.5" />
+                        </Button>
+                        <Button type="button" variant="ghost" size="icon-sm" onClick={() => void handleDeleteGroup(group)} disabled={groupSubmitting} title={t('common.delete')}>
+                          <Trash2 className="size-3.5 text-red-500" />
+                        </Button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold text-foreground">
+                  {groupDraft.id === null ? t('accounts.groupCreateTitle') : t('accounts.groupEditTitle')}
+                </div>
+                {groupDraft.id !== null ? (
+                  <Button type="button" variant="ghost" size="xs" onClick={resetGroupDraft}>
+                    <Plus className="size-3" />
+                    {t('accounts.groupCreate')}
+                  </Button>
+                ) : null}
+              </div>
+              <div className="mt-4 space-y-3">
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-semibold text-muted-foreground">{t('accounts.groupName')}</span>
+                  <Input
+                    value={groupDraft.name}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => setGroupDraft((draft) => ({ ...draft, name: event.target.value }))}
+                    placeholder={t('accounts.groupNamePlaceholder')}
+                    maxLength={80}
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-semibold text-muted-foreground">{t('accounts.groupDescription')}</span>
+                  <Input
+                    value={groupDraft.description}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => setGroupDraft((draft) => ({ ...draft, description: event.target.value }))}
+                    placeholder={t('accounts.groupDescriptionPlaceholder')}
+                    maxLength={240}
+                  />
+                </label>
+                <div className="space-y-1.5">
+                  <span className="text-xs font-semibold text-muted-foreground">{t('accounts.groupColor')}</span>
+                  <div className="flex flex-wrap gap-2">
+                    {ACCOUNT_GROUP_COLORS.map((color) => (
+                      <button
+                        key={color}
+                        type="button"
+                        className={`size-8 rounded-lg border transition-transform hover:scale-105 ${
+                          normalizeGroupColor(groupDraft.color) === color ? 'border-foreground ring-2 ring-ring/30' : 'border-border'
+                        }`}
+                        style={{ backgroundColor: color }}
+                        onClick={() => setGroupDraft((draft) => ({ ...draft, color }))}
+                        aria-label={color}
+                      />
+                    ))}
+                  </div>
+                  <Input
+                    className="h-8 font-mono text-xs"
+                    value={groupDraft.color}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => setGroupDraft((draft) => ({ ...draft, color: event.target.value }))}
+                    placeholder={t('accounts.groupColorPlaceholder')}
+                    maxLength={20}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         </Modal>
 
         <Modal
@@ -3438,6 +3667,47 @@ function ChipList({ items, tone }: { items: string[]; tone: 'purple' | 'blue' })
           {item}
         </span>
       ))}
+      {hidden > 0 && (
+        <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+          +{hidden}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function normalizeGroupColor(color?: string): string {
+  const value = (color || '').trim()
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value : ACCOUNT_GROUP_COLORS[0]
+}
+
+function resolveAccountGroups(ids: number[], groups: AccountGroup[]): AccountGroup[] {
+  if (ids.length === 0 || groups.length === 0) return []
+  const byID = new Map(groups.map((group) => [group.id, group]))
+  return ids.map((id) => byID.get(id)).filter(Boolean) as AccountGroup[]
+}
+
+function GroupChipList({ groups }: { groups: AccountGroup[] }) {
+  if (groups.length === 0) return null
+  const visible = groups.slice(0, 3)
+  const hidden = groups.length - visible.length
+
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1">
+      {visible.map((group) => {
+        const color = normalizeGroupColor(group.color)
+        return (
+          <span
+            key={group.id}
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold"
+            style={{ backgroundColor: `${color}14`, color, boxShadow: `inset 0 0 0 1px ${color}33` }}
+            title={group.description || group.name}
+          >
+            <span className="size-1.5 rounded-full bg-current" />
+            {group.name}
+          </span>
+        )
+      })}
       {hidden > 0 && (
         <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
           +{hidden}

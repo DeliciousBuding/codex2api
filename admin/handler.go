@@ -3361,6 +3361,9 @@ func (h *Handler) DeleteAPIKey(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "删除失败: "+err.Error())
 		return
 	}
+	if h.store != nil {
+		h.store.SetAPIKeyAllowedGroups(id, nil)
+	}
 	h.invalidateAPIKeyRuntimeCaches(ctx, keyToInvalidate)
 	writeMessage(c, http.StatusOK, "已删除")
 }
