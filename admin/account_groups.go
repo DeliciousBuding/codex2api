@@ -158,7 +158,7 @@ func (h *Handler) UpdateAccountGroup(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	if err := h.db.UpdateAccountGroup(ctx, id, req.Name, req.Description, req.Color, req.SortOrder); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "分组不存在")
 			return
 		}
@@ -182,7 +182,7 @@ func (h *Handler) DeleteAccountGroup(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	if err := h.db.DeleteAccountGroup(ctx, id, force); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "分组不存在")
 			return
 		}

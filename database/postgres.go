@@ -50,6 +50,16 @@ type OptionalInt64Slice struct {
 	Values []int64
 }
 
+type OptionalStringSlice struct {
+	Set    bool
+	Values []string
+}
+
+type OptionalString struct {
+	Set   bool
+	Value string
+}
+
 type OptionalNullInt64 struct {
 	Set   bool
 	Value sql.NullInt64
@@ -3110,7 +3120,7 @@ func (db *DB) UpdateAccountSchedulerConfig(ctx context.Context, id int64, scoreB
 		if !db.isSQLite() {
 			ph = fmt.Sprintf("$%d", len(args))
 		}
-		result, err := tx.ExecContext(ctx, "UPDATE accounts SET "+strings.Join(sets, ", ")+" WHERE id = "+ph, args...)
+		result, err := tx.ExecContext(ctx, "UPDATE accounts SET "+strings.Join(sets, ", ")+" WHERE id = "+ph+" AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'", args...)
 		if err != nil {
 			return err
 		}
@@ -3136,9 +3146,9 @@ func (db *DB) UpdateAccountSchedulerConfig(ctx context.Context, id int64, scoreB
 	}
 
 	if allowedAPIKeyIDs.Set {
-		selectQuery := `SELECT credentials FROM accounts WHERE id = $1`
+		selectQuery := `SELECT credentials FROM accounts WHERE id = $1 AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`
 		if db.isSQLite() {
-			selectQuery = `SELECT credentials FROM accounts WHERE id = ?`
+			selectQuery = `SELECT credentials FROM accounts WHERE id = ? AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`
 		} else {
 			selectQuery += ` FOR UPDATE`
 		}
@@ -3165,6 +3175,101 @@ func (db *DB) UpdateAccountSchedulerConfig(ctx context.Context, id int64, scoreB
 		}
 	}
 
+	return tx.Commit()
+}
+
+// UpdateAccountSchedulerMetadata applies scheduler overrides and UI metadata in
+// one transaction. Runtime store updates should happen only after this returns.
+func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scoreBiasOverride OptionalNullInt64, baseConcurrencyOverride OptionalNullInt64, allowedAPIKeyIDs OptionalInt64Slice, tags OptionalStringSlice, groupIDs OptionalInt64Slice, proxyURL OptionalString) error {
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	query := `SELECT credentials FROM accounts WHERE id = $1 AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`
+	if db.isSQLite() {
+		query = `SELECT credentials FROM accounts WHERE id = ? AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`
+	} else {
+		query += ` FOR UPDATE`
+	}
+	var currentRaw interface{}
+	if err := tx.QueryRowContext(ctx, query, id).Scan(&currentRaw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return sql.ErrNoRows
+		}
+		return err
+	}
+
+	sets := make([]string, 0, 6)
+	args := make([]interface{}, 0, 8)
+	add := func(column string, value interface{}) {
+		args = append(args, value)
+		ph := "?"
+		if !db.isSQLite() {
+			ph = fmt.Sprintf("$%d", len(args))
+		}
+		sets = append(sets, column+" = "+ph)
+	}
+	if scoreBiasOverride.Set {
+		add("score_bias_override", nullableInt64Value(scoreBiasOverride.Value))
+	}
+	if baseConcurrencyOverride.Set {
+		add("base_concurrency_override", nullableInt64Value(baseConcurrencyOverride.Value))
+	}
+	if tags.Set {
+		if db.isSQLite() {
+			add("tags", encodeTagsJSON(tags.Values))
+		} else {
+			args = append(args, encodeTagsJSON(tags.Values))
+			sets = append(sets, fmt.Sprintf("tags = $%d::jsonb", len(args)))
+		}
+	}
+	if proxyURL.Set {
+		add("proxy_url", strings.TrimSpace(proxyURL.Value))
+	}
+	if allowedAPIKeyIDs.Set {
+		merged := mergeCredentialMaps(decodeCredentials(currentRaw), map[string]interface{}{
+			"allowed_api_key_ids": normalizePositiveInt64Slice(allowedAPIKeyIDs.Values),
+		})
+		credJSON, err := json.Marshal(merged)
+		if err != nil {
+			return fmt.Errorf("序列化 credentials 失败: %w", err)
+		}
+		if db.isSQLite() {
+			add("credentials", credJSON)
+		} else {
+			args = append(args, credJSON)
+			sets = append(sets, fmt.Sprintf("credentials = $%d::jsonb", len(args)))
+		}
+	}
+	if len(sets) > 0 {
+		sets = append(sets, "updated_at = CURRENT_TIMESTAMP")
+		args = append(args, id)
+		ph := "?"
+		if !db.isSQLite() {
+			ph = fmt.Sprintf("$%d", len(args))
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE accounts SET "+strings.Join(sets, ", ")+" WHERE id = "+ph, args...); err != nil {
+			return err
+		}
+	}
+	if groupIDs.Set {
+		ph := "$1"
+		insertQ := "INSERT INTO account_group_members (account_id, group_id) VALUES ($1, $2)"
+		if db.isSQLite() {
+			ph = "?"
+			insertQ = "INSERT INTO account_group_members (account_id, group_id) VALUES (?, ?)"
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM account_group_members WHERE account_id = "+ph, id); err != nil {
+			return err
+		}
+		for _, gid := range normalizeIDSlice(groupIDs.Values) {
+			if _, err := tx.ExecContext(ctx, insertQ, id, gid); err != nil {
+				return err
+			}
+		}
+	}
 	return tx.Commit()
 }
 
@@ -3332,6 +3437,12 @@ func (db *DB) BatchSetError(ctx context.Context, ids []int64, errorMsg string) e
 
 // SoftDeleteAccount 将账号标记为 deleted，保留数据用于审计和事件追溯。
 func (db *DB) SoftDeleteAccount(ctx context.Context, id int64) error {
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	query := `
 		UPDATE accounts
 		SET status = 'deleted',
@@ -3342,7 +3453,7 @@ func (db *DB) SoftDeleteAccount(ctx context.Context, id int64) error {
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1 AND status <> 'deleted'
 	`
-	res, err := db.conn.ExecContext(ctx, query, id)
+	res, err := tx.ExecContext(ctx, query, id)
 	if err != nil {
 		return err
 	}
@@ -3353,7 +3464,10 @@ func (db *DB) SoftDeleteAccount(ctx context.Context, id int64) error {
 	if affected == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `DELETE FROM account_group_members WHERE account_id = $1`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // BatchSoftDeleteAccounts 批量软删除账号，分批执行避免 SQL 参数过多。

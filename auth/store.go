@@ -1456,6 +1456,7 @@ type Store struct {
 	tokenCache                cache.TokenCache
 	apiKeyGroupsMu            sync.RWMutex
 	apiKeyAllowedGroups       map[int64][]int64
+	apiKeyAllowedGroupSets    map[int64]map[int64]struct{}
 	usageProbeMu              sync.RWMutex
 	usageProbe                func(context.Context, *Account) error
 	usageProbeBatch           atomic.Bool
@@ -3082,14 +3083,20 @@ func (s *Store) SetAPIKeyAllowedGroups(apiKeyID int64, groupIDs []int64) {
 	if apiKeyID <= 0 {
 		return
 	}
+	normalized := normalizeAllowedGroupIDs(groupIDs)
 	s.apiKeyGroupsMu.Lock()
 	if s.apiKeyAllowedGroups == nil {
 		s.apiKeyAllowedGroups = make(map[int64][]int64)
 	}
-	if len(groupIDs) == 0 {
+	if s.apiKeyAllowedGroupSets == nil {
+		s.apiKeyAllowedGroupSets = make(map[int64]map[int64]struct{})
+	}
+	if len(normalized) == 0 {
 		delete(s.apiKeyAllowedGroups, apiKeyID)
+		delete(s.apiKeyAllowedGroupSets, apiKeyID)
 	} else {
-		s.apiKeyAllowedGroups[apiKeyID] = cloneInt64Slice(groupIDs)
+		s.apiKeyAllowedGroups[apiKeyID] = cloneInt64Slice(normalized)
+		s.apiKeyAllowedGroupSets[apiKeyID] = int64Set(normalized)
 	}
 	s.apiKeyGroupsMu.Unlock()
 	s.rebuildFastScheduler()
@@ -3114,9 +3121,12 @@ func (s *Store) LoadAPIKeyAllowedGroups(ctx context.Context) error {
 	}
 	s.apiKeyGroupsMu.Lock()
 	s.apiKeyAllowedGroups = make(map[int64][]int64, len(keys))
+	s.apiKeyAllowedGroupSets = make(map[int64]map[int64]struct{}, len(keys))
 	for _, key := range keys {
-		if len(key.AllowedGroupIDs) > 0 {
-			s.apiKeyAllowedGroups[key.ID] = cloneInt64Slice(key.AllowedGroupIDs)
+		normalized := normalizeAllowedGroupIDs(key.AllowedGroupIDs)
+		if len(normalized) > 0 {
+			s.apiKeyAllowedGroups[key.ID] = cloneInt64Slice(normalized)
+			s.apiKeyAllowedGroupSets[key.ID] = int64Set(normalized)
 		}
 	}
 	s.apiKeyGroupsMu.Unlock()
@@ -3128,13 +3138,11 @@ func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 	if s == nil || apiKeyID <= 0 || acc == nil {
 		return true
 	}
-	allowed := s.GetAPIKeyAllowedGroups(apiKeyID)
-	if len(allowed) == 0 {
+	s.apiKeyGroupsMu.RLock()
+	allowedSet := s.apiKeyAllowedGroupSets[apiKeyID]
+	s.apiKeyGroupsMu.RUnlock()
+	if len(allowedSet) == 0 {
 		return true
-	}
-	allowedSet := make(map[int64]struct{}, len(allowed))
-	for _, id := range allowed {
-		allowedSet[id] = struct{}{}
 	}
 	acc.mu.RLock()
 	defer acc.mu.RUnlock()
@@ -3144,6 +3152,31 @@ func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 		}
 	}
 	return false
+}
+
+func normalizeAllowedGroupIDs(groupIDs []int64) []int64 {
+	out := make([]int64, 0, len(groupIDs))
+	seen := make(map[int64]struct{}, len(groupIDs))
+	for _, id := range groupIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func int64Set(values []int64) map[int64]struct{} {
+	out := make(map[int64]struct{}, len(values))
+	for _, value := range values {
+		out[value] = struct{}{}
+	}
+	return out
 }
 
 func (s *Store) accountAllowedForAPIKey(acc *Account, apiKeyID int64) bool {

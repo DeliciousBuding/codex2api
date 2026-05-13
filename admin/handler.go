@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -720,8 +721,12 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		}
 	}
 
-	if err := h.db.UpdateAccountSchedulerConfig(ctx, id, scoreBiasOverride, baseConcurrencyOverride, allowedAPIKeyIDs); err != nil {
-		if err == sql.ErrNoRows {
+	proxyURL := database.OptionalString{}
+	if req.ProxyURL != nil {
+		proxyURL = database.OptionalString{Set: true, Value: *req.ProxyURL}
+	}
+	if err := h.db.UpdateAccountSchedulerMetadata(ctx, id, scoreBiasOverride, baseConcurrencyOverride, allowedAPIKeyIDs, database.OptionalStringSlice{Set: tags.Set, Values: tags.Values}, groupIDs, proxyURL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "账号不存在")
 			return
 		}
@@ -757,32 +762,14 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 			h.store.ApplyAccountAllowedAPIKeys(id, allowedAPIKeyIDs.Values)
 		}
 	}
-	if tags.Set {
-		if err := h.db.UpdateAccountTags(ctx, id, tags.Values); err != nil {
-			writeError(c, http.StatusInternalServerError, "更新账号标签失败: "+err.Error())
-			return
-		}
-		if h.store != nil {
-			h.store.ApplyAccountTags(id, tags.Values)
-		}
+	if h.store != nil && tags.Set {
+		h.store.ApplyAccountTags(id, tags.Values)
 	}
-	if groupIDs.Set {
-		if err := h.db.SetAccountGroups(ctx, id, groupIDs.Values); err != nil {
-			writeError(c, http.StatusInternalServerError, "更新账号分组失败: "+err.Error())
-			return
-		}
-		if h.store != nil {
-			h.store.ApplyAccountGroups(id, groupIDs.Values)
-		}
+	if h.store != nil && groupIDs.Set {
+		h.store.ApplyAccountGroups(id, groupIDs.Values)
 	}
-	if req.ProxyURL != nil {
-		if err := h.db.UpdateAccountProxyURL(ctx, id, *req.ProxyURL); err != nil {
-			writeError(c, http.StatusInternalServerError, "更新账号代理失败: "+err.Error())
-			return
-		}
-		if h.store != nil {
-			h.store.ApplyAccountProxyURL(id, *req.ProxyURL)
-		}
+	if h.store != nil && req.ProxyURL != nil {
+		h.store.ApplyAccountProxyURL(id, *req.ProxyURL)
 	}
 
 	writeMessage(c, http.StatusOK, "账号调度配置已更新")
@@ -3932,13 +3919,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	}
 
 	if req.ProxyPoolEnabled != nil {
-		h.store.SetProxyPoolEnabled(*req.ProxyPoolEnabled)
 		if *req.ProxyPoolEnabled {
 			if err := h.store.ReloadProxyPool(); err != nil {
 				writeError(c, http.StatusInternalServerError, "代理池刷新失败: "+err.Error())
 				return
 			}
 		}
+		h.store.SetProxyPoolEnabled(*req.ProxyPoolEnabled)
 		log.Printf("设置已更新: proxy_pool_enabled = %t", *req.ProxyPoolEnabled)
 	}
 
@@ -4758,10 +4745,8 @@ func (h *Handler) AddProxies(c *gin.Context) {
 		return
 	}
 
-	// 刷新代理池
 	if err := h.store.ReloadProxyPool(); err != nil {
-		writeError(c, http.StatusInternalServerError, "代理池刷新失败: "+err.Error())
-		return
+		log.Printf("代理已添加，但代理池刷新失败: %v", err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -4792,8 +4777,7 @@ func (h *Handler) DeleteProxy(c *gin.Context) {
 	}
 
 	if err := h.store.ReloadProxyPool(); err != nil {
-		writeError(c, http.StatusInternalServerError, "代理池刷新失败: "+err.Error())
-		return
+		log.Printf("代理已删除，但代理池刷新失败: %v", err)
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "代理已删除"})
 }
@@ -4829,8 +4813,7 @@ func (h *Handler) UpdateProxy(c *gin.Context) {
 	}
 
 	if err := h.store.ReloadProxyPool(); err != nil {
-		writeError(c, http.StatusInternalServerError, "代理池刷新失败: "+err.Error())
-		return
+		log.Printf("代理已更新，但代理池刷新失败: %v", err)
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "代理已更新"})
 }

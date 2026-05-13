@@ -22,9 +22,12 @@ type AccountGroup struct {
 func (db *DB) ListAccountGroups(ctx context.Context) ([]AccountGroup, error) {
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT g.id, g.name, g.description, g.color, g.sort_order,
-			COALESCE(COUNT(m.account_id), 0), g.created_at, g.updated_at
+			COALESCE(COUNT(a.id), 0), g.created_at, g.updated_at
 		FROM account_groups g
 		LEFT JOIN account_group_members m ON m.group_id = g.id
+		LEFT JOIN accounts a ON a.id = m.account_id
+			AND a.status <> 'deleted'
+			AND COALESCE(a.error_message, '') <> 'deleted'
 		GROUP BY g.id, g.name, g.description, g.color, g.sort_order, g.created_at, g.updated_at
 		ORDER BY g.sort_order, g.name`)
 	if err != nil {
@@ -147,7 +150,12 @@ func (db *DB) DeleteAccountGroup(ctx context.Context, id int64, force ...bool) e
 		ph = "?"
 	}
 	var count int64
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM account_group_members WHERE group_id = "+ph, id).Scan(&count); err != nil {
+	memberCountQuery := `
+		SELECT COUNT(*)
+		FROM account_group_members m
+		JOIN accounts a ON a.id = m.account_id
+		WHERE m.group_id = ` + ph + ` AND a.status <> 'deleted' AND COALESCE(a.error_message, '') <> 'deleted'`
+	if err := tx.QueryRowContext(ctx, memberCountQuery, id).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 && !allowMembers {
