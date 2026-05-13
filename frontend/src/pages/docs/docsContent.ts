@@ -35,7 +35,7 @@ export function buildEndpointSpecs(
         "Native Codex Responses endpoint with optional streaming, forwarded directly upstream.",
       ),
       defaultBody: `{
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
   "stream": false
 }`,
@@ -44,7 +44,7 @@ export function buildEndpointSpecs(
   --header 'Authorization: Bearer <token>' \\
   --header 'Content-Type: application/json' \\
   --data '{
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "input": [
     {"role": "user", "content": [{"type": "input_text", "text": "Hello, what can you do?"}]}
   ],
@@ -57,7 +57,7 @@ export function buildEndpointSpecs(
           body: `{
   "id": "resp_abc123",
   "object": "response",
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "status": "completed",
   "output": [
     {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hello!"}]}
@@ -106,7 +106,7 @@ export function buildEndpointSpecs(
         "OpenAI Chat Completions compatible endpoint that translates between OpenAI and Codex Responses formats.",
       ),
       defaultBody: `{
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "messages": [{"role": "user", "content": "Hello"}],
   "stream": false
 }`,
@@ -115,7 +115,7 @@ export function buildEndpointSpecs(
   --header 'Authorization: Bearer <token>' \\
   --header 'Content-Type: application/json' \\
   --data '{
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Hello!"}
@@ -129,7 +129,7 @@ export function buildEndpointSpecs(
           body: `{
   "id": "chatcmpl-abc123",
   "object": "chat.completion",
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "choices": [
     {"index": 0, "message": {"role": "assistant", "content": "Hello! How can I help you today?"}, "finish_reason": "stop"}
   ],
@@ -305,7 +305,7 @@ export function buildEndpointSpecs(
   "object": "list",
   "data": [
     {"id": "gpt-5.5", "object": "model", "owned_by": "openai"},
-    {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+    {"id": "gpt-5.5", "object": "model", "owned_by": "openai"},
     {"id": "gpt-5.4-mini", "object": "model", "owned_by": "openai"},
     {"id": "gpt-5.3-codex", "object": "model", "owned_by": "openai"},
     {"id": "gpt-5.3-codex-spark", "object": "model", "owned_by": "openai"},
@@ -845,7 +845,7 @@ ${quickToolLines}
 curl -X POST ${baseUrl}/v1/responses \\
   -H "Authorization: Bearer ${apiKeyExample}" \\
   -H "Content-Type: application/json" \\
-  -d '{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"Hello"}]}]}'
+  -d '{"model":"gpt-5.5","input":[{"role":"user","content":[{"type":"input_text","text":"Hello"}]}]}'
 \`\`\`
 
 ---
@@ -858,7 +858,7 @@ ${copy(locale, "写入", "Write to")} \`~/.codex/config.toml\`：
 
 \`\`\`toml
 model_provider = "OpenAI"
-model = "gpt-5.4"
+model = "gpt-5.5"
 
 [model_providers.OpenAI]
 name = "OpenAI"

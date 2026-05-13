@@ -69,8 +69,8 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`,
       ),
       kind: "config",
       template: `model_provider = "OpenAI"
-model = "gpt-5.4"
-review_model = "gpt-5.4"
+model = "gpt-5.5"
+review_model = "gpt-5.5"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"

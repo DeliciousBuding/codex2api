@@ -53,7 +53,7 @@ const CLIENT_TOOLS: ClientTool[] = [
   },
 ]
 
-const FALLBACK_MODELS = ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'claude-sonnet-4-5-20250514']
+const FALLBACK_MODELS = ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex', 'claude-sonnet-4-5-20250514']
 
 function encodeBase64(text: string): string {
   return btoa(unescape(encodeURIComponent(text)))
@@ -152,8 +152,8 @@ function ClientCard({ tool, activeKey, baseUrl }: {
   const codexDir = codexTab === 'windows' ? '%userprofile%\\.codex' : '~/.codex'
 
   const codexConfig = `model_provider = "OpenAI"
-model = "gpt-5.4"
-review_model = "gpt-5.4"
+model = "gpt-5.5"
+review_model = "gpt-5.5"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
@@ -261,7 +261,7 @@ export default function Guide() {
   const [apiKeys, setApiKeys] = useState<ApiKeyOption[]>([])
   const [selectedKey, setSelectedKey] = useState('')
   const [models, setModels] = useState(FALLBACK_MODELS)
-  const [selectedModel, setSelectedModel] = useState('gpt-5.4')
+  const [selectedModel, setSelectedModel] = useState('gpt-5.5')
   const [curlTab, setCurlTab] = useState<'responses' | 'chat' | 'messages'>('responses')
 
   useEffect(() => {
@@ -276,7 +276,7 @@ export default function Guide() {
         .filter((model): model is string => Boolean(model))
       if (next.length > 0) {
         setModels(next)
-        setSelectedModel(next.includes('gpt-5.4') ? 'gpt-5.4' : next[0])
+        setSelectedModel(next.includes('gpt-5.5') ? 'gpt-5.5' : next[0])
       }
     }).catch(() => {})
   }, [])

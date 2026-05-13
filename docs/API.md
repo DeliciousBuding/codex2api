@@ -93,7 +93,7 @@ Authorization: Bearer your-admin-secret
 
 ```json
 {
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "messages": [
     { "role": "system", "content": "You are a helpful assistant." },
     { "role": "user", "content": "Hello!" }
@@ -123,7 +123,7 @@ Authorization: Bearer your-admin-secret
   "id": "chatcmpl-xxxxxxxx",
   "object": "chat.completion",
   "created": 1712345678,
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "choices": [
     {
       "index": 0,
@@ -145,13 +145,13 @@ Authorization: Bearer your-admin-secret
 **流式响应示例:**
 
 ```
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.5","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1712345678,"model":"gpt-5.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 ```
@@ -166,7 +166,7 @@ data: [DONE]
 
 ```json
 {
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "input": [
     { "role": "system", "content": "You are a helpful assistant." },
     { "role": "user", "content": "Hello!" }
@@ -199,7 +199,7 @@ data: [DONE]
   "id": "resp_xxxxxxxx",
   "object": "response",
   "created": 1712345678,
-  "model": "gpt-5.4",
+  "model": "gpt-5.5",
   "output": [
     {
       "type": "message",
@@ -287,7 +287,7 @@ data: [DONE]
   "object": "list",
   "data": [
     { "id": "gpt-5.5", "object": "model", "owned_by": "openai" },
-    { "id": "gpt-5.4", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.5", "object": "model", "owned_by": "openai" },
     { "id": "gpt-5.4-mini", "object": "model", "owned_by": "openai" },
     { "id": "gpt-5.3-codex", "object": "model", "owned_by": "openai" },
     { "id": "gpt-5.3-codex-spark", "object": "model", "owned_by": "openai" },
@@ -875,7 +875,7 @@ data: {"type":"complete","current":3,"total":3,"success":2,"failed":1}
       "api_key_name": "Team A",
       "api_key_masked": "sk-t****...****1234",
       "endpoint": "/v1/chat/completions",
-      "model": "gpt-5.4",
+      "model": "gpt-5.5",
       "status_code": 200,
       "duration_ms": 523,
       "first_token_ms": 150,
@@ -1140,7 +1140,7 @@ curl -X DELETE "http://localhost:8080/api/admin/account-groups/1?force=true" \
 {
   "max_concurrency": 2,
   "global_rpm": 0,
-  "test_model": "gpt-5.4",
+  "test_model": "gpt-5.5",
   "test_concurrency": 50,
   "proxy_url": "",
   "pg_max_conns": 50,
@@ -1172,7 +1172,7 @@ curl -X DELETE "http://localhost:8080/api/admin/account-groups/1?force=true" \
 {
   "max_concurrency": 4,
   "global_rpm": 100,
-  "test_model": "gpt-5.4",
+  "test_model": "gpt-5.5",
   "test_concurrency": 50,
   "proxy_url": "http://proxy.example.com:8080",
   "auto_clean_unauthorized": true,
