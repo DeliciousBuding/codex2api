@@ -668,7 +668,12 @@ const usageTableHeadClass = 'text-[12px] font-semibold'
 const usageTableTextClass = 'text-[14px]'
 const usageTableMonoClass = 'font-mono text-[13px] tabular-nums'
 const usageTableBadgeClass = 'text-[13px]'
-const modelPieColors = ['#2563eb', '#059669', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2', '#db2777']
+const modelPieColors = [
+  '#2563eb', '#059669', '#f59e0b', '#dc2626', '#7c3aed',
+  '#0891b2', '#db2777', '#ea580c', '#4f46e5', '#16a34a',
+  '#ca8a04', '#e11d48', '#0d9488', '#9333ea', '#65a30d',
+  '#0284c7', '#c026d3', '#d97706', '#6366f1', '#14b8a6',
+]
 const modelPieShellClass = 'flex min-h-[196px] flex-col border-l border-border pl-4 max-lg:min-h-0 max-lg:border-l-0 max-lg:border-t max-lg:pl-0 max-lg:pt-3'
 
 type UsageTableColumn = 'status' | 'model' | 'account' | 'apiKey' | 'endpoint' | 'type' | 'token' | 'cost' | 'cached' | 'firstToken' | 'duration' | 'time'
