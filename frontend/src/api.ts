@@ -311,6 +311,8 @@ export const api = {
     }),
   deleteAPIKey: (id: number) =>
     request<MessageResponse>(`/keys/${id}`, { method: 'DELETE' }),
+  updateAPIKey: (id: number, data: { name?: string; allowed_group_ids?: number[] }) =>
+    request<MessageResponse>(`/keys/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   getImagePromptTemplates: (params: { q?: string; tag?: string } = {}) => {
     const sp = new URLSearchParams()
     if (params.q) sp.set('q', params.q)
@@ -424,7 +426,7 @@ export const api = {
     request<{ message: string; inserted: number; total: number }>('/proxies', { method: 'POST', body: JSON.stringify(data) }),
   deleteProxy: (id: number) =>
     request<MessageResponse>(`/proxies/${id}`, { method: 'DELETE' }),
-  updateProxy: (id: number, data: { label?: string; enabled?: boolean }) =>
+  updateProxy: (id: number, data: { url?: string; label?: string; enabled?: boolean }) =>
     request<MessageResponse>(`/proxies/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   batchDeleteProxies: (ids: number[]) =>
     request<{ message: string; deleted: number }>('/proxies/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
