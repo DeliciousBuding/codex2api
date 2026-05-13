@@ -60,31 +60,33 @@ function OsTabs({ active, onChange }: { active: 'unix' | 'windows'; onChange: (v
   )
 }
 
-function SegmentedTabs<T extends string>({ tabs, active, onChange }: {
+function UnderlineTabs<T extends string>({ tabs, active, onChange }: {
   tabs: { value: T; label: string; hint?: string }[]
   active: T
   onChange: (value: T) => void
 }) {
   return (
-    <div className="inline-flex rounded-lg border border-border bg-muted/30 p-1">
-      {tabs.map((tab) => {
-        const selected = active === tab.value
-        return (
+    <div className="border-b border-border">
+      <nav className="-mb-px flex space-x-4">
+        {tabs.map((tab) => {
+          const selected = active === tab.value
+          return (
           <button
             key={tab.value}
             type="button"
             onClick={() => onChange(tab.value)}
-            className={`rounded-md px-3 py-1.5 text-left text-xs font-semibold transition-colors ${
+            className={`whitespace-nowrap border-b-2 px-1 py-2.5 text-sm font-medium transition-colors ${
               selected
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
             }`}
             title={tab.hint}
           >
             {tab.label}
           </button>
-        )
-      })}
+          )
+        })}
+      </nav>
     </div>
   )
 }
@@ -458,7 +460,7 @@ set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
                 />
               </div>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <SegmentedTabs
+                <UnderlineTabs
                   active={activeCurl}
                   onChange={setActiveCurl}
                   tabs={[
