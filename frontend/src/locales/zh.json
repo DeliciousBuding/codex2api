@@ -1470,7 +1470,7 @@
       "clientConfig": "客户端配置",
       "modelMapping": "模型映射",
       "authentication": "认证方式",
-      "modelApi": "模型 API",
+      "modelApi": "API 参考",
       "adminApi": "账号管理 API"
     },
     "quickStart": {
@@ -1534,7 +1534,7 @@
       "adminNote": "管理接口专用"
     },
     "modelApi": {
-      "title": "模型 API",
+      "title": "API 参考",
       "description": "OpenAI Responses、Chat Completions、Anthropic Messages 三种兼容协议，复用同一组上游账号。"
     },
     "adminApi": {

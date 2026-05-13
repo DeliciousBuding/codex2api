@@ -1470,7 +1470,7 @@
       "clientConfig": "Client Setup",
       "modelMapping": "Model Mapping",
       "authentication": "Authentication",
-      "modelApi": "Model API",
+      "modelApi": "API Reference",
       "adminApi": "Admin API"
     },
     "quickStart": {
@@ -1534,7 +1534,7 @@
       "adminNote": "Admin endpoints only"
     },
     "modelApi": {
-      "title": "Model API",
+      "title": "API Reference",
       "description": "OpenAI Responses, Chat Completions, and Anthropic Messages — three compatible surfaces sharing one upstream pool."
     },
     "adminApi": {
