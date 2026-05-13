@@ -1,0 +1,519 @@
+import { resolveTemplate, type QuickTool } from './quickStartTools'
+
+export type EndpointSpec = {
+  id: string
+  method: string
+  path: string
+  title: string
+  description: string
+  curl: string
+  defaultBody?: string
+  responses: { code: number; body: string }[]
+}
+
+export function buildEndpointSpecs(baseUrl: string): EndpointSpec[] {
+  return [
+    {
+      id: 'api-responses',
+      method: 'POST',
+      path: '/v1/responses',
+      title: 'Create Response',
+      description: 'Codex Responses API native endpoint. Streams to and from the upstream service.',
+      defaultBody: `{
+  "model": "gpt-5.4",
+  "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+  "stream": false
+}`,
+      curl: `curl --request POST \\
+  --url ${baseUrl}/v1/responses \\
+  --header 'Authorization: Bearer <token>' \\
+  --header 'Content-Type: application/json' \\
+  --data '{
+  "model": "gpt-5.4",
+  "input": [
+    {"role": "user", "content": [{"type": "input_text", "text": "Hello, what can you do?"}]}
+  ],
+  "stream": true,
+  "reasoning": {"effort": "high"}
+}'`,
+      responses: [
+        { code: 200, body: `{
+  "id": "resp_abc123",
+  "object": "response",
+  "model": "gpt-5.4",
+  "status": "completed",
+  "output": [
+    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hello!"}]}
+  ],
+  "usage": {"input_tokens": 12, "output_tokens": 45, "total_tokens": 57}
+}` },
+        { code: 400, body: `{
+  "error": {"code": "invalid_request", "message": "model is required", "type": "invalid_request_error"}
+}` },
+        { code: 401, body: `{
+  "error": {"code": "invalid_api_key", "message": "Invalid API key provided", "type": "authentication_error"}
+}` },
+        { code: 503, body: `{
+  "error": {"message": "无可用账号，请稍后重试", "type": "server_error", "code": "no_available_account"}
+}` },
+        { code: 429, body: `{
+  "error": {"message": "Rate limit exceeded", "type": "server_error", "code": "account_pool_usage_limit_reached", "resets_in_seconds": 18000}
+}` },
+      ],
+    },
+    {
+      id: 'api-chat',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      title: 'Create Chat Completion',
+      description: 'OpenAI Chat Completions compatible. Translates OpenAI ↔ Codex Responses formats.',
+      defaultBody: `{
+  "model": "gpt-5.4",
+  "messages": [{"role": "user", "content": "Hello"}],
+  "stream": false
+}`,
+      curl: `curl --request POST \\
+  --url ${baseUrl}/v1/chat/completions \\
+  --header 'Authorization: Bearer <token>' \\
+  --header 'Content-Type: application/json' \\
+  --data '{
+  "model": "gpt-5.4",
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"}
+  ],
+  "stream": true,
+  "reasoning_effort": "high"
+}'`,
+      responses: [
+        { code: 200, body: `{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "model": "gpt-5.4",
+  "choices": [
+    {"index": 0, "message": {"role": "assistant", "content": "Hello! How can I help you today?"}, "finish_reason": "stop"}
+  ],
+  "usage": {"prompt_tokens": 18, "completion_tokens": 9, "total_tokens": 27}
+}` },
+        { code: 400, body: `{
+  "error": {"code": "invalid_request", "message": "Request validation failed", "type": "invalid_request_error"}
+}` },
+        { code: 401, body: `{
+  "error": {"code": "invalid_api_key", "message": "Invalid API key provided", "type": "authentication_error"}
+}` },
+      ],
+    },
+    {
+      id: 'api-messages',
+      method: 'POST',
+      path: '/v1/messages',
+      title: 'Create Message',
+      description: 'Anthropic Messages API compatible. Translates Claude ↔ Codex Responses formats. Model names are mapped per the Settings table.',
+      defaultBody: `{
+  "model": "claude-sonnet-4-5-20250514",
+  "max_tokens": 1024,
+  "messages": [{"role": "user", "content": "Hello"}]
+}`,
+      curl: `curl --request POST \\
+  --url ${baseUrl}/v1/messages \\
+  --header 'x-api-key: <token>' \\
+  --header 'Content-Type: application/json' \\
+  --header 'anthropic-version: 2023-06-01' \\
+  --data '{
+  "model": "claude-sonnet-4-5-20250514",
+  "max_tokens": 1024,
+  "messages": [{"role": "user", "content": "Hello, Claude!"}]
+}'`,
+      responses: [
+        { code: 200, body: `{
+  "id": "msg_abc123",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4-5-20250514",
+  "content": [{"type": "text", "text": "Hello! How can I assist you today?"}],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 10, "output_tokens": 12, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+}` },
+        { code: 400, body: `{
+  "type": "error",
+  "error": {"type": "invalid_request_error", "message": "model is required"}
+}` },
+        { code: 401, body: `{
+  "type": "error",
+  "error": {"type": "authentication_error", "message": "Invalid API key"}
+}` },
+        { code: 429, body: `{
+  "type": "error",
+  "error": {"type": "rate_limit_error", "message": "All accounts rate limited"}
+}` },
+      ],
+    },
+    {
+      id: 'api-images-gen',
+      method: 'POST',
+      path: '/v1/images/generations',
+      title: 'Create Image',
+      description: 'OpenAI Images compatible endpoint, backed by Codex Responses image_generation.',
+      defaultBody: `{
+  "model": "gpt-image-2",
+  "prompt": "Draw a small orange cat",
+  "size": "1024x1024",
+  "quality": "high"
+}`,
+      curl: `curl --request POST \\
+  --url ${baseUrl}/v1/images/generations \\
+  --header 'Authorization: Bearer <token>' \\
+  --header 'Content-Type: application/json' \\
+  --data '{
+  "model": "gpt-image-2",
+  "prompt": "Draw a small orange cat",
+  "response_format": "b64_json"
+}'`,
+      responses: [
+        { code: 200, body: `{
+  "created": 1710000000,
+  "model": "gpt-image-2",
+  "data": [{"b64_json": "..."}],
+  "usage": {"images": 1}
+}` },
+      ],
+    },
+    {
+      id: 'api-images-edit',
+      method: 'POST',
+      path: '/v1/images/edits',
+      title: 'Edit Image',
+      description: 'OpenAI Images edit-compatible endpoint. Supports both JSON image_url and multipart uploads.',
+      defaultBody: `{
+  "model": "gpt-image-2",
+  "prompt": "Replace the background with aurora lights",
+  "images": [{"image_url": "https://example.com/source.png"}],
+  "output_format": "png"
+}`,
+      curl: `curl --request POST \\
+  --url ${baseUrl}/v1/images/edits \\
+  --header 'Authorization: Bearer <token>' \\
+  --header 'Content-Type: application/json' \\
+  --data '{
+  "model": "gpt-image-2",
+  "prompt": "Replace the background with aurora lights",
+  "images": [{"image_url": "https://example.com/source.png"}]
+}'`,
+      responses: [
+        { code: 200, body: `{
+  "created": 1710000000,
+  "model": "gpt-image-2",
+  "data": [{"b64_json": "..."}]
+}` },
+      ],
+    },
+    {
+      id: 'api-models',
+      method: 'GET',
+      path: '/v1/models',
+      title: 'List Models',
+      description: 'List models exposed by this proxy.',
+      curl: `curl --request GET \\
+  --url ${baseUrl}/v1/models \\
+  --header 'Authorization: Bearer <token>'`,
+      responses: [
+        { code: 200, body: `{
+  "object": "list",
+  "data": [
+    {"id": "gpt-5.5", "object": "model", "owned_by": "openai"},
+    {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+    {"id": "gpt-5.4-mini", "object": "model", "owned_by": "openai"},
+    {"id": "gpt-5.3-codex", "object": "model", "owned_by": "openai"},
+    {"id": "gpt-5.3-codex-spark", "object": "model", "owned_by": "openai"},
+    {"id": "gpt-5.2", "object": "model", "owned_by": "openai"},
+    {"id": "gpt-image-2", "object": "model", "owned_by": "openai"}
+  ]
+}` },
+        { code: 401, body: `{
+  "error": {"code": "invalid_api_key", "message": "Invalid API key provided", "type": "authentication_error"}
+}` },
+      ],
+    },
+    {
+      id: 'api-health',
+      method: 'GET',
+      path: '/health',
+      title: 'Health Check',
+      description: 'Service status and available account count. Does not require authentication.',
+      curl: `curl --request GET \\
+  --url ${baseUrl}/health`,
+      responses: [
+        { code: 200, body: `{
+  "status": "ok",
+  "available": 5,
+  "total": 8
+}` },
+      ],
+    },
+  ]
+}
+
+export function buildAdminSpecs(baseUrl: string): EndpointSpec[] {
+  return [
+    {
+      id: 'admin-add-rt',
+      method: 'POST',
+      path: '/api/admin/accounts',
+      title: 'Add Account (Refresh Token)',
+      description: 'Add a single account by Refresh Token. Auto-refreshes the AT and joins the pool.',
+      defaultBody: `{
+  "name": "my-account",
+  "refresh_token": "rt_XPqsKO3Ld...",
+  "proxy_url": ""
+}`,
+      curl: `curl --request POST \\
+  --url ${baseUrl}/api/admin/accounts \\
+  --header 'X-Admin-Key: <admin_secret>' \\
+  --header 'Content-Type: application/json' \\
+  --data '{
+  "name": "my-account",
+  "refresh_token": "rt_XPqsKO3Ld...\\nrt_H2qdhY",
+  "proxy_url": ""
+}'`,
+      responses: [
+        { code: 200, body: `{
+  "message": "成功添加 1 个账号",
+  "success": 1,
+  "failed": 0
+}` },
+        { code: 400, body: `{"error": "refresh_token 是必填字段"}` },
+        { code: 401, body: `{"error": "Unauthorized"}` },
+      ],
+    },
+    {
+      id: 'admin-add-at',
+      method: 'POST',
+      path: '/api/admin/accounts/at',
+      title: 'Add Account (Access Token)',
+      description: 'Add an AT-only account. Supports batch via newline-separated tokens.',
+      defaultBody: `{
+  "name": "at-account",
+  "access_token": "eyJhbGciOi...",
+  "proxy_url": ""
+}`,
+      curl: `curl --request POST \\
+  --url ${baseUrl}/api/admin/accounts/at \\
+  --header 'X-Admin-Key: <admin_secret>' \\
+  --header 'Content-Type: application/json' \\
+  --data '{
+  "name": "at-account",
+  "access_token": "eyJhbGciOi...",
+  "proxy_url": ""
+}'`,
+      responses: [
+        { code: 200, body: `{
+  "message": "成功添加 1 个 AT-only 账号",
+  "success": 1,
+  "failed": 0
+}` },
+        { code: 400, body: `{"error": "access_token 是必填字段"}` },
+      ],
+    },
+    {
+      id: 'admin-import',
+      method: 'POST',
+      path: '/api/admin/accounts/import',
+      title: 'Import Accounts (File Upload)',
+      description: 'Batch import via file upload. Supports txt (RT-per-line), json (CLIProxyAPI export), at_txt (AT-per-line). Max 2MB.',
+      curl: `# TXT — one Refresh Token per line
+curl --request POST \\
+  --url ${baseUrl}/api/admin/accounts/import \\
+  --header 'X-Admin-Key: <admin_secret>' \\
+  --form 'file=@tokens.txt' \\
+  --form 'format=txt' \\
+  --form 'proxy_url='
+
+# JSON — CLIProxyAPI credential export
+curl --request POST \\
+  --url ${baseUrl}/api/admin/accounts/import \\
+  --header 'X-Admin-Key: <admin_secret>' \\
+  --form 'file=@credentials.json' \\
+  --form 'format=json' \\
+  --form 'proxy_url='
+
+# AT TXT — one Access Token per line
+curl --request POST \\
+  --url ${baseUrl}/api/admin/accounts/import \\
+  --header 'X-Admin-Key: <admin_secret>' \\
+  --form 'file=@access_tokens.txt' \\
+  --form 'format=at_txt' \\
+  --form 'proxy_url='`,
+      responses: [
+        { code: 200, body: `{
+  "message": "导入完成：成功 5，失败 0，重复 2",
+  "total": 7,
+  "success": 5,
+  "failed": 0,
+  "duplicate": 2
+}` },
+        { code: 400, body: `{"error": "请上传文件（字段名: file）"}` },
+      ],
+    },
+    {
+      id: 'admin-delete',
+      method: 'DELETE',
+      path: '/api/admin/accounts/:id',
+      title: 'Delete Account',
+      description: 'Delete an account by ID and remove it from the pool.',
+      curl: `curl --request DELETE \\
+  --url ${baseUrl}/api/admin/accounts/1 \\
+  --header 'X-Admin-Key: <admin_secret>'`,
+      responses: [
+        { code: 200, body: `{"message": "账号已删除"}` },
+        { code: 404, body: `{"error": "账号不存在"}` },
+      ],
+    },
+    {
+      id: 'admin-list',
+      method: 'GET',
+      path: '/api/admin/accounts',
+      title: 'List Accounts',
+      description: 'List all accounts with status, usage, and metadata.',
+      curl: `curl --request GET \\
+  --url ${baseUrl}/api/admin/accounts \\
+  --header 'X-Admin-Key: <admin_secret>'`,
+      responses: [
+        { code: 200, body: `{
+  "accounts": [
+    {
+      "id": 1,
+      "name": "my-account",
+      "email": "user@example.com",
+      "plan_type": "team",
+      "status": "active",
+      "proxy_url": "",
+      "created_at": "2025-01-01T00:00:00Z",
+      "total_requests": 128,
+      "success_requests": 125
+    }
+  ]
+}` },
+      ],
+    },
+  ]
+}
+
+function endpointToMd(e: EndpointSpec): string {
+  const responses = e.responses.map((r) => `**${r.code}**\n\n\`\`\`json\n${r.body}\n\`\`\``).join('\n\n')
+  return `### ${e.method} ${e.path} — ${e.title}\n\n${e.description}\n\n\`\`\`bash\n${e.curl}\n\`\`\`\n\n${responses}`
+}
+
+export function buildDocsMarkdown(args: {
+  baseUrl: string
+  quickTools: QuickTool[]
+  apiKeyExample: string
+}): string {
+  const { baseUrl, quickTools, apiKeyExample } = args
+  const modelEndpoints = buildEndpointSpecs(baseUrl)
+  const adminEndpoints = buildAdminSpecs(baseUrl)
+
+  const quickToolLines = quickTools.map((tool) => {
+    const resolved = resolveTemplate(tool, baseUrl, apiKeyExample)
+    if (tool.kind === 'protocol') {
+      return `- **${tool.name}** (${tool.badge}) — ${tool.blurb}\n\n  \`${resolved}\``
+    }
+    return `- **${tool.name}** (${tool.badge}) — ${tool.blurb}\n\n  \`\`\`${tool.templateLang}\n${resolved}\n\`\`\``
+  }).join('\n\n')
+
+  return `# Codex2API 使用文档
+
+> 基础地址：\`${baseUrl}\`
+> 默认认证：\`Authorization: Bearer <api-key>\`
+
+---
+
+## 1. 快速接入
+
+挑选你常用的 AI 客户端，复制配置或一键唤起：
+
+${quickToolLines}
+
+### cURL 快速验证
+
+\`\`\`bash
+curl -X POST ${baseUrl}/v1/responses \\
+  -H "Authorization: Bearer ${apiKeyExample}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"Hello"}]}]}'
+\`\`\`
+
+---
+
+## 2. 客户端配置
+
+### Codex CLI
+
+写入 \`~/.codex/config.toml\`：
+
+\`\`\`toml
+model_provider = "OpenAI"
+model = "gpt-5.4"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "${baseUrl}"
+wire_api = "responses"
+requires_openai_auth = true
+\`\`\`
+
+\`~/.codex/auth.json\`：
+
+\`\`\`json
+{ "OPENAI_API_KEY": "${apiKeyExample}" }
+\`\`\`
+
+### Claude Code
+
+环境变量（\`~/.bashrc\` / \`~/.zshrc\`）：
+
+\`\`\`bash
+export ANTHROPIC_BASE_URL="${baseUrl}"
+export ANTHROPIC_AUTH_TOKEN="${apiKeyExample}"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+\`\`\`
+
+或 \`~/.claude/settings.json\`：
+
+\`\`\`json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "${baseUrl}",
+    "ANTHROPIC_AUTH_TOKEN": "${apiKeyExample}",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  }
+}
+\`\`\`
+
+---
+
+## 3. 认证方式
+
+所有端点（除 \`/health\` 外）需要密钥，按以下任一方式传入：
+
+- \`Authorization: Bearer <key>\` — 标准方式（推荐）
+- \`x-api-key: <key>\` — Anthropic SDK 默认
+- \`anthropic-auth-token: <key>\` — 备用兼容
+
+管理接口需要 \`X-Admin-Key: <admin_secret>\`。
+
+---
+
+## 4. 模型 API
+
+${modelEndpoints.map(endpointToMd).join('\n\n')}
+
+---
+
+## 5. 账号管理 API
+
+> 所有管理接口需要 \`X-Admin-Key\` 请求头。
+
+${adminEndpoints.map(endpointToMd).join('\n\n')}
+`
+}
