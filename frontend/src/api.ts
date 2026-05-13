@@ -353,6 +353,8 @@ export const api = {
     const query = sp.toString()
     return request<ImageJobResponse>(`/images/jobs/${id}${query ? `?${query}` : ''}`)
   },
+  deleteImageJob: (id: number) =>
+    request<MessageResponse>(`/images/jobs/${id}`, { method: 'DELETE' }),
   getImageAssets: (params: { page?: number; pageSize?: number } = {}) => {
     const sp = new URLSearchParams()
     if (params.page) sp.set('page', String(params.page))

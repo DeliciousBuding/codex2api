@@ -359,6 +359,46 @@ func (h *Handler) GetImageGenerationJob(c *gin.Context) {
 	c.JSON(http.StatusOK, imageJobResponse{Job: job})
 }
 
+func (h *Handler) DeleteImageGenerationJob(c *gin.Context) {
+	id, err := parsePositiveIDParam(c, "id")
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "无效 ID")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	job, err := h.db.GetImageGenerationJob(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(c, http.StatusNotFound, "任务不存在")
+		return
+	}
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	if job.Status == database.ImageJobQueued || job.Status == database.ImageJobRunning {
+		writeError(c, http.StatusConflict, "任务仍在处理中，完成或失败后才能删除")
+		return
+	}
+	if err := h.db.DeleteImageGenerationJob(ctx, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "任务不存在")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	for _, asset := range job.Assets {
+		if asset.StoragePath != "" {
+			if backend, err := imagestore.Resolve(asset.StoragePath); err == nil {
+				_ = backend.Delete(ctx, asset.StoragePath)
+			}
+		}
+		thumbCache.Invalidate(asset.ID)
+	}
+	writeMessage(c, http.StatusOK, "已删除")
+}
+
 func (h *Handler) attachImageJobAssetCachePayload(job *database.ImageGenerationJob) {
 	if job == nil || len(job.Assets) == 0 {
 		return

@@ -253,6 +253,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/images/jobs", h.CreateImageGenerationJob)
 	api.GET("/images/jobs", h.ListImageGenerationJobs)
 	api.GET("/images/jobs/:id", h.GetImageGenerationJob)
+	api.DELETE("/images/jobs/:id", h.DeleteImageGenerationJob)
 	api.GET("/images/assets", h.ListImageAssets)
 	api.GET("/images/assets/:id/file", h.GetImageAssetFile)
 	api.DELETE("/images/assets/:id", h.DeleteImageAsset)
