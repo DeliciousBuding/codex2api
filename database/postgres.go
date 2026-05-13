@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -31,6 +32,7 @@ type AccountRow struct {
 	Locked                  bool
 	ScoreBiasOverride       sql.NullInt64
 	BaseConcurrencyOverride sql.NullInt64
+	Tags                    []string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 }
@@ -46,6 +48,14 @@ type AccountModelCooldownRow struct {
 type OptionalInt64Slice struct {
 	Set    bool
 	Values []int64
+}
+
+// AccountCredentialIndex holds pre-built sets of existing credentials for fast import dedup.
+type AccountCredentialIndex struct {
+	RefreshTokens map[string]bool
+	AccessTokens  map[string]bool
+	SessionTokens map[string]bool
+	AccountIDs    map[string]bool
 }
 
 // GetCredential 从 credentials JSONB 获取字符串字段
@@ -104,6 +114,7 @@ type DB struct {
 	usageLogBatchSize     int64
 	usageLogFlushInterval int64 // ns
 	logFlushNotify        chan struct{}
+	accountInsertMu       sync.Mutex
 }
 
 const (
@@ -119,6 +130,8 @@ const (
 	minUsageLogFlushIntervalSeconds     = 1
 	maxUsageLogFlushIntervalSeconds     = 300
 )
+
+var ErrDuplicateAccountCredential = errors.New("duplicate account credential")
 
 func NormalizeUsageLogMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
@@ -443,6 +456,25 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS image_quota_total INT NULL;
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS today_used_count INT DEFAULT 0;
 	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS image_quota_reset_at TIMESTAMPTZ NULL;
+	ALTER TABLE accounts ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb;
+
+	CREATE TABLE IF NOT EXISTS account_groups (
+		id          SERIAL PRIMARY KEY,
+		name        VARCHAR(80) UNIQUE NOT NULL,
+		description TEXT DEFAULT '',
+		color       VARCHAR(20) DEFAULT '',
+		sort_order  INT DEFAULT 0,
+		created_at  TIMESTAMPTZ DEFAULT NOW(),
+		updated_at  TIMESTAMPTZ DEFAULT NOW()
+	);
+
+	CREATE TABLE IF NOT EXISTS account_group_members (
+		account_id BIGINT NOT NULL,
+		group_id   BIGINT NOT NULL,
+		PRIMARY KEY (account_id, group_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_account_group_members_group ON account_group_members(group_id);
+	CREATE INDEX IF NOT EXISTS idx_account_group_members_account ON account_group_members(account_id);
 
 	UPDATE accounts
 	SET status = 'deleted',
@@ -518,6 +550,8 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS quota_used DOUBLE PRECISION DEFAULT 0;
 	ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NULL;
 	CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at);
+
+	ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS allowed_group_ids JSONB DEFAULT '[]'::jsonb;
 
 			CREATE TABLE IF NOT EXISTS system_settings (
 				id                 INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
@@ -738,13 +772,14 @@ func (db *DB) migrate(ctx context.Context) error {
 
 // APIKeyRow API 密钥行
 type APIKeyRow struct {
-	ID         int64        `json:"id"`
-	Name       string       `json:"name"`
-	Key        string       `json:"key"`
-	QuotaLimit float64      `json:"quota_limit"`
-	QuotaUsed  float64      `json:"quota_used"`
-	ExpiresAt  sql.NullTime `json:"expires_at"`
-	CreatedAt  time.Time    `json:"created_at"`
+	ID              int64        `json:"id"`
+	Name            string       `json:"name"`
+	Key             string       `json:"key"`
+	QuotaLimit      float64      `json:"quota_limit"`
+	QuotaUsed       float64      `json:"quota_used"`
+	ExpiresAt       sql.NullTime `json:"expires_at"`
+	AllowedGroupIDs []int64      `json:"allowed_group_ids"`
+	CreatedAt       time.Time    `json:"created_at"`
 }
 
 type APIKeyInput struct {
@@ -755,7 +790,7 @@ type APIKeyInput struct {
 	ExpiresAt  sql.NullTime
 }
 
-const apiKeySelectColumns = `id, name, key, created_at, COALESCE(quota_limit, 0), COALESCE(quota_used, 0), expires_at`
+const apiKeySelectColumns = `id, name, key, created_at, COALESCE(quota_limit, 0), COALESCE(quota_used, 0), expires_at, COALESCE(allowed_group_ids, '[]')`
 
 // ListAPIKeys 获取所有 API 密钥
 func (db *DB) ListAPIKeys(ctx context.Context) ([]*APIKeyRow, error) {
@@ -834,6 +869,52 @@ func (row *APIKeyRow) IsQuotaExhausted() bool {
 
 func (row *APIKeyRow) HasAccessConstraints() bool {
 	return row != nil && (row.QuotaLimit > 0 || row.ExpiresAt.Valid)
+}
+
+// UpdateAPIKeyName updates the display name of an API key without changing the key value.
+func (db *DB) UpdateAPIKeyName(ctx context.Context, id int64, name string) error {
+	res, err := db.conn.ExecContext(ctx, `UPDATE api_keys SET name = $1 WHERE id = $2`, name, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// UpdateAPIKeyAllowedGroups persists the allowed-group scope for an API key.
+// Empty slice clears the scope (key may schedule any account).
+func (db *DB) UpdateAPIKeyAllowedGroups(ctx context.Context, id int64, groupIDs []int64) error {
+	payload := encodeInt64SliceJSON(groupIDs)
+	var (
+		res sql.Result
+		err error
+	)
+	if db.isSQLite() {
+		res, err = db.conn.ExecContext(ctx, `UPDATE api_keys SET allowed_group_ids = $1 WHERE id = $2`, payload, id)
+	} else {
+		res, err = db.conn.ExecContext(ctx, `UPDATE api_keys SET allowed_group_ids = $1::jsonb WHERE id = $2`, payload, id)
+	}
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (db *DB) UpdateAPIKeyAllowedGroupIDs(ctx context.Context, id int64, groupIDs []int64) error {
+	return db.UpdateAPIKeyAllowedGroups(ctx, id, groupIDs)
 }
 
 // ==================== System Settings ====================
@@ -1141,9 +1222,12 @@ func (db *DB) InsertProxies(ctx context.Context, urls []string, label string) (i
 		if db.isSQLite() {
 			res, err := db.conn.ExecContext(ctx, `INSERT INTO proxies (url, label) VALUES ($1, $2) ON CONFLICT(url) DO NOTHING`, u, label)
 			if err != nil {
-				continue
+				return inserted, err
 			}
-			affected, _ := res.RowsAffected()
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return inserted, err
+			}
 			if affected > 0 {
 				inserted++
 			}
@@ -1154,6 +1238,10 @@ func (db *DB) InsertProxies(ctx context.Context, urls []string, label string) (i
 			`INSERT INTO proxies (url, label) VALUES ($1, $2) ON CONFLICT (url) DO NOTHING RETURNING id`, u, label).Scan(&id)
 		if err == nil {
 			inserted++
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return inserted, err
 		}
 	}
 	return inserted, nil
@@ -1161,8 +1249,18 @@ func (db *DB) InsertProxies(ctx context.Context, urls []string, label string) (i
 
 // DeleteProxy 删除单个代理
 func (db *DB) DeleteProxy(ctx context.Context, id int64) error {
-	_, err := db.conn.ExecContext(ctx, `DELETE FROM proxies WHERE id = $1`, id)
-	return err
+	res, err := db.conn.ExecContext(ctx, `DELETE FROM proxies WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // DeleteProxies 批量删除代理
@@ -1187,16 +1285,43 @@ func (db *DB) DeleteProxies(ctx context.Context, ids []int64) (int, error) {
 }
 
 // UpdateProxy 更新代理
-func (db *DB) UpdateProxy(ctx context.Context, id int64, label *string, enabled *bool) error {
-	if label != nil {
-		if _, err := db.conn.ExecContext(ctx, `UPDATE proxies SET label = $1 WHERE id = $2`, *label, id); err != nil {
+func (db *DB) UpdateProxy(ctx context.Context, id int64, urlValue *string, label *string, enabled *bool) error {
+	if urlValue == nil && label == nil && enabled == nil {
+		var exists int
+		if err := db.conn.QueryRowContext(ctx, `SELECT 1 FROM proxies WHERE id = $1`, id).Scan(&exists); err != nil {
+			if err == sql.ErrNoRows {
+				return sql.ErrNoRows
+			}
 			return err
 		}
+		return nil
+	}
+	assignments := make([]string, 0, 3)
+	args := make([]interface{}, 0, 4)
+	if urlValue != nil {
+		args = append(args, *urlValue)
+		assignments = append(assignments, fmt.Sprintf("url = $%d", len(args)))
+	}
+	if label != nil {
+		args = append(args, *label)
+		assignments = append(assignments, fmt.Sprintf("label = $%d", len(args)))
 	}
 	if enabled != nil {
-		if _, err := db.conn.ExecContext(ctx, `UPDATE proxies SET enabled = $1 WHERE id = $2`, *enabled, id); err != nil {
-			return err
-		}
+		args = append(args, *enabled)
+		assignments = append(assignments, fmt.Sprintf("enabled = $%d", len(args)))
+	}
+	args = append(args, id)
+	query := fmt.Sprintf("UPDATE proxies SET %s WHERE id = $%d", strings.Join(assignments, ", "), len(args))
+	res, err := db.conn.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }
@@ -2645,7 +2770,7 @@ func (db *DB) GetAccountTimeRangeUsage(ctx context.Context, since time.Time) (ma
 // ListActive 获取所有未删除账号。
 func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 	query := `
-		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), score_bias_override, base_concurrency_override, created_at, updated_at
+		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), created_at, updated_at
 		FROM accounts
 		WHERE status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'
 		ORDER BY id
@@ -2661,6 +2786,7 @@ func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 		a := &AccountRow{}
 		var credRaw interface{}
 		var cooldownUntilRaw interface{}
+		var tagsRaw interface{}
 		var createdAtRaw interface{}
 		var updatedAtRaw interface{}
 		if err := rows.Scan(
@@ -2678,12 +2804,14 @@ func (db *DB) ListActive(ctx context.Context) ([]*AccountRow, error) {
 			&a.Locked,
 			&a.ScoreBiasOverride,
 			&a.BaseConcurrencyOverride,
+			&tagsRaw,
 			&createdAtRaw,
 			&updatedAtRaw,
 		); err != nil {
 			return nil, fmt.Errorf("扫描账号行失败: %w", err)
 		}
 		a.Credentials = decodeCredentials(credRaw)
+		a.Tags = decodeTagsValue(tagsRaw)
 		a.CooldownUntil, err = parseDBNullTimeValue(cooldownUntilRaw)
 		if err != nil {
 			return nil, fmt.Errorf("解析 cooldown_until 失败: %w", err)
@@ -2783,7 +2911,7 @@ func (db *DB) ClearExpiredModelCooldowns(ctx context.Context) error {
 // GetAccountByID 获取未删除账号的完整数据库行。
 func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error) {
 	query := `
-		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), score_bias_override, base_concurrency_override, created_at, updated_at
+		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), created_at, updated_at
 		FROM accounts
 		WHERE id = $1 AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'
 		LIMIT 1
@@ -2791,6 +2919,7 @@ func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error)
 	a := &AccountRow{}
 	var credRaw interface{}
 	var cooldownUntilRaw interface{}
+	var tagsRaw interface{}
 	var createdAtRaw interface{}
 	var updatedAtRaw interface{}
 	err := db.conn.QueryRowContext(ctx, query, id).Scan(
@@ -2808,6 +2937,7 @@ func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error)
 		&a.Locked,
 		&a.ScoreBiasOverride,
 		&a.BaseConcurrencyOverride,
+		&tagsRaw,
 		&createdAtRaw,
 		&updatedAtRaw,
 	)
@@ -2818,6 +2948,7 @@ func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error)
 		return nil, fmt.Errorf("查询账号失败: %w", err)
 	}
 	a.Credentials = decodeCredentials(credRaw)
+	a.Tags = decodeTagsValue(tagsRaw)
 	a.CooldownUntil, err = parseDBNullTimeValue(cooldownUntilRaw)
 	if err != nil {
 		return nil, fmt.Errorf("解析 cooldown_until 失败: %w", err)
@@ -3066,8 +3197,18 @@ func (db *DB) SoftDeleteAccount(ctx context.Context, id int64) error {
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1 AND status <> 'deleted'
 	`
-	_, err := db.conn.ExecContext(ctx, query, id)
-	return err
+	res, err := db.conn.ExecContext(ctx, query, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // BatchSoftDeleteAccounts 批量软删除账号，分批执行避免 SQL 参数过多。
