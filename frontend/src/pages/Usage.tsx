@@ -1054,7 +1054,7 @@ export default function Usage() {
         {/* Logs table */}
         <Card>
           <CardContent className="p-4">
-            <div className="mb-4 flex items-center justify-between gap-3 overflow-x-auto">
+            <div className="mb-4 flex items-center justify-between gap-3 overflow-visible max-lg:overflow-x-auto">
               <div className="flex shrink-0 items-center gap-3">
                 <h3 className="whitespace-nowrap text-base font-semibold text-foreground">{t('usage.requestLogs')}</h3>
                 <div className="inline-flex shrink-0 rounded-lg border border-border bg-muted/50 p-0.5">
@@ -1109,7 +1109,7 @@ export default function Usage() {
             </div>
 
             {/* 筛选栏 */}
-            <div className="toolbar-surface mb-4 flex items-center gap-2 overflow-x-auto whitespace-nowrap">
+            <div className="toolbar-surface mb-4 flex items-center gap-2 overflow-visible whitespace-nowrap max-lg:overflow-x-auto">
               {/* 搜索框 */}
               <div className="relative w-60 shrink-0 max-sm:w-full">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />

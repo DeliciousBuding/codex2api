@@ -1522,7 +1522,7 @@ export default function Accounts() {
         ) : null}
 
         <div className="mb-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_max-content]">
-          <div className="toolbar-surface flex items-center gap-1.5 overflow-x-auto xl:flex-nowrap">
+          <div className="toolbar-surface flex items-center gap-1.5 overflow-visible max-lg:overflow-x-auto xl:flex-nowrap">
             <span className="shrink-0 whitespace-nowrap font-semibold text-foreground">{t('accounts.filter')}</span>
             {([['all', t('accounts.filterAll')], ['normal', t('accounts.filterNormal')], ['rate_limited', t('accounts.filterRateLimited')], ['banned', t('accounts.filterBanned')], ['error', t('accounts.filterError')], ['disabled', t('accounts.filterDisabled')], ['locked', t('accounts.filterLocked')]] as const).map(([key, label]) => (
               <button
@@ -1539,7 +1539,7 @@ export default function Accounts() {
             ))}
           </div>
 
-          <div className="toolbar-surface flex items-center gap-1.5 overflow-x-auto xl:flex-nowrap">
+          <div className="toolbar-surface flex items-center gap-1.5 overflow-visible max-lg:overflow-x-auto xl:flex-nowrap">
             <span className="shrink-0 whitespace-nowrap font-semibold text-foreground">{t('accounts.schedulerView')}</span>
             <SchedulerChip label={t('accounts.healthy')} value={healthyAccounts} tone="success" />
             <SchedulerChip label={t('accounts.warm')} value={warmAccounts} tone="warning" />
@@ -1548,7 +1548,7 @@ export default function Accounts() {
           </div>
         </div>
 
-        <div className="mb-4 flex items-center gap-2 overflow-x-auto max-lg:flex-wrap">
+        <div className="mb-4 flex items-center gap-2 overflow-visible max-lg:flex-wrap max-lg:overflow-x-auto">
           <div className="relative w-64 shrink-0 max-sm:w-full">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
             <Input
