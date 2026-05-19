@@ -1388,6 +1388,7 @@
     "inputImageHint": "上传一张或多张参考图片，AI 将基于这些图片进行修改",
     "inputImageRequired": "图生图模式需要上传参考图片",
     "removeImage": "移除图片",
+    "upload": "上传",
     "loadFailed": "加载生图工作台失败",
     "status": {
       "queued": "排队中",

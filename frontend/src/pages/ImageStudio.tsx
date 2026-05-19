@@ -431,6 +431,28 @@ export default function ImageStudio() {
   const [apiKeyID, setAPIKeyID] = useState('')
   const [templateName, setTemplateName] = useState('')
   const [templateTags, setTemplateTags] = useState('')
+  const [imageToImageMode, setImageToImageMode] = useState(false)
+  const [inputImageDataURLs, setInputImageDataURLs] = useState<string[]>([])
+
+  const handleImageFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    const reads: Promise<string>[] = []
+    for (let i = 0; i < files.length; i++) {
+      reads.push(new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = () => reject(new Error('Failed to read file'))
+        reader.readAsDataURL(files[i])
+      }))
+    }
+    Promise.all(reads).then(dataURLs => {
+      setInputImageDataURLs(prev => [...prev, ...dataURLs])
+    }).catch(() => {
+      showToast(t('images.loadFailed'), 'error')
+    })
+    e.target.value = ''
+  }, [showToast, t])
 
   useEffect(() => {
     if (view && !IMAGE_VIEWS.includes(view as ImageView)) {
@@ -766,6 +788,7 @@ export default function ImageStudio() {
     if (style.trim()) payload.style = style.trim()
     if (apiKeyID) payload.api_key_id = Number(apiKeyID)
     if (selectedTemplateId) payload.template_id = selectedTemplateId
+    if (imageToImageMode && inputImageDataURLs.length > 0) payload.input_images = inputImageDataURLs
     return payload
   }
 
@@ -774,9 +797,15 @@ export default function ImageStudio() {
       showToast(t('images.promptRequired'), 'error')
       return
     }
+    if (imageToImageMode && inputImageDataURLs.length === 0) {
+      showToast(t('images.inputImageRequired'), 'error')
+      return
+    }
     setSubmitting(true)
     try {
-      const res = await api.createImageJob(payload)
+      const res = imageToImageMode
+        ? await api.createImageEditJob(payload)
+        : await api.createImageJob(payload)
       setCurrentJob(res.job)
       await loadJobs()
       showToast(t('images.jobCreated'), 'success')
@@ -1000,7 +1029,9 @@ export default function ImageStudio() {
     outputFormat !== 'png' ||
     background !== 'auto' ||
     upscale ||
-    apiKeyID
+    apiKeyID ||
+    imageToImageMode ||
+    inputImageDataURLs.length > 0
   )
 
   const clearGenerationForm = () => {
@@ -1016,6 +1047,8 @@ export default function ImageStudio() {
     setAPIKeyID('')
     setTemplateName('')
     setTemplateTags('')
+    setImageToImageMode(false)
+    setInputImageDataURLs([])
   }
 
   const changeGenerationModel = (value: string) => {
@@ -1034,6 +1067,28 @@ export default function ImageStudio() {
             disabled={templates.length === 0}
           />
         </Field>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-muted-foreground">{t('images.mode')}:</span>
+          <div className="flex rounded-md border border-input bg-muted/50 p-0.5">
+            <button
+              type="button"
+              className={`rounded-[3px] px-3 py-1 text-xs font-semibold transition-colors ${!imageToImageMode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+              onClick={() => setImageToImageMode(false)}
+            >
+              <ImageIcon className="mr-1 inline-block size-3" />
+              {t('images.textToImage')}
+            </button>
+            <button
+              type="button"
+              className={`rounded-[3px] px-3 py-1 text-xs font-semibold transition-colors ${imageToImageMode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+              onClick={() => setImageToImageMode(true)}
+            >
+              <Upload className="mr-1 inline-block size-3" />
+              {t('images.imageToImage')}
+            </button>
+          </div>
+        </div>
 
         <div className="grid gap-3 md:grid-cols-3">
           <Field label={t('images.model')}><Select value={model} onValueChange={changeGenerationModel} options={IMAGE_MODELS} compact /></Field>
@@ -1057,6 +1112,54 @@ export default function ImageStudio() {
         </Field>
 
         <StylePresetPicker value={style} onChange={setStyle} onApply={() => showToast(t('images.stylePresetApplied'), 'success')} />
+
+        {imageToImageMode && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-muted-foreground">{t('images.inputImage')}</span>
+              <label className="inline-flex cursor-pointer items-center rounded-md px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10 transition-colors">
+                <Upload className="mr-1 size-3" />
+                {t('images.upload')}
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={handleImageFileChange}
+                />
+              </label>
+            </div>
+            {inputImageDataURLs.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {inputImageDataURLs.map((dataURL, index) => (
+                  <div key={`${index}-${dataURL.slice(0, 40)}`} className="group relative">
+                    <img src={dataURL} alt={`Input ${index + 1}`} className="h-20 w-20 rounded-md border border-border object-cover" />
+                    <button
+                      type="button"
+                      className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                      onClick={() => setInputImageDataURLs(prev => prev.filter((_, i) => i !== index))}
+                      title={t('images.removeImage')}
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <label className="flex cursor-pointer flex-col items-center justify-center rounded-md border border-dashed border-border bg-muted/30 py-6 text-center text-xs text-muted-foreground hover:bg-muted/50 transition-colors">
+                <Upload className="mb-1 size-4 opacity-50" />
+                {t('images.inputImageHint')}
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={handleImageFileChange}
+                />
+              </label>
+            )}
+          </div>
+        )}
 
         <label className="flex min-h-0 flex-1 flex-col space-y-1.5">
           <span className="text-xs font-semibold text-muted-foreground">{t('images.prompt')}</span>

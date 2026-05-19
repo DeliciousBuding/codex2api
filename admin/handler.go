@@ -242,7 +242,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PATCH("/image-prompts/:id", h.UpdateImagePromptTemplate)
 	api.DELETE("/image-prompts/:id", h.DeleteImagePromptTemplate)
 	api.POST("/images/jobs", h.CreateImageGenerationJob)
-		api.POST("/images/edit-jobs", h.CreateImageEditJob)
+	api.POST("/images/edit-jobs", h.CreateImageEditJob)
 	api.GET("/images/jobs", h.ListImageGenerationJobs)
 	api.GET("/images/jobs/:id", h.GetImageGenerationJob)
 	api.DELETE("/images/jobs/:id", h.DeleteImageGenerationJob)
