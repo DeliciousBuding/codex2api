@@ -234,12 +234,23 @@ func (s *FastScheduler) insertLocked(acc *Account, now time.Time) {
 		dbID:  acc.DBID,
 		score: score,
 	})
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].score == entries[j].score {
-			return entries[i].dbID < entries[j].dbID
-		}
-		return entries[i].score > entries[j].score
-	})
+	if s.schedulerMode == "remaining_quota" {
+		sort.SliceStable(entries, func(i, j int) bool {
+			ui := entries[i].acc.usagePercentForScheduling()
+			uj := entries[j].acc.usagePercentForScheduling()
+			if ui == uj {
+				return entries[i].dbID < entries[j].dbID
+			}
+			return ui < uj
+		})
+	} else {
+		sort.SliceStable(entries, func(i, j int) bool {
+			if entries[i].score == entries[j].score {
+				return entries[i].dbID < entries[j].dbID
+			}
+			return entries[i].score > entries[j].score
+		})
+	}
 	s.buckets[tier] = entries
 	s.rebuildPositionsLocked(tier)
 }

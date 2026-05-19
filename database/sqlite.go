@@ -87,7 +87,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			fast_scheduler_enabled INTEGER DEFAULT 0,
 			max_retries INTEGER DEFAULT 2,
 			allow_remote_migration INTEGER DEFAULT 0,
-			scheduler_mode TEXT DEFAULT 'round_robin',
+			scheduler_mode TEXT DEFAULT 'round_robin'
 		);`,
 		`CREATE TABLE IF NOT EXISTS proxies (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
