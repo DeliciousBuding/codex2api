@@ -556,7 +556,7 @@
     "creditEnabledHint": "标记该账号拥有额外信用",
     "creditSkipWindow": "跳过用量窗口惩罚",
     "creditSkipWindowHint": "调度时不使用 7d/5h 用量窗口降权",
-    "billed": "成本 (美元)"
+    "billed": "成本"
   },
   "status": {
     "active": "可用",

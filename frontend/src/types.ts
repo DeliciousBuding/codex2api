@@ -78,6 +78,8 @@ export interface AccountRow {
   usage_7d_detail?: AccountUsageWindow
   reset_5h_at?: ISODateString
   reset_7d_at?: ISODateString
+  billed_5h?: number
+  billed_7d?: number
   cooldown_until?: ISODateString
   cooldown_reason?: string
   model_cooldowns?: Array<{

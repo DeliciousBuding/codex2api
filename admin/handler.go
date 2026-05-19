@@ -413,6 +413,8 @@ type accountResponse struct {
 	Usage7dDetail            *accountUsageWindow        `json:"usage_7d_detail,omitempty"`
 	Reset5hAt                string                     `json:"reset_5h_at,omitempty"`
 	Reset7dAt                string                     `json:"reset_7d_at,omitempty"`
+	Billed5h                 *float64                   `json:"billed_5h"`
+	Billed7d                 *float64                   `json:"billed_7d"`
 	ScoreBreakdown           schedulerBreakdownResponse `json:"scheduler_breakdown"`
 	LastUnauthorizedAt       string                     `json:"last_unauthorized_at,omitempty"`
 	LastRateLimitedAt        string                     `json:"last_rate_limited_at,omitempty"`
@@ -629,6 +631,26 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			}
 		}
 		accounts = append(accounts, resp)
+	}
+
+	// 批量查询各账号 5h / 7d 窗口内累计 account_billed
+	for i := range accounts {
+		acc, ok := accountMap[accounts[i].ID]
+		if !ok {
+			continue
+		}
+		if t := acc.GetReset5hAt(); !t.IsZero() {
+			billed, err := h.db.GetAccountBilledSince(ctx, accounts[i].ID, t.Add(-5*time.Hour))
+			if err == nil {
+				accounts[i].Billed5h = &billed
+			}
+		}
+		if t := acc.GetReset7dAt(); !t.IsZero() {
+			billed, err := h.db.GetAccountBilledSince(ctx, accounts[i].ID, t.AddDate(0, 0, -7))
+			if err == nil {
+				accounts[i].Billed7d = &billed
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, accountsResponse{Accounts: accounts})

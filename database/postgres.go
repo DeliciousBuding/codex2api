@@ -2939,6 +2939,15 @@ func (db *DB) GetAccountTimeRangeUsage(ctx context.Context, since time.Time) (ma
 	return result, rows.Err()
 }
 
+// GetAccountBilledSince 返回指定时间戳以来 account_billed 的总和
+func (db *DB) GetAccountBilledSince(ctx context.Context, accountID int64, since time.Time) (float64, error) {
+	var billed float64
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(account_billed), 0) FROM usage_logs WHERE account_id = $1 AND created_at >= $2 AND status_code <> 499`,
+		accountID, db.timeArg(since)).Scan(&billed)
+	return billed, err
+}
+
 // ==================== Accounts ====================
 
 // ListActive 获取所有未删除账号。

@@ -556,7 +556,7 @@
     "creditEnabledHint": "Mark this account as having extra credits",
     "creditSkipWindow": "Skip Usage Window Penalty",
     "creditSkipWindowHint": "Bypass 7d/5h usage window penalties during scheduling",
-    "billed": "Cost (USD)"
+    "billed": "Cost"
   },
   "status": {
     "active": "Available",
