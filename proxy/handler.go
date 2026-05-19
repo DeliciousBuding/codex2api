@@ -540,6 +540,10 @@ func (h *Handler) Responses(c *gin.Context) {
 		// 断流检测 + token 估算
 		totalDuration := int(time.Since(start).Milliseconds())
 		outcome := classifyStreamOutcome(c.Request.Context().Err(), readErr, writeErr, gotTerminal)
+		if gotTerminal && c.Request.Context().Err() != nil {
+			log.Printf("上游已完成响应，但下游客户端已断开 (account %d, /v1/responses): %v，已转发约 %d 字符",
+				account.ID(), c.Request.Context().Err(), deltaCharCount)
+		}
 		if shouldTransparentRetryStream(outcome, attempt, maxRetries, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %d/%d, account %d, /v1/responses): %s", attempt+1, maxRetries+1, account.ID(), outcome.failureMessage)
 			recyclePooledClientForAccount(account)
@@ -888,6 +892,10 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		// 断流检测 + token 估算
 		totalDuration := int(time.Since(start).Milliseconds())
 		outcome := classifyStreamOutcome(c.Request.Context().Err(), readErr, writeErr, gotTerminal)
+		if gotTerminal && c.Request.Context().Err() != nil {
+			log.Printf("上游已完成响应，但下游客户端已断开 (account %d, /v1/chat/completions): %v，已转发约 %d 字符",
+				account.ID(), c.Request.Context().Err(), deltaCharCount)
+		}
 		if shouldTransparentRetryStream(outcome, attempt, maxRetries, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %d/%d, account %d, /v1/chat/completions): %s", attempt+1, maxRetries+1, account.ID(), outcome.failureMessage)
 			recyclePooledClientForAccount(account)
