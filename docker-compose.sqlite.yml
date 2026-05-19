@@ -5,7 +5,9 @@ services:
     image: ghcr.io/james-6-23/codex2api:latest
     container_name: codex2api-sqlite
     ports:
-      - "${CODEX_PORT:-8080}:${CODEX_PORT:-8080}"
+      # 默认仅监听 127.0.0.1（仅本机可访问），避免将 SQLite 服务意外暴露到公网
+      # 如需从其他机器访问，删除 "127.0.0.1:" 前缀即可监听所有网络接口（0.0.0.0）
+      - "127.0.0.1:${CODEX_PORT:-8080}:${CODEX_PORT:-8080}"
     env_file:
       - .env
     volumes:

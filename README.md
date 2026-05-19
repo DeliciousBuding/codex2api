@@ -73,6 +73,7 @@ docker compose -f docker-compose.sqlite.local.yml logs -f codex2api
 - SQLite 镜像版容器名：`codex2api-sqlite`
 - SQLite 本地构建版容器名：`codex2api-sqlite-local`
 - SQLite 轻量版只启动 `codex2api` 单容器，数据保存在 `/data/codex2api.db`
+- SQLite 版默认仅监听 `127.0.0.1`（仅本机访问），避免数据库文件意外暴露到公网。如需外部访问，修改 compose 文件中 `ports` 配置，删除 `127.0.0.1:` 前缀即可
 - `docker compose down` 默认不会删除命名卷；只有 `docker compose down -v`、`docker volume rm` 或 `docker volume prune` 才会删除持久化数据
 - 不同部署模式的数据卷彼此隔离；切换 compose 文件后看到空数据，通常是切到了另一组卷，而不是原卷被自动删除
 
