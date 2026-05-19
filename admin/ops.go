@@ -211,12 +211,14 @@ func (h *Handler) GetOpsOverview(c *gin.Context) {
 	}
 
 	c.JSON(200, opsOverviewResponse{
-		UpdatedAt:      time.Now().Format(time.RFC3339),
-		UptimeSeconds:  int64(time.Since(h.startedAt).Seconds()),
-		DatabaseDriver: h.databaseDriver,
-		DatabaseLabel:  h.databaseLabel,
-		CacheDriver:    h.cacheDriver,
-		CacheLabel:     h.cacheLabel,
+		UpdatedAt:            time.Now().Format(time.RFC3339),
+		UptimeSeconds:        int64(time.Since(h.startedAt).Seconds()),
+		DatabaseDriver:       h.databaseDriver,
+		DatabaseLabel:        h.databaseLabel,
+		CacheDriver:          h.cacheDriver,
+		CacheLabel:           h.cacheLabel,
+		FastSchedulerEnabled: h.store.FastSchedulerEnabled(),
+		SchedulerMode:        h.store.GetSchedulerMode(),
 		CPU: opsCPUResponse{
 			Percent: cpuPercent,
 			Cores:   runtime.NumCPU(),

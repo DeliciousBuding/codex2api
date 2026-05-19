@@ -7,6 +7,16 @@ Codex2API 是一个基于 **Go + Gin + React/Vite** 的 Codex 反向代理与管
 
 它对外提供兼容 OpenAI 风格的接口，并在内部维护一套基于 **Refresh Token 账号池** 的调度、刷新、测试、限流恢复、用量观测与后台管理能力。
 
+核心特性：
+
+- 多账号池调度与动态并发控制
+- 用量统计与按模型计价（支持 GPT-5.5/5.4、Claude、Gemini 家族）
+- Credit 配额账号（可标记跳过用量窗口限制）
+- 调度模式切换（Round Robin / 剩余配额优先）
+- 按 API Key 的独立用量统计
+- OAuth PKCE 授权流程集成
+- SQLite 轻量模式支持
+
 本项目在设计与实现思路上参考并鸣谢 [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 与 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api)。
 
 ---
@@ -132,6 +142,9 @@ Vite 会自动代理 `/api` 和 `/health` 到后端，开发时访问 `http://lo
 | --- | --- |
 | `CODEX_PORT` | HTTP 端口，默认 `8080` |
 | `ADMIN_SECRET` | 管理后台登录密钥；设置后首次访问 `/admin` 会弹出密码输入框 |
+| `CODEX_API_KEYS` | 下游 API Key 鉴权（逗号分隔，留空则不鉴权） |
+| `CODEX_PROXY_URL` | 全局代理地址（如 `http://host.docker.internal:7890`） |
+| `FAST_SCHEDULER_ENABLED` | 启用快速调度器（`true`） |
 | `DATABASE_DRIVER` | 数据库驱动，支持 `postgres` / `sqlite` |
 | `DATABASE_PATH` | SQLite 数据文件路径，`DATABASE_DRIVER=sqlite` 时生效 |
 | `DATABASE_HOST` | PostgreSQL 主机，`DATABASE_DRIVER=postgres` 时生效 |
@@ -152,7 +165,11 @@ Vite 会自动代理 `/api` 和 `/health` 到后端，开发时访问 `http://lo
 
 以下参数**保存在数据库 `SystemSettings` 中**，通过管理台设置页面修改：
 
-`MaxConcurrency`、`GlobalRPM`、`TestModel`、`TestConcurrency`、`ProxyURL`、`PgMaxConns`、`RedisPoolSize`、`AdminSecret`、自动清理开关等。
+`MaxConcurrency`、`GlobalRPM`、`TestModel`、`TestConcurrency`、`ProxyURL`、`PgMaxConns`、`RedisPoolSize`、`AdminSecret`、`SchedulerMode`、自动清理开关等。
+
+| 设置项 | 说明 | 默认值 |
+| --- | --- | --- |
+| `SchedulerMode` | 调度模式：`round_robin`（轮询）或 `remaining_quota`（剩余配额优先） | `round_robin` |
 
 首次启动时程序会自动写入默认设置。
 
@@ -264,6 +281,49 @@ Vite 会自动代理 `/api` 和 `/health` 到后端，开发时访问 `http://lo
 - `GET /api/admin/ops/overview` — 系统运行态与连接池概览
 - `/admin/ops/scheduler` — 前端调度看板
 
+**调度模式：**
+
+系统支持两种调度模式，通过 `SchedulerMode` 设置切换：
+
+| 模式 | 说明 |
+| --- | --- |
+| `round_robin` | 默认，按健康层级轮询分配请求 |
+| `remaining_quota` | 优先分配给剩余配额最多的账号，减少热点 |
+
+### 用量与计费
+
+系统会记录每次请求的 Token 用量，并内置模型计价进行成本估算。
+
+**支持的计费模型家族：**
+
+- **GPT 系列**：GPT-5.5（$5/$30/M）、GPT-5.4、GPT-5.4-mini、GPT-5.4-nano、GPT-5.3-codex、GPT-4o 等
+- **Claude 系列**：Opus（4.x $5/$25/M）、Sonnet（$3/$15/M）、Haiku（$0.25/$1.25/M）
+- **Gemini 系列**：Gemini 3.1 Pro（$2/$12/M）
+- **未匹配模型**：默认 $1/$2/M 兜底
+
+**Service Tier 成本倍率：**
+
+| Tier | 倍率 |
+| --- | --- |
+| `default` | 1x |
+| `priority` | 2x（或使用模型专属 priority 价格） |
+| `flex` | 0.5x |
+
+定价数据参考各厂商官方 API 文档。费用估算结果仅在用量统计页面展示，实际费用以厂商账单为准。
+
+### Credit 配额账号
+
+`credit_enabled` 标记的账号会被视为拥有额外 credit 配额：
+- 账号导入时可标记 `credit_skip_usage_window`，跳过用量窗口检测
+- 设置后调度器不再因用量窗口限制而排除该账号
+- 通过管理台账号管理或 API 进行标记
+
+### API Key 用量追踪
+
+每条使用日志记录关联的 `api_key_id`，支持：
+- 按 API Key 维度统计请求与 Token 用量
+- 在用量统计页面区分不同下游客户的消耗
+
 ---
 
 ## 目录结构
@@ -298,6 +358,9 @@ codex2api/
 - 本地手动构建 Go 二进制前需先执行 `frontend/` 的 `npm run build`
 - `.env` 只负责端口、数据库、Redis 等物理层配置；业务参数在管理台数据库里维护
 - API Key 以数据库为准，在管理台中配置
+- SQLite 模式默认仅监听 `127.0.0.1`，避免数据库直接暴露公网
+- 上游请求使用独立 context，客户端断连不再导致误报 499
+- OAuth 授权流程在未配置代理时自动回退到系统代理（`HTTPS_PROXY` / `HTTP_PROXY` 环境变量）
 
 ---
 

@@ -74,6 +74,12 @@ export default function Operations() {
               <SummaryPill label={t('ops.accountPool')} value={`${overview.runtime.available_accounts} / ${overview.runtime.total_accounts}`} />
               <SummaryPill label={t('ops.todayRequests')} value={formatNumber(overview.traffic.today_requests)} />
               <SummaryPill label={t('ops.todayErrorRate')} value={`${overview.traffic.error_rate.toFixed(1)}%`} />
+              <SummaryPill
+                label={t('ops.schedulerMode')}
+                value={overview.scheduler_mode === 'remaining_quota'
+                  ? t('settings.schedulerModeRemainingQuota')
+                  : t('settings.schedulerModeRoundRobin')}
+              />
             </div>
 
             <Card>

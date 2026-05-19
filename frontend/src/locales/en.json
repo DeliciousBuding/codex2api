@@ -300,7 +300,12 @@
     "oauthNamePlaceholder": "Leave blank to use email as name",
     "oauthProxyUrl": "Proxy URL (optional)",
     "oauthProxyUrlPlaceholder": "e.g. http://127.0.0.1:7890",
-    "oauthRestart": "Restart Authorization"
+    "oauthRestart": "Restart Authorization",
+    "creditEnabled": "Credit Enabled",
+    "creditSkipUsageWindow": "Skip Usage Window",
+    "creditBadge": "Credit",
+    "creditUpdateSuccess": "Credit settings updated",
+    "creditUpdateFailed": "Credit settings update failed: {{error}}"
   },
   "status": {
     "active": "Available",
@@ -347,6 +352,8 @@
     "tpm": "TPM",
     "tpmToday": "Today {{value}}",
     "justStarted": "Just started",
+    "schedulerMode": "Scheduler Mode",
+    "fastScheduler": "Fast Scheduler",
     "days": "d",
     "hours": "h",
     "minutes": "m"

@@ -265,6 +265,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS max_retries INT DEFAULT 2;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS allow_remote_migration BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_clean_error BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS scheduler_mode VARCHAR(20) DEFAULT 'round_robin';
 
 	CREATE TABLE IF NOT EXISTS proxies (
 		id         SERIAL PRIMARY KEY,
@@ -357,8 +358,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(fast_scheduler_enabled, false),
 		       COALESCE(max_retries, 2),
 		       COALESCE(allow_remote_migration, false),
-			       COALESCE(auto_clean_error, false),
-			       COALESCE(scheduler_mode, 'round_robin')
+		       COALESCE(auto_clean_error, false),
+		       COALESCE(scheduler_mode, 'round_robin'),
 		FROM system_settings WHERE id = 1
 	`).Scan(
 		&s.MaxConcurrency, &s.GlobalRPM, &s.TestModel, &s.TestConcurrency, &s.ProxyURL, &s.PgMaxConns, &s.RedisPoolSize,
@@ -378,9 +379,9 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		INSERT INTO system_settings (
 			id, max_concurrency, global_rpm, test_model, test_concurrency, proxy_url, pg_max_conns, redis_pool_size,
 			auto_clean_unauthorized, auto_clean_rate_limited, admin_secret, auto_clean_full_usage, proxy_pool_enabled,
-			fast_scheduler_enabled, max_retries, allow_remote_migration, auto_clean_error
+			fast_scheduler_enabled, max_retries, allow_remote_migration, auto_clean_error, scheduler_mode
 		)
-		VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (id) DO UPDATE SET
 			max_concurrency         = EXCLUDED.max_concurrency,
 			global_rpm              = EXCLUDED.global_rpm,
@@ -397,10 +398,11 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 			fast_scheduler_enabled  = EXCLUDED.fast_scheduler_enabled,
 			max_retries             = EXCLUDED.max_retries,
 			allow_remote_migration  = EXCLUDED.allow_remote_migration,
-			auto_clean_error        = EXCLUDED.auto_clean_error
+			auto_clean_error        = EXCLUDED.auto_clean_error,
+			scheduler_mode          = EXCLUDED.scheduler_mode
 	`, s.MaxConcurrency, s.GlobalRPM, s.TestModel, s.TestConcurrency, s.ProxyURL, s.PgMaxConns, s.RedisPoolSize,
 		s.AutoCleanUnauthorized, s.AutoCleanRateLimited, s.AdminSecret, s.AutoCleanFullUsage, s.ProxyPoolEnabled,
-		s.FastSchedulerEnabled, s.MaxRetries, s.AllowRemoteMigration, s.AutoCleanError)
+		s.FastSchedulerEnabled, s.MaxRetries, s.AllowRemoteMigration, s.AutoCleanError, s.SchedulerMode)
 	return err
 }
 
@@ -1427,6 +1429,13 @@ func (db *DB) ClearError(ctx context.Context, id int64) error {
 func (db *DB) SetCooldown(ctx context.Context, id int64, reason string, until time.Time) error {
 	query := `UPDATE accounts SET cooldown_reason = $1, cooldown_until = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`
 	_, err := db.conn.ExecContext(ctx, query, reason, until, id)
+	return err
+}
+
+// UpdateAccountCredit 更新账号 credit 设置
+func (db *DB) UpdateAccountCredit(ctx context.Context, id int64, creditEnabled, creditSkipUsageWindow bool) error {
+	query := `UPDATE accounts SET credit_enabled = $1, credit_skip_usage_window = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3`
+	_, err := db.conn.ExecContext(ctx, query, creditEnabled, creditSkipUsageWindow, id)
 	return err
 }
 

@@ -182,6 +182,9 @@ export const api = {
     request<OAuthURLResponse>('/oauth/generate-auth-url', { method: 'POST', body: JSON.stringify(data) }),
   exchangeOAuthCode: (data: { session_id: string; code: string; state: string; name?: string; proxy_url?: string }) =>
     request<OAuthExchangeResponse>('/oauth/exchange-code', { method: 'POST', body: JSON.stringify(data) }),
+  // Credit settings
+  updateAccountCredit: (id: number, data: { credit_enabled?: boolean; credit_skip_usage_window?: boolean }) =>
+    request<{ message: string }>(`/accounts/${id}/credit`, { method: 'PUT', body: JSON.stringify(data) }),
 }
 
 export interface ProxyRow {

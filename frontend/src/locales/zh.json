@@ -300,7 +300,12 @@
     "oauthNamePlaceholder": "留空则使用邮箱作为名称",
     "oauthProxyUrl": "代理地址（可选）",
     "oauthProxyUrlPlaceholder": "例如 http://127.0.0.1:7890",
-    "oauthRestart": "重新发起授权"
+    "oauthRestart": "重新发起授权",
+    "creditEnabled": "额度账号",
+    "creditSkipUsageWindow": "跳过用量窗口",
+    "creditBadge": "额度",
+    "creditUpdateSuccess": "Credit 设置已更新",
+    "creditUpdateFailed": "Credit 设置更新失败：{{error}}"
   },
   "status": {
     "active": "可用",
@@ -347,6 +352,8 @@
     "tpm": "TPM",
     "tpmToday": "今日 {{value}}",
     "justStarted": "刚刚启动",
+    "schedulerMode": "调度模式",
+    "fastScheduler": "快速调度",
     "days": "天",
     "hours": "小时",
     "minutes": "分钟"

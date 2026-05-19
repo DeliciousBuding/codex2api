@@ -24,6 +24,8 @@ export interface AccountRow {
   health_tier?: string
   scheduler_score?: number
   dynamic_concurrency_limit?: number
+  credit_enabled?: boolean
+  credit_skip_usage_window?: boolean
   scheduler_breakdown?: {
     unauthorized_penalty: number
     rate_limit_penalty: number
@@ -101,6 +103,8 @@ export interface OpsOverviewResponse {
   database_label: string
   cache_driver: string
   cache_label: string
+  fast_scheduler_enabled: boolean
+  scheduler_mode: string
   cpu: {
     percent: number
     cores: number
@@ -203,6 +207,7 @@ export interface UsageStats {
 export interface UsageLog {
   id: number
   account_id: number
+  api_key_id?: number
   endpoint: string
   model: string
   prompt_tokens: number

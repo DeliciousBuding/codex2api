@@ -1355,6 +1355,32 @@ func (s *Store) FindByID(dbID int64) *Account {
 	return nil
 }
 
+// UpdateAccountCredit 更新账号 credit 设置（内存 + 数据库）
+func (s *Store) UpdateAccountCredit(dbID int64, creditEnabled, creditSkipUsageWindow bool) error {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return fmt.Errorf("账号 ID %d 不在内存池中", dbID)
+	}
+
+	acc.mu.Lock()
+	acc.CreditEnabled = creditEnabled
+	acc.CreditSkipUsageWindow = creditSkipUsageWindow
+	acc.mu.Unlock()
+
+	// 持久化到数据库
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.db.UpdateAccountCredit(ctx, dbID, creditEnabled, creditSkipUsageWindow); err != nil {
+		return fmt.Errorf("持久化 credit 设置失败: %w", err)
+	}
+
+	// 更新快速调度器中的账号状态
+	if s.fastSchedulerEnabled.Load() {
+		s.fastSchedulerUpdate(acc)
+	}
+	return nil
+}
+
 // MarkCooldown 标记账号进入冷却，并持久化到数据库
 func (s *Store) MarkCooldown(acc *Account, duration time.Duration, reason string) {
 	if acc == nil {

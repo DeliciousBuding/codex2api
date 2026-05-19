@@ -89,6 +89,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/:id/refresh", h.RefreshAccount)
 	api.GET("/accounts/:id/test", h.TestConnection)
 	api.GET("/accounts/:id/usage", h.GetAccountUsage)
+	api.PUT("/accounts/:id/credit", h.UpdateAccountCredit)
 	api.POST("/accounts/batch-test", h.BatchTest)
 	api.POST("/accounts/clean-banned", h.CleanBanned)
 	api.POST("/accounts/clean-rate-limited", h.CleanRateLimited)
@@ -207,31 +208,33 @@ func (h *Handler) GetStats(c *gin.Context) {
 // ==================== Accounts ====================
 
 type accountResponse struct {
-	ID                 int64                      `json:"id"`
-	Name               string                     `json:"name"`
-	Email              string                     `json:"email"`
-	PlanType           string                     `json:"plan_type"`
-	Status             string                     `json:"status"`
-	HealthTier         string                     `json:"health_tier"`
-	SchedulerScore     float64                    `json:"scheduler_score"`
-	ConcurrencyCap     int64                      `json:"dynamic_concurrency_limit"`
-	ProxyURL           string                     `json:"proxy_url"`
-	CreatedAt          string                     `json:"created_at"`
-	UpdatedAt          string                     `json:"updated_at"`
-	ActiveRequests     int64                      `json:"active_requests"`
-	TotalRequests      int64                      `json:"total_requests"`
-	LastUsedAt         string                     `json:"last_used_at"`
-	SuccessRequests    int64                      `json:"success_requests"`
-	ErrorRequests      int64                      `json:"error_requests"`
-	UsagePercent7d     *float64                   `json:"usage_percent_7d"`
-	UsagePercent5h     *float64                   `json:"usage_percent_5h"`
-	Reset5hAt          string                     `json:"reset_5h_at,omitempty"`
-	Reset7dAt          string                     `json:"reset_7d_at,omitempty"`
-	ScoreBreakdown     schedulerBreakdownResponse `json:"scheduler_breakdown"`
-	LastUnauthorizedAt string                     `json:"last_unauthorized_at,omitempty"`
-	LastRateLimitedAt  string                     `json:"last_rate_limited_at,omitempty"`
-	LastTimeoutAt      string                     `json:"last_timeout_at,omitempty"`
-	LastServerErrorAt  string                     `json:"last_server_error_at,omitempty"`
+	ID                    int64                      `json:"id"`
+	Name                  string                     `json:"name"`
+	Email                 string                     `json:"email"`
+	PlanType              string                     `json:"plan_type"`
+	Status                string                     `json:"status"`
+	HealthTier            string                     `json:"health_tier"`
+	SchedulerScore        float64                    `json:"scheduler_score"`
+	ConcurrencyCap        int64                      `json:"dynamic_concurrency_limit"`
+	CreditEnabled         bool                       `json:"credit_enabled"`
+	CreditSkipUsageWindow bool                       `json:"credit_skip_usage_window"`
+	ProxyURL              string                     `json:"proxy_url"`
+	CreatedAt             string                     `json:"created_at"`
+	UpdatedAt             string                     `json:"updated_at"`
+	ActiveRequests        int64                      `json:"active_requests"`
+	TotalRequests         int64                      `json:"total_requests"`
+	LastUsedAt            string                     `json:"last_used_at"`
+	SuccessRequests       int64                      `json:"success_requests"`
+	ErrorRequests         int64                      `json:"error_requests"`
+	UsagePercent7d        *float64                   `json:"usage_percent_7d"`
+	UsagePercent5h        *float64                   `json:"usage_percent_5h"`
+	Reset5hAt             string                     `json:"reset_5h_at,omitempty"`
+	Reset7dAt             string                     `json:"reset_7d_at,omitempty"`
+	ScoreBreakdown        schedulerBreakdownResponse `json:"scheduler_breakdown"`
+	LastUnauthorizedAt    string                     `json:"last_unauthorized_at,omitempty"`
+	LastRateLimitedAt     string                     `json:"last_rate_limited_at,omitempty"`
+	LastTimeoutAt         string                     `json:"last_timeout_at,omitempty"`
+	LastServerErrorAt     string                     `json:"last_server_error_at,omitempty"`
 }
 
 type schedulerBreakdownResponse struct {
@@ -288,6 +291,8 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			resp.HealthTier = debug.HealthTier
 			resp.SchedulerScore = debug.SchedulerScore
 			resp.ConcurrencyCap = debug.DynamicConcurrencyLimit
+			resp.CreditEnabled = acc.CreditEnabled
+			resp.CreditSkipUsageWindow = acc.CreditSkipUsageWindow
 			resp.ScoreBreakdown = schedulerBreakdownResponse{
 				UnauthorizedPenalty: debug.Breakdown.UnauthorizedPenalty,
 				RateLimitPenalty:    debug.Breakdown.RateLimitPenalty,
@@ -736,6 +741,40 @@ func (h *Handler) GetAccountUsage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, detail)
+}
+
+// UpdateAccountCredit 更新账号 credit 设置
+func (h *Handler) UpdateAccountCredit(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "无效的账号 ID")
+		return
+	}
+
+	var req struct {
+		CreditEnabled         *bool `json:"credit_enabled"`
+		CreditSkipUsageWindow *bool `json:"credit_skip_usage_window"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+
+	creditEnabled := false
+	if req.CreditEnabled != nil {
+		creditEnabled = *req.CreditEnabled
+	}
+	creditSkipUsageWindow := false
+	if req.CreditSkipUsageWindow != nil {
+		creditSkipUsageWindow = *req.CreditSkipUsageWindow
+	}
+
+	if err := h.store.UpdateAccountCredit(id, creditEnabled, creditSkipUsageWindow); err != nil {
+		writeError(c, http.StatusInternalServerError, "更新 credit 设置失败: "+err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "credit 设置已更新"})
 }
 
 // DeleteAccount 删除账号

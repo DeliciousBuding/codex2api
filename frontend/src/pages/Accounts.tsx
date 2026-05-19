@@ -769,7 +769,14 @@ export default function Accounts() {
                         </TableCell>
                         <TableCell>
                           <div className="space-y-1">
-                            <StatusBadge status={account.status} />
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <StatusBadge status={account.status} />
+                              {account.credit_enabled && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2 py-0.5 text-[11px] font-semibold text-violet-600 dark:bg-violet-500/20 dark:text-violet-300">
+                                  {t('accounts.creditBadge')}
+                                </span>
+                              )}
+                            </div>
                             <div className="text-[11px] text-muted-foreground">
                               {t('accounts.healthSummary', {
                                 health: formatHealthTier(account.health_tier, t),
