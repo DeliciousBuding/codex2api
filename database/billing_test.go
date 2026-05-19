@@ -33,7 +33,7 @@ func TestGetModelPricingUsesSub2APICodexFallbacks(t *testing.T) {
 		{model: "gpt-5.4-mini-20260401", wantInput: 0.75, wantOutput: 4.5},
 		{model: "gpt-5.3-codex-spark", wantInput: 1.25, wantOutput: 10.0},
 		{model: "gpt-5.3-codex", wantInput: 1.75, wantOutput: 14.0},
-		{model: "gpt-5.5", wantInput: 2.5, wantOutput: 15.0},
+		{model: "gpt-5.5", wantInput: 5.0, wantOutput: 30.0},
 	}
 
 	for _, tt := range tests {
@@ -134,16 +134,18 @@ func TestCalculateCostBreakdownExposesDisplayFields(t *testing.T) {
 	assertFloatEqual(t, got.ServiceTierCostMultiplier, 0.5)
 }
 
-func TestGPT55PricingMatchesGPT54Fallback(t *testing.T) {
+func TestGPT55PricingDoesNotMatchGPT54(t *testing.T) {
 	gpt54 := getModelPricing("gpt-5.4")
 	gpt55 := getModelPricing("gpt-5.5")
 
-	assertFloatEqual(t, gpt55.InputPricePerMToken, gpt54.InputPricePerMToken)
-	assertFloatEqual(t, gpt55.OutputPricePerMToken, gpt54.OutputPricePerMToken)
-	assertFloatEqual(t, gpt55.CacheReadPricePerMToken, gpt54.CacheReadPricePerMToken)
-	assertFloatEqual(t, gpt55.InputPricePerMTokenPriority, gpt54.InputPricePerMTokenPriority)
-	assertFloatEqual(t, gpt55.OutputPricePerMTokenPriority, gpt54.OutputPricePerMTokenPriority)
-	assertFloatEqual(t, gpt55.CacheReadPricePerMTokenPriority, gpt54.CacheReadPricePerMTokenPriority)
+	// gpt-5.5 is 2x gpt-5.4: $5/$30 vs $2.5/$15
+	assertFloatEqual(t, gpt55.InputPricePerMToken, 5.0)
+	assertFloatEqual(t, gpt55.OutputPricePerMToken, 30.0)
+	assertFloatEqual(t, gpt55.CacheReadPricePerMToken, 0.5)
+	assertFloatEqual(t, gpt55.InputPricePerMTokenPriority, 12.5)
+	assertFloatEqual(t, gpt55.OutputPricePerMTokenPriority, 75.0)
+	assertFloatEqual(t, gpt55.CacheReadPricePerMTokenPriority, 1.25)
+	_ = gpt54
 }
 
 func TestSparkPricingUsesGpt51CodexFallback(t *testing.T) {
