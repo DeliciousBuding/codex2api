@@ -221,6 +221,8 @@ export const api = {
   batchResetStatus: (ids: number[]) =>
     request<{ message: string; success: number; failed: number }>('/accounts/batch-reset-status', { method: 'POST', body: JSON.stringify({ ids }) }),
   getAccountUsage: (id: number) =>
+	  updateAccountCredit: (id: number, data: { credit_enabled: boolean; credit_skip_usage_window: boolean }) =>
+	    request<MessageResponse>(`/accounts/${id}/credit`, { method: 'PATCH', body: JSON.stringify(data) }),
     request<AccountUsageDetail>(`/accounts/${id}/usage`),
   getHealth: () => request<HealthResponse>('/health'),
   getOpsOverview: () => request<OpsOverviewResponse>('/ops/overview'),

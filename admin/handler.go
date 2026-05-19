@@ -203,6 +203,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/test", h.TestConnection)
 	api.GET("/accounts/:id/usage", h.GetAccountUsage)
 	api.GET("/accounts/:id/auth-json", h.GetAccountAuthJSON)
+	api.PATCH("/accounts/:id/credit", h.UpdateAccountCredit)
 	api.POST("/accounts/batch-test", h.BatchTest)
 	api.POST("/accounts/batch-reset-status", h.BatchResetStatus)
 	api.POST("/accounts/clean-banned", h.CleanBanned)
@@ -382,6 +383,8 @@ type accountResponse struct {
 	Status                   string                     `json:"status"`
 	ErrorMessage             string                     `json:"error_message,omitempty"`
 	ATOnly                   bool                       `json:"at_only"`
+	CreditEnabled            bool                       `json:"credit_enabled"`
+	CreditSkipUsageWindow    bool                       `json:"credit_skip_usage_window"`
 	AccountType              string                     `json:"account_type,omitempty"`
 	OpenAIResponsesAPI       bool                       `json:"openai_responses_api,omitempty"`
 	BaseURL                  string                     `json:"base_url,omitempty"`
@@ -502,6 +505,8 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			Status:                   row.Status,
 			ErrorMessage:             row.ErrorMessage,
 			ATOnly:                   !isOpenAIResponsesAccount && row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",
+		CreditEnabled:            row.CreditEnabled,
+		CreditSkipUsageWindow:    row.CreditSkipUsageWindow,
 			AccountType:              row.Type,
 			OpenAIResponsesAPI:       isOpenAIResponsesAccount,
 			BaseURL:                  baseURL,
