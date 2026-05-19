@@ -524,7 +524,9 @@
     "responsesApi": "Responses API",
     "modelList": "Model List",
     "createFailed": "Create failed",
-    "deleteFailed": "Delete failed"
+    "deleteFailed": "Delete failed",
+    "creditEnabledDesc": "When enabled, this account is marked as a credit account and will be prioritized for its remaining quota during scheduling.",
+    "creditSkipUsageWindowDesc": "Skip usage window checks, allowing this account to continue being scheduled even when usage is full."
   },
   "proxies": {
     "description": "Manage proxy pool with round-robin distribution to accounts",

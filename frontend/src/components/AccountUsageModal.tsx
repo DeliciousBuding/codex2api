@@ -18,6 +18,9 @@ export default function AccountUsageModal({ account, onClose }: Props) {
   const [data, setData] = useState<AccountUsageDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [creditEnabled, setCreditEnabled] = useState(account.credit_enabled ?? false)
+  const [creditSkipUsageWindow, setCreditSkipUsageWindow] = useState(account.credit_skip_usage_window ?? false)
+  const [savingCredit, setSavingCredit] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -33,6 +36,29 @@ export default function AccountUsageModal({ account, onClose }: Props) {
   }, [account.id])
 
   useEffect(() => { void load() }, [load])
+
+  const handleCreditToggle = async (field: 'credit_enabled' | 'credit_skip_usage_window') => {
+    setSavingCredit(true)
+    try {
+      const newCreditEnabled = field === 'credit_enabled' ? !creditEnabled : creditEnabled
+      const newCreditSkipUsageWindow = field === 'credit_skip_usage_window' ? !creditSkipUsageWindow : creditSkipUsageWindow
+      await api.updateAccountCredit(account.id, {
+        credit_enabled: newCreditEnabled,
+        credit_skip_usage_window: newCreditSkipUsageWindow,
+      })
+      if (field === 'credit_enabled') {
+        setCreditEnabled(newCreditEnabled)
+        account.credit_enabled = newCreditEnabled
+      } else {
+        setCreditSkipUsageWindow(newCreditSkipUsageWindow)
+        account.credit_skip_usage_window = newCreditSkipUsageWindow
+      }
+    } catch (err) {
+      // silently fail, the toggle will revert
+    } finally {
+      setSavingCredit(false)
+    }
+  }
 
   const title = t('accounts.usageDetailTitle') + ' — ' + (account.email || account.name || `#${account.id}`)
 
@@ -98,6 +124,55 @@ export default function AccountUsageModal({ account, onClose }: Props) {
           </div>
         </div>
       )}
+
+      {/* Credit 设置 */}
+      <div className="mt-4 pt-4 border-t border-border">
+        <h4 className="text-sm font-semibold mb-3">{t('accounts.creditBadge')}</h4>
+        <div className="space-y-3">
+          <label className="flex items-center justify-between gap-3 rounded-lg border border-border px-3.5 py-2.5 cursor-pointer hover:bg-muted/30 transition-colors">
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-foreground">{t('accounts.creditEnabled')}</div>
+              <div className="text-[11px] text-muted-foreground mt-0.5">{t('settings.creditEnabledDesc')}</div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={creditEnabled}
+              disabled={savingCredit}
+              onClick={() => void handleCreditToggle('credit_enabled')}
+              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                creditEnabled ? 'bg-violet-500' : 'bg-muted'
+              }`}
+            >
+              <span
+                className="inline-block size-3.5 rounded-full bg-white shadow-sm transition-transform"
+                style={{ transform: creditEnabled ? 'translateX(18px)' : 'translateX(3px)' }}
+              />
+            </button>
+          </label>
+          <label className="flex items-center justify-between gap-3 rounded-lg border border-border px-3.5 py-2.5 cursor-pointer hover:bg-muted/30 transition-colors">
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-foreground">{t('accounts.creditSkipUsageWindow')}</div>
+              <div className="text-[11px] text-muted-foreground mt-0.5">{t('settings.creditSkipUsageWindowDesc')}</div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={creditSkipUsageWindow}
+              disabled={savingCredit}
+              onClick={() => void handleCreditToggle('credit_skip_usage_window')}
+              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                creditSkipUsageWindow ? 'bg-violet-500' : 'bg-muted'
+              }`}
+            >
+              <span
+                className="inline-block size-3.5 rounded-full bg-white shadow-sm transition-transform"
+                style={{ transform: creditSkipUsageWindow ? 'translateX(18px)' : 'translateX(3px)' }}
+              />
+            </button>
+          </label>
+        </div>
+      </div>
     </Modal>
   )
 }

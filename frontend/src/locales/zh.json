@@ -529,7 +529,9 @@
     "responsesApi": "Responses API",
     "modelList": "模型列表",
     "createFailed": "创建失败",
-    "deleteFailed": "删除失败"
+    "deleteFailed": "删除失败",
+    "creditEnabledDesc": "开启后，此账号被标记为额度账号，调度时会优先使用其剩余额度。",
+    "creditSkipUsageWindowDesc": "跳过用量窗口检查，允许即使用量已满也能继续调度此账号。"
   },
   "proxies": {
     "description": "管理代理池，支持轮询分配给账号使用",
