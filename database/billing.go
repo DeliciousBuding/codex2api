@@ -34,12 +34,12 @@ var (
 	modelPricingRules = []modelPricingRule{
 		// Codex/GPT-5 系列，参考 sub2api 的动态定价优先、fallback 兜底策略。
 		{model: "gpt-5.5", pricing: ModelPricing{
-			InputPricePerMToken:             2.5,
-			InputPricePerMTokenPriority:     5.0,
-			OutputPricePerMToken:            15.0,
-			OutputPricePerMTokenPriority:    30.0,
-			CacheReadPricePerMToken:         0.25,
-			CacheReadPricePerMTokenPriority: 0.5,
+			InputPricePerMToken:             5.0,
+			InputPricePerMTokenPriority:     12.5,
+			OutputPricePerMToken:            30.0,
+			OutputPricePerMTokenPriority:    75.0,
+			CacheReadPricePerMToken:         0.5,
+			CacheReadPricePerMTokenPriority: 1.25,
 		}},
 		{model: "gpt-5.4-mini", pricing: ModelPricing{InputPricePerMToken: 0.75, OutputPricePerMToken: 4.5, CacheReadPricePerMToken: 0.075}},
 		{model: "gpt-5.4-nano", pricing: ModelPricing{InputPricePerMToken: 0.2, OutputPricePerMToken: 1.25, CacheReadPricePerMToken: 0.02}},
