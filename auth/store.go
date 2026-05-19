@@ -694,6 +694,7 @@ type Store struct {
 	fastSchedulerEnabled atomic.Bool
 
 	allowRemoteMigration atomic.Bool // 是否允许远程迁移拉取账号
+	schedulerMode       atomic.Value // 调度模式: "round_robin" 或 "remaining_quota"
 }
 
 func fastSchedulerEnabledFromEnv() bool {
@@ -734,6 +735,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 		proxyPoolEnabled: settings.ProxyPoolEnabled,
 	}
 	s.testModel.Store(settings.TestModel)
+	s.schedulerMode.Store(settings.SchedulerMode)
 	s.autoCleanUnauthorized.Store(settings.AutoCleanUnauthorized)
 	s.autoCleanRateLimited.Store(settings.AutoCleanRateLimited)
 	s.autoCleanFullUsage.Store(settings.AutoCleanFullUsage)
@@ -748,7 +750,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	fastEnabled := fastSchedulerEnabledFromEnv() || settings.FastSchedulerEnabled
 	s.fastSchedulerEnabled.Store(fastEnabled)
 	if fastEnabled {
-		s.fastScheduler.Store(NewFastScheduler(int64(settings.MaxConcurrency)))
+		s.fastScheduler.Store(NewFastScheduler(int64(settings.MaxConcurrency), settings.SchedulerMode))
 		log.Printf("快速调度器已启用（请求热路径将优先走本地内存调度器）")
 	}
 
@@ -941,6 +943,23 @@ func (s *Store) GetAutoCleanError() bool {
 // SetAutoCleanError 设置是否自动清理 error 账号
 func (s *Store) SetAutoCleanError(enabled bool) {
 	s.autoCleanError.Store(enabled)
+}
+
+func (s *Store) GetSchedulerMode() string {
+	if v := s.schedulerMode.Load(); v != nil {
+		return v.(string)
+	}
+	return "round_robin"
+}
+
+func (s *Store) SetSchedulerMode(mode string) {
+	if mode == "" {
+		mode = "round_robin"
+	}
+	s.schedulerMode.Store(mode)
+	if fs := s.getFastScheduler(); fs != nil {
+		fs.SetSchedulerMode(mode)
+	}
 }
 
 // Init 初始化：从数据库加载账号

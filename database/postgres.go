@@ -81,6 +81,7 @@ type usageLogEntry struct {
 	Stream           bool
 	CachedTokens     int
 	ServiceTier      string
+	APIKeyID         int64
 }
 
 // New 创建数据库连接并自动建表。
@@ -338,6 +339,7 @@ type SystemSettings struct {
 	FastSchedulerEnabled  bool
 	MaxRetries            int
 	AllowRemoteMigration  bool
+	SchedulerMode         string
 }
 
 // GetSystemSettings 加载全局设置
@@ -594,6 +596,7 @@ type UsageLog struct {
 	Stream           bool      `json:"stream"`
 	CachedTokens     int       `json:"cached_tokens"`
 	ServiceTier      string    `json:"service_tier"`
+	APIKeyID         int64     `json:"api_key_id"`
 	AccountEmail     string    `json:"account_email"`
 	CreatedAt        time.Time `json:"created_at"`
 }
@@ -650,6 +653,7 @@ type UsageLogInput struct {
 	Stream           bool
 	CachedTokens     int
 	ServiceTier      string
+	APIKeyID         int64
 }
 
 // startLogFlusher 启动后台定时 flush 协程（每 3 秒一次）

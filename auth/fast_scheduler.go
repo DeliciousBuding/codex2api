@@ -28,21 +28,26 @@ type fastSchedulerPosition struct {
 // 它不在请求热路径内重算全量 score，而是直接复用 Account 上已缓存的
 // HealthTier / SchedulerScore / DynamicConcurrencyLimit。
 //
-// 这让我们可以先验证“增量维护 + 热路径轻量化”是否值得正式接管 Store.Next。
+// 这让我们可以先验证”增量维护 + 热路径轻量化”是否值得正式接管 Store.Next。
 type FastScheduler struct {
-	mu        sync.RWMutex
-	baseLimit int64
-	buckets   map[AccountHealthTier][]fastSchedulerEntry
-	positions map[int64]fastSchedulerPosition
-	cursors   [3]atomic.Uint64
+	mu            sync.RWMutex
+	baseLimit     int64
+	buckets       map[AccountHealthTier][]fastSchedulerEntry
+	positions     map[int64]fastSchedulerPosition
+	cursors       [3]atomic.Uint64
+	schedulerMode string // “round_robin” or “remaining_quota”
 }
 
-func NewFastScheduler(baseLimit int64) *FastScheduler {
+func NewFastScheduler(baseLimit int64, schedulerMode string) *FastScheduler {
 	if baseLimit <= 0 {
 		baseLimit = 1
 	}
+	if schedulerMode == "" {
+		schedulerMode = "round_robin"
+	}
 	return &FastScheduler{
-		baseLimit: baseLimit,
+		baseLimit:     baseLimit,
+		schedulerMode: schedulerMode,
 		buckets: map[AccountHealthTier][]fastSchedulerEntry{
 			HealthTierHealthy: nil,
 			HealthTierWarm:    nil,
@@ -56,9 +61,9 @@ func NewFastScheduler(baseLimit int64) *FastScheduler {
 // 该方法不会影响现有生产流量路径，只用于 POC/benchmark/灰度验证。
 func (s *Store) BuildFastScheduler() *FastScheduler {
 	if s == nil {
-		return NewFastScheduler(1)
+		return NewFastScheduler(1, "round_robin")
 	}
-	scheduler := NewFastScheduler(atomic.LoadInt64(&s.maxConcurrency))
+	scheduler := NewFastScheduler(atomic.LoadInt64(&s.maxConcurrency), s.GetSchedulerMode())
 
 	s.mu.RLock()
 	accounts := make([]*Account, len(s.accounts))
@@ -124,6 +129,27 @@ func (s *FastScheduler) SetBaseLimit(baseLimit int64) {
 	s.mu.Unlock()
 }
 
+func (s *FastScheduler) SetSchedulerMode(mode string) {
+	if s == nil {
+		return
+	}
+	if mode == "" {
+		mode = "round_robin"
+	}
+	s.mu.Lock()
+	s.schedulerMode = mode
+	s.mu.Unlock()
+}
+
+func (s *FastScheduler) SchedulerMode() string {
+	if s == nil {
+		return "round_robin"
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.schedulerMode
+}
+
 func (s *FastScheduler) Acquire() *Account {
 	if s == nil {
 		return nil
@@ -133,13 +159,21 @@ func (s *FastScheduler) Acquire() *Account {
 
 	s.mu.RLock()
 	baseLimit := s.baseLimit
+	mode := s.schedulerMode
 	for tierIdx, tier := range fastSchedulerTierOrder {
 		bucket := s.buckets[tier]
 		if len(bucket) == 0 {
 			continue
 		}
 
-		start := int(s.cursors[tierIdx].Add(1)-1) % len(bucket)
+		// In remaining_quota mode, start from beginning since entries are sorted by usage.
+		// In round_robin mode, use cursor for fair distribution.
+		var start int
+		if mode == "remaining_quota" {
+			start = 0
+		} else {
+			start = int(s.cursors[tierIdx].Add(1)-1) % len(bucket)
+		}
 		for offset := 0; offset < len(bucket); offset++ {
 			entry := bucket[(start+offset)%len(bucket)]
 			if entry.acc == nil {
@@ -259,6 +293,17 @@ func (a *Account) fastSchedulerSnapshot(baseLimit int64, now time.Time) (Account
 	}
 
 	return tier, score, limit, available
+}
+
+// usagePercentForScheduling returns the 7d usage percentage for sorting.
+// Returns 0 for unknown/invalid, so accounts with no usage data are most preferred.
+func (a *Account) usagePercentForScheduling() float64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.UsagePercent7dValid {
+		return a.UsagePercent7d
+	}
+	return 0
 }
 
 func tryAcquireAccount(acc *Account, limit int64) bool {
