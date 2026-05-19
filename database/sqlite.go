@@ -35,12 +35,15 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			cooldown_reason TEXT DEFAULT '',
 			cooldown_until TIMESTAMP NULL,
 			error_message TEXT DEFAULT '',
+			credit_enabled INTEGER DEFAULT 0,
+			credit_skip_usage_window INTEGER DEFAULT 0,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE TABLE IF NOT EXISTS usage_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			account_id INTEGER DEFAULT 0,
+			api_key_id INTEGER DEFAULT 0,
 			endpoint TEXT DEFAULT '',
 			model TEXT DEFAULT '',
 			prompt_tokens INTEGER DEFAULT 0,
@@ -83,7 +86,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			proxy_pool_enabled INTEGER DEFAULT 0,
 			fast_scheduler_enabled INTEGER DEFAULT 0,
 			max_retries INTEGER DEFAULT 2,
-			allow_remote_migration INTEGER DEFAULT 0
+			allow_remote_migration INTEGER DEFAULT 0,
+			scheduler_mode TEXT DEFAULT 'round_robin',
 		);`,
 		`CREATE TABLE IF NOT EXISTS proxies (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +104,17 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		if _, err := db.conn.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
+	}
+
+	// 向后兼容迁移：为旧数据库添加新列
+	alterStatements := []string{
+		`ALTER TABLE accounts ADD COLUMN credit_enabled INTEGER DEFAULT 0;`,
+		`ALTER TABLE accounts ADD COLUMN credit_skip_usage_window INTEGER DEFAULT 0;`,
+		`ALTER TABLE usage_logs ADD COLUMN api_key_id INTEGER DEFAULT 0;`,
+		`ALTER TABLE system_settings ADD COLUMN scheduler_mode TEXT DEFAULT 'round_robin';`,
+	}
+	for _, stmt := range alterStatements {
+		db.conn.ExecContext(ctx, stmt) // 忽略 "duplicate column" 错误
 	}
 
 	columns := []struct {
@@ -130,6 +145,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "fast_scheduler_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "max_retries", "INTEGER DEFAULT 2"},
 		{"system_settings", "allow_remote_migration", "INTEGER DEFAULT 0"},
+			{"system_settings", "scheduler_mode", "TEXT DEFAULT 'round_robin'"},
 		{"proxies", "test_ip", "TEXT DEFAULT ''"},
 		{"proxies", "test_location", "TEXT DEFAULT ''"},
 		{"proxies", "test_latency_ms", "INTEGER DEFAULT 0"},
