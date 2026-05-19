@@ -265,6 +265,8 @@ type rawOAuthTokenResp struct {
 }
 
 func doOAuthCodeExchange(ctx context.Context, code, codeVerifier, redirectURI, proxyURL string) (*rawOAuthTokenResp, *auth.AccountInfo, error) {
+	proxyURL = auth.ResolveProxy(proxyURL)
+
 	form := neturl.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("client_id", oauthClientID)
@@ -283,7 +285,7 @@ func doOAuthCodeExchange(ctx context.Context, code, codeVerifier, redirectURI, p
 	client := auth.BuildHTTPClient(proxyURL)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("请求失败: %w", err)
+		return nil, nil, fmt.Errorf("请求 auth.openai.com 失败（proxy=%s）: %w", proxyLabel(proxyURL), err)
 	}
 	defer resp.Body.Close()
 
@@ -299,4 +301,11 @@ func doOAuthCodeExchange(ctx context.Context, code, codeVerifier, redirectURI, p
 
 	info := auth.ParseIDToken(tokenResp.IDToken)
 	return &tokenResp, info, nil
+}
+
+func proxyLabel(proxyURL string) string {
+	if proxyURL == "" {
+		return "direct"
+	}
+	return proxyURL
 }

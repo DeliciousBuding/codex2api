@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -228,6 +229,19 @@ func buildHTTPClient(proxyURL string) *http.Client {
 // BuildHTTPClient builds a proxy-aware HTTP client (exported for admin OAuth flow).
 func BuildHTTPClient(proxyURL string) *http.Client {
 	return buildHTTPClient(proxyURL)
+}
+
+// ResolveProxy returns proxyURL if set, otherwise checks system env vars (HTTP_PROXY, HTTPS_PROXY).
+func ResolveProxy(proxyURL string) string {
+	if strings.TrimSpace(proxyURL) != "" {
+		return strings.TrimSpace(proxyURL)
+	}
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		if v := os.Getenv(key); strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // ParseIDToken parses a JWT id_token payload (exported for admin OAuth flow).
