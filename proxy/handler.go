@@ -162,11 +162,16 @@ func classifyStreamOutcome(ctxErr, readErr, writeErr error, gotTerminal bool) st
 		return streamOutcome{logStatusCode: http.StatusOK}
 	}
 
+	// 客户端断连检测：优先检查 writeErr（写回下游失败）和 ctxErr（请求上下文取消）。
+	// 注意：上游请求已改用独立的 context (background + timeout)，因此 ctxErr
+	// 仅反映下游客户端的状态，不会与上游 body.Read 的错误混淆。
 	if ctxErr != nil || writeErr != nil {
 		msg := "下游客户端提前断开"
 		switch {
 		case errors.Is(ctxErr, context.DeadlineExceeded):
 			msg = "下游请求上下文超时"
+		case ctxErr != nil && writeErr != nil:
+			msg = fmt.Sprintf("写回下游失败(客户端已断开): %v", writeErr)
 		case writeErr != nil:
 			msg = fmt.Sprintf("写回下游失败: %v", writeErr)
 		case ctxErr != nil:

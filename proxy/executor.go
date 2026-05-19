@@ -18,6 +18,13 @@ import (
 )
 
 // ==================== HTTP 连接池（按账号隔离 + TTL 淘汰） ====================
+
+const (
+	// upstreamRequestTimeout 上游请求超时时间。
+	// 用于给上游 Codex API 请求创建独立的 context，避免客户端断连时
+	// context.Canceled 传播到上游响应体读取器，导致误报 499（见 #140）。
+	upstreamRequestTimeout = 10 * time.Minute
+)
 //
 // 设计要点：
 //   - 按账号隔离：避免同一 TCP 连接被不同 token 复用（会被服务端检测）
@@ -130,10 +137,19 @@ const (
 
 // ExecuteRequest 向 Codex 上游发送请求
 // sessionID 可选，用于 prompt cache 会话绑定
+//
+// ctx 参数保留用于向后兼容，但上游 HTTP 请求自身使用独立的
+// context.Background() 衍生 context。这样可以防止下游客户端断连时
+// context.Canceled 传播到上游响应体读取器（见 #140）。
+// 独立的 context 带有 upstreamRequestTimeout 超时，防止资源泄漏。
 func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string) (*http.Response, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	// 上游请求使用独立的 context，不继承调用方的 cancel/deadline。
+	// 这样客户端断连不会取消上游 body.Read()，SSE 事件可被完整读取。
+	// 如果已收到 response.completed 事件，classifyStreamOutcome 会正确
+	// 返回 200 而非 499。
+	upstreamCtx, cancel := context.WithTimeout(context.Background(), upstreamRequestTimeout)
+	defer cancel()
+	_ = ctx // 保持 API 兼容；调用方 context 故意不使用
 
 	account.Mu().RLock()
 	accessToken := account.AccessToken
@@ -174,7 +190,7 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 
 	endpoint := CodexBaseURL + "/responses"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
+	req, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
