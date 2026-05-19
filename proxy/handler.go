@@ -101,6 +101,16 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 	_ = h.db.InsertUsageLog(context.Background(), input)
 }
 
+// getAPIKeyIDFromContext 从 gin context 中获取已解析的 API Key 数据库 ID
+func getAPIKeyIDFromContext(c *gin.Context) int64 {
+	if id, exists := c.Get("api_key_id"); exists {
+		if v, ok := id.(int64); ok {
+			return v
+		}
+	}
+	return 0
+}
+
 // extractReasoningEffort 从请求体提取推理强度
 // 支持 reasoning.effort（Responses API）和 reasoning_effort（Chat Completions API）
 func extractReasoningEffort(body []byte) string {
@@ -260,6 +270,12 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		// 解析 API Key 的数据库 ID，用于使用日志关联
+		if h.db != nil {
+			if id, err := h.db.GetAPIKeyIDByValue(c.Request.Context(), key); err == nil {
+				c.Set("api_key_id", id)
+			}
+		}
 		c.Next()
 	}
 }
@@ -413,6 +429,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				UpstreamEndpoint: "/v1/responses",
 				Stream:           isStream,
 				ServiceTier:      serviceTier,
+				APIKeyID:         getAPIKeyIDFromContext(c),
 			})
 			h.applyCooldown(account, resp.StatusCode, errBody, resp)
 
@@ -599,6 +616,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			UpstreamEndpoint: "/v1/responses",
 			Stream:           isStream,
 			ServiceTier:      resolvedServiceTier,
+			APIKeyID:         getAPIKeyIDFromContext(c),
 		}
 		if usage != nil {
 			logInput.PromptTokens = usage.PromptTokens
@@ -725,6 +743,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				UpstreamEndpoint: "/v1/responses",
 				Stream:           isStream,
 				ServiceTier:      serviceTier,
+				APIKeyID:         getAPIKeyIDFromContext(c),
 			})
 			h.applyCooldown(account, resp.StatusCode, errBody, resp)
 
@@ -951,6 +970,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			UpstreamEndpoint: "/v1/responses",
 			Stream:           isStream,
 			ServiceTier:      resolvedServiceTier,
+			APIKeyID:         getAPIKeyIDFromContext(c),
 		}
 		if usage != nil {
 			logInput.PromptTokens = usage.PromptTokens

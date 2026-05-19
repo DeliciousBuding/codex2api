@@ -1071,6 +1071,7 @@ type settingsResponse struct {
 	FastSchedulerEnabled  bool   `json:"fast_scheduler_enabled"`
 	MaxRetries            int    `json:"max_retries"`
 	AllowRemoteMigration  bool   `json:"allow_remote_migration"`
+		SchedulerMode         string `json:"scheduler_mode"`
 	DatabaseDriver        string `json:"database_driver"`
 	DatabaseLabel         string `json:"database_label"`
 	CacheDriver           string `json:"cache_driver"`
@@ -1094,6 +1095,7 @@ type updateSettingsReq struct {
 	FastSchedulerEnabled  *bool   `json:"fast_scheduler_enabled"`
 	MaxRetries            *int    `json:"max_retries"`
 	AllowRemoteMigration  *bool   `json:"allow_remote_migration"`
+		SchedulerMode         *string `json:"scheduler_mode"`
 }
 
 // GetSettings 获取当前系统设置
@@ -1124,6 +1126,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		FastSchedulerEnabled:  h.store.FastSchedulerEnabled(),
 		MaxRetries:            h.store.GetMaxRetries(),
 		AllowRemoteMigration:  h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
+			SchedulerMode:         h.store.GetSchedulerMode(),
 		DatabaseDriver:        h.databaseDriver,
 		DatabaseLabel:         h.databaseLabel,
 		CacheDriver:           h.cacheDriver,
@@ -1255,6 +1258,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: fast_scheduler_enabled = %t", *req.FastSchedulerEnabled)
 	}
 
+	if req.SchedulerMode != nil && *req.SchedulerMode != "" {
+		h.store.SetSchedulerMode(*req.SchedulerMode)
+		log.Printf("设置已更新: scheduler_mode = %s", *req.SchedulerMode)
+	}
+
 	if req.MaxRetries != nil {
 		v := *req.MaxRetries
 		if v < 0 {
@@ -1296,6 +1304,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		FastSchedulerEnabled:  h.store.FastSchedulerEnabled(),
 		MaxRetries:            h.store.GetMaxRetries(),
 		AllowRemoteMigration:  h.store.GetAllowRemoteMigration() && hasAdminSecret,
+			SchedulerMode:         h.store.GetSchedulerMode(),
 	})
 	if err != nil {
 		log.Printf("无法持久化保存设置: %v", err)
@@ -1332,6 +1341,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		FastSchedulerEnabled:  h.store.FastSchedulerEnabled(),
 		MaxRetries:            h.store.GetMaxRetries(),
 		AllowRemoteMigration:  h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
+			SchedulerMode:         h.store.GetSchedulerMode(),
 		DatabaseDriver:        h.databaseDriver,
 		DatabaseLabel:         h.databaseLabel,
 		CacheDriver:           h.cacheDriver,

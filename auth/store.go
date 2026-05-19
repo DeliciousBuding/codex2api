@@ -51,6 +51,8 @@ type Account struct {
 	CooldownUtil   time.Time
 	CooldownReason string // rate_limited / unauthorized / 空
 	ErrorMsg       string
+	CreditEnabled  bool // 是否有额外 credit
+	CreditSkipUsageWindow bool // 是否跳过用量窗口限制
 
 	// 用量进度（从 Codex 响应头被动解析）
 	UsagePercent7d        float64 // 7d 窗口使用率 0-100+
