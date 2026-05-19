@@ -56,6 +56,7 @@ export default function Settings() {
     fast_scheduler_enabled: false,
     max_retries: 2,
     allow_remote_migration: false,
+    scheduler_mode: 'round_robin',
     database_driver: 'postgres',
     database_label: 'PostgreSQL',
     cache_driver: 'redis',
@@ -460,6 +461,18 @@ export default function Settings() {
                   options={booleanOptions}
                 />
                 <p className="text-xs text-muted-foreground mt-1">{t('settings.fastSchedulerEnabledDesc')}</p>
+              </div>
+              <div>
+                <label className="block mb-2 text-sm font-semibold text-muted-foreground">{t('settings.schedulerMode')}</label>
+                <Select
+                  value={settingsForm.scheduler_mode}
+                  onValueChange={(value) => setSettingsForm((f) => ({ ...f, scheduler_mode: value }))}
+                  options={[
+                    { label: t('settings.schedulerModeRoundRobin'), value: 'round_robin' },
+                    { label: t('settings.schedulerModeRemainingQuota'), value: 'remaining_quota' },
+                  ]}
+                />
+                <p className="text-xs text-muted-foreground mt-1">{t('settings.schedulerModeDesc')}</p>
               </div>
             </div>
             <h3 className="text-base font-semibold text-foreground mb-4 mt-6">{t('settings.security')}</h3>

@@ -168,6 +168,7 @@ export interface SystemSettings {
   fast_scheduler_enabled: boolean
   max_retries: number
   allow_remote_migration: boolean
+  scheduler_mode: string
   database_driver: string
   database_label: string
   cache_driver: string

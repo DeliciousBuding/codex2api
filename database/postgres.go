@@ -357,13 +357,14 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(fast_scheduler_enabled, false),
 		       COALESCE(max_retries, 2),
 		       COALESCE(allow_remote_migration, false),
-		       COALESCE(auto_clean_error, false)
+			       COALESCE(auto_clean_error, false),
+			       COALESCE(scheduler_mode, 'round_robin')
 		FROM system_settings WHERE id = 1
 	`).Scan(
 		&s.MaxConcurrency, &s.GlobalRPM, &s.TestModel, &s.TestConcurrency, &s.ProxyURL, &s.PgMaxConns, &s.RedisPoolSize,
 		&s.AutoCleanUnauthorized, &s.AutoCleanRateLimited, &s.AdminSecret, &s.AutoCleanFullUsage,
 		&s.ProxyPoolEnabled, &s.FastSchedulerEnabled, &s.MaxRetries, &s.AllowRemoteMigration,
-		&s.AutoCleanError,
+		&s.AutoCleanError, &s.SchedulerMode,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
