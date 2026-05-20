@@ -296,7 +296,7 @@ func TestNormalizeCodexBillingModelCodexAutoReview(t *testing.T) {
 	}{
 		{"codex-auto-review", "gpt-5.4"},
 		{"codex-auto-review-v2", "gpt-5.4"}, // variant suffix should match
-		{"codex-auto-review", "gpt-5.4"},    // case-insensitive
+		{"CODEX-AUTO-REVIEW", "gpt-5.4"},    // case-insensitive
 		{"codex_auto_review", "gpt-5.4"},    // underscores normalized
 	}
 	for _, tt := range tests {

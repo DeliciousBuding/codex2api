@@ -224,7 +224,7 @@ func normalizeBillingModelName(model string) string {
 }
 
 func normalizeCodexBillingModel(model string) (string, bool) {
-	compact := strings.NewReplacer(" ", "-", "_", "-").Replace(model)
+	compact := strings.NewReplacer(" ", "-", "_", "-").Replace(strings.ToLower(model))
 	switch {
 	case strings.Contains(compact, "gpt-5.5-pro") || strings.Contains(compact, "gpt5-5-pro") || strings.Contains(compact, "gpt5.5-pro"):
 		return "gpt-5.5-pro", true

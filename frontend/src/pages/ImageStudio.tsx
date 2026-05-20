@@ -1216,7 +1216,7 @@ export default function ImageStudio() {
               <X className="size-4" />
               {t('images.clearSelection')}
             </Button>
-            <Button disabled={submitting || !prompt.trim()} onClick={() => void submitJob()}>
+            <Button disabled={submitting || !prompt.trim()} onClick={() => void submitJob(createJobPayload(), imageToImageMode ? 'edit' : 'text')}>
               {submitting ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
               {t('images.generate')}
             </Button>
