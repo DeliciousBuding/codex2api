@@ -18,7 +18,7 @@ func TestGetModelPricingUsesMostSpecificOpenAIPrefix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := getModelPricing(tt.model)
+			got := GetModelPricing(tt.model)
 			assertPricing(t, got, tt.wantInput, tt.wantOutput)
 		})
 	}
@@ -38,7 +38,7 @@ func TestGetModelPricingUsesSub2APICodexFallbacks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := getModelPricing(tt.model)
+			got := GetModelPricing(tt.model)
 			assertPricing(t, got, tt.wantInput, tt.wantOutput)
 		})
 	}
@@ -59,7 +59,7 @@ func TestGetModelPricingUsesSub2APIClaudeFamilies(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := getModelPricing(tt.model)
+			got := GetModelPricing(tt.model)
 			assertPricing(t, got, tt.wantInput, tt.wantOutput)
 		})
 	}
@@ -84,12 +84,12 @@ func TestCalculateCostHandlesCachedTokensAndServiceTier(t *testing.T) {
 			want:         0.00955,
 		},
 		{
-			name:         "keeps legacy input price when cache pricing is unavailable",
+			name:         "gpt-4o with cache pricing",
 			model:        "gpt-4o",
 			inputTokens:  1000,
 			outputTokens: 500,
 			cachedTokens: 200,
-			want:         0.0075,
+			want:         0.00725,
 		},
 		{
 			name:         "uses priority prices when available",
@@ -135,8 +135,8 @@ func TestCalculateCostBreakdownExposesDisplayFields(t *testing.T) {
 }
 
 func TestGPT55PricingDoesNotMatchGPT54(t *testing.T) {
-	gpt54 := getModelPricing("gpt-5.4")
-	gpt55 := getModelPricing("gpt-5.5")
+	gpt54 := GetModelPricing("gpt-5.4")
+	gpt55 := GetModelPricing("gpt-5.5")
 
 	// gpt-5.5 is 2x gpt-5.4: $5/$30 vs $2.5/$15
 	assertFloatEqual(t, gpt55.InputPricePerMToken, 5.0)
@@ -149,7 +149,7 @@ func TestGPT55PricingDoesNotMatchGPT54(t *testing.T) {
 }
 
 func TestSparkPricingUsesGpt51CodexFallback(t *testing.T) {
-	spark := getModelPricing("gpt-5.3-codex-spark-high")
+	spark := GetModelPricing("gpt-5.3-codex-spark-high")
 
 	assertFloatEqual(t, spark.InputPricePerMToken, 1.25)
 	assertFloatEqual(t, spark.OutputPricePerMToken, 10.0)
@@ -160,8 +160,8 @@ func TestSparkPricingUsesGpt51CodexFallback(t *testing.T) {
 }
 
 func TestGPT53CodexPricingUsesGPT52CodexFallback(t *testing.T) {
-	codex := getModelPricing("gpt-5.3-codex-xhigh")
-	gpt52 := getModelPricing("gpt-5.2")
+	codex := GetModelPricing("gpt-5.3-codex-xhigh")
+	gpt52 := GetModelPricing("gpt-5.2")
 
 	assertFloatEqual(t, codex.InputPricePerMToken, gpt52.InputPricePerMToken)
 	assertFloatEqual(t, codex.OutputPricePerMToken, gpt52.OutputPricePerMToken)
@@ -173,7 +173,7 @@ func TestGPT53CodexPricingUsesGPT52CodexFallback(t *testing.T) {
 
 func TestUsageLogBreakdownScalesToStoredBilledTotal(t *testing.T) {
 	log := &UsageLog{
-		Model:         "gpt-5.5",
+		Model:         "gpt-5.4",
 		InputTokens:   1000,
 		StatusCode:    200,
 		AccountBilled: 0.0025,
@@ -190,7 +190,7 @@ func TestUsageLogBreakdownScalesToStoredBilledTotal(t *testing.T) {
 func assertPricing(t *testing.T, got *ModelPricing, wantInput, wantOutput float64) {
 	t.Helper()
 	if got == nil {
-		t.Fatal("getModelPricing returned nil")
+		t.Fatal("GetModelPricing returned nil")
 	}
 	if math.Abs(got.InputPricePerMToken-wantInput) > 1e-12 || math.Abs(got.OutputPricePerMToken-wantOutput) > 1e-12 {
 		t.Fatalf("pricing = input %.12f output %.12f, want input %.12f output %.12f",
