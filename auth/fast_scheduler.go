@@ -268,7 +268,6 @@ func (s *FastScheduler) AcquireExcludingWithFilter(apiKeyID int64, exclude map[i
 	baseLimit := s.baseLimit
 	var zeroCursor atomic.Uint64
 	for {
-		zeroCursor.Store(0)
 		changed := false
 		for tierIdx, tier := range fastSchedulerTierOrder {
 			bucket := s.buckets[tier]
@@ -278,6 +277,7 @@ func (s *FastScheduler) AcquireExcludingWithFilter(apiKeyID int64, exclude map[i
 
 			cursor := &s.cursors[tierIdx]
 			if s.schedulerMode == "remaining_quota" {
+				zeroCursor.Store(0)
 				cursor = &zeroCursor
 			}
 			acc, stale := s.scanRangeLocked(tier, 0, len(bucket), cursor, baseLimit, now, apiKeyID, exclude, filter)
