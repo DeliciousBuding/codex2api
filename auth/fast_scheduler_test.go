@@ -932,3 +932,41 @@ func TestFastSchedulerRemainingQuotaTieBreakProvenThenDBID(t *testing.T) {
 		t.Fatalf("Acquire() picked dbID=%d, want proven tie-breaker account %d", got.DBID, proven.DBID)
 	}
 }
+
+func TestFastSchedulerSetSchedulerModeEmptyDefaultsToRoundRobin(t *testing.T) {
+	s := NewFastScheduler(4, "remaining_quota")
+	if s.SchedulerMode() != "remaining_quota" {
+		t.Fatalf("initial mode = %q, want remaining_quota", s.SchedulerMode())
+	}
+	s.SetSchedulerMode("")
+	if s.SchedulerMode() != "round_robin" {
+		t.Fatalf("after empty mode: got %q, want round_robin", s.SchedulerMode())
+	}
+}
+
+func TestFastSchedulerSetSchedulerModeResortsBuckets(t *testing.T) {
+	highUsage := newFastSchedulerTestAccount(1, HealthTierHealthy, 90, 2)
+	highUsage.UsagePercent7d = 90
+	highUsage.UsagePercent7dValid = true
+	lowUsage := newFastSchedulerTestAccount(2, HealthTierHealthy, 10, 2)
+	lowUsage.UsagePercent7d = 10
+	lowUsage.UsagePercent7dValid = true
+
+	s := NewFastScheduler(4, "round_robin")
+	s.Rebuild([]*Account{highUsage, lowUsage})
+
+	// In round_robin mode, acquires are cursor-based, not usage-based
+	first := s.Acquire()
+	s.Release(first)
+
+	s.SetSchedulerMode("remaining_quota")
+	// After re-sort + zero cursor, should pick lowest usage first
+	first = s.Acquire()
+	if first == nil {
+		t.Fatal("Acquire() returned nil after mode switch")
+	}
+	if first.DBID != lowUsage.DBID {
+		t.Fatalf("after remaining_quota switch, Acquire() picked dbID=%d, want lowest-usage account %d", first.DBID, lowUsage.DBID)
+	}
+	s.Release(first)
+}
