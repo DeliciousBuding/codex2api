@@ -678,7 +678,9 @@ func (h *Handler) UpdateAccountCredit(c *gin.Context) {
 		CreditEnabled         *bool `json:"credit_enabled"`
 		CreditSkipUsageWindow *bool `json:"credit_skip_usage_window"`
 	}
-	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeError(c, http.StatusBadRequest, "请求格式错误")
 		return
 	}
@@ -695,7 +697,12 @@ func (h *Handler) UpdateAccountCredit(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "信用设置已更新", "credit_enabled": acc.CreditEnabled, "credit_skip_usage_window": acc.CreditSkipUsageWindow})
+	acc = h.store.FindByID(id)
+	if acc != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "信用设置已更新", "credit_enabled": acc.CreditEnabled, "credit_skip_usage_window": acc.CreditSkipUsageWindow})
+	} else {
+		c.JSON(http.StatusOK, gin.H{"message": "信用设置已更新"})
+	}
 }
 
 func (h *Handler) UpdateAccountScheduler(c *gin.Context) {

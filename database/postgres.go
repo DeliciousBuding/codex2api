@@ -3390,8 +3390,18 @@ func (db *DB) UpdateAccountCredit(ctx context.Context, id int64, creditEnabled, 
 	query := "UPDATE accounts SET " + strings.Join(setClauses, ", ") + fmt.Sprintf(" WHERE id = $%d", argIdx)
 	args = append(args, id)
 
-	_, err := db.conn.ExecContext(ctx, query, args...)
-	return err
+	res, err := db.conn.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // UpdateCredentials 原子合并更新账号的 credentials（JSONB || 运算符，不覆盖已有字段）

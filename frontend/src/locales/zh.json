@@ -1261,6 +1261,7 @@
   "images": {
     "title": "生图工作台",
     "description": "文生图、提示词模板和服务器图库",
+    "mode": "生成模式",
     "views": {
       "studio": "工作台",
       "prompts": "提示词管理",

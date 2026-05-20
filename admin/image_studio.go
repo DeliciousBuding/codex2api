@@ -338,6 +338,10 @@ func (h *Handler) CreateImageEditJob(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "图生图需要上传参考图片")
 		return
 	}
+	if len(req.InputImages) > proxy.MaxImageEditInputCount {
+		writeError(c, http.StatusBadRequest, fmt.Sprintf("参考图片数量超过限制 (%d, 最多 %d)", len(req.InputImages), proxy.MaxImageEditInputCount))
+		return
+	}
 	if len([]rune(req.Prompt)) > 8000 {
 		writeError(c, http.StatusBadRequest, "提示词不能超过 8000 个字符")
 		return

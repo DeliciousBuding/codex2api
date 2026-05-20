@@ -525,7 +525,7 @@ curl -X POST http://localhost:8080/api/admin/oauth/exchange-code \
 | 模式 | 行为 |
 | --- | --- |
 | `round_robin`（默认） | 按健康层级轮询可用账号，权重按调度分排序 |
-| `remaining_quota` | 优先使用用量的账号；用量相同时轮询 |
+| `remaining_quota` | 优先使用用量较低的账号；用量相同时轮询 |
 
 **信用账号**（单账号标记）：
 

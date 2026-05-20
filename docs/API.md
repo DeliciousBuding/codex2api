@@ -288,7 +288,7 @@ data: [DONE]
   "object": "list",
   "data": [
     { "id": "gpt-5.5", "object": "model", "owned_by": "openai" },
-    { "id": "gpt-5.5", "object": "model", "owned_by": "openai" },
+    { "id": "gpt-5.4", "object": "model", "owned_by": "openai" },
     { "id": "gpt-5.4-mini", "object": "model", "owned_by": "openai" },
     { "id": "gpt-5.3-codex", "object": "model", "owned_by": "openai" },
     { "id": "gpt-5.3-codex-spark", "object": "model", "owned_by": "openai" },
@@ -484,7 +484,7 @@ data: [DONE]
 | 参数                       | 类型  | 必填 | 说明                                     |
 | -------------------------- | ----- | ---- | ---------------------------------------- |
 | credit_enabled             | bool  | 否   | 标记账号为信用计费模式，省略时保持原值   |
-| credit_skip_usage_window   | bool  | 否   | 跳过 7 天/5 小时用量窗口惩罚，省略时保持原值 |
+| credit_skip_usage_window   | bool  | 否   | 跳过 7 天/5 小时用量窗口惩罚（仅在 `credit_enabled=true` 时生效），省略时保持原值 |
 
 **响应:**
 

@@ -43,7 +43,7 @@ Codex2API 采用三层配置架构：
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
 | `CODEX_PORT` | 否 | 8080 | HTTP 服务端口 |
-| `BIND_HOST` | 否 | `127.0.0.1`（SQLite）/ `0.0.0.0`（PostgreSQL） | HTTP 绑定地址。SQLite compose 默认 `127.0.0.1` 仅本机访问；标准 compose 默认 `0.0.0.0` 所有网络接口 |
+| `BIND_HOST` | 否 | `127.0.0.1`（SQLite）/ `0.0.0.0`（PostgreSQL） | Docker 端口发布绑定地址（非进程监听地址，由 `CODEX_BIND` 控制）。SQLite compose 默认 `127.0.0.1` 仅本机访问；标准 compose 默认 `0.0.0.0` 所有网络接口 |
 | `ADMIN_SECRET` | 否 | - | 管理后台登录密钥 |
 | `CODEX_ALLOW_ANONYMOUS` | 否 | `false` | 设为 `true` 时，未配置任何对外 API Key 也允许 `/v1/*` 直接调用（仅限内网测试场景） |
 | `FAST_SCHEDULER_ENABLED` | 否 | `false` | 通过环境变量启用快速调度器（也可在管理后台运行时开启） |

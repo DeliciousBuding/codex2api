@@ -140,10 +140,11 @@ export default function AccountUsageModal({ account, onClose }: Props) {
           <button
             type="button"
             role="switch"
+            aria-label={t("accounts.creditEnabled")}
             aria-checked={creditEnabled}
             disabled={savingCredit}
             onClick={() => handleCreditToggle('credit_enabled', !creditEnabled)}
-            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none ${creditEnabled ? 'bg-primary' : 'bg-muted'}`}
+            className={`relative inline-flex h-5 w-9 shrink-0 ${savingCredit ? "cursor-not-allowed opacity-60" : "cursor-pointer"} items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 ${creditEnabled ? 'bg-primary' : 'bg-muted'}`}
           >
             <span className={`pointer-events-none block size-4 rounded-full bg-white shadow transition-transform ${creditEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
           </button>
@@ -157,10 +158,11 @@ export default function AccountUsageModal({ account, onClose }: Props) {
             <button
               type="button"
               role="switch"
+              aria-label={t("accounts.creditSkipWindow")}
               aria-checked={creditSkipWindow}
               disabled={savingCredit}
               onClick={() => handleCreditToggle('credit_skip_usage_window', !creditSkipWindow)}
-              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none ${creditSkipWindow ? 'bg-primary' : 'bg-muted'}`}
+              className={`relative inline-flex h-5 w-9 shrink-0 ${savingCredit ? "cursor-not-allowed opacity-60" : "cursor-pointer"} items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 ${creditSkipWindow ? 'bg-primary' : 'bg-muted'}`}
             >
               <span className={`pointer-events-none block size-4 rounded-full bg-white shadow transition-transform ${creditSkipWindow ? 'translate-x-4' : 'translate-x-0'}`} />
             </button>

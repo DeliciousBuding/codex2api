@@ -461,7 +461,7 @@ export default function ImageStudio() {
         if (r.status === 'fulfilled') dataURLs.push(r.value)
       }
       if (dataURLs.length > 0) {
-        setInputImageDataURLs(prev => [...prev, ...dataURLs])
+        setInputImageDataURLs(prev => [...prev, ...dataURLs].slice(0, MAX_INPUT_IMAGES))
       }
       if (dataURLs.length < results.length) {
         showToast(t('images.loadFailed'), 'error')
@@ -808,18 +808,21 @@ export default function ImageStudio() {
     return payload
   }
 
-  const submitJob = async (payload = createJobPayload()) => {
+  const submitJob = async (payload = createJobPayload(), forceMode?: 'text' | 'edit') => {
+    const isEditMode = forceMode != null
+      ? forceMode === 'edit'
+      : Array.isArray(payload.input_images) && payload.input_images.length > 0
     if (!payload.prompt.trim()) {
       showToast(t('images.promptRequired'), 'error')
       return
     }
-    if (imageToImageMode && inputImageDataURLs.length === 0) {
+    if (isEditMode && (!payload.input_images || payload.input_images.length === 0)) {
       showToast(t('images.inputImageRequired'), 'error')
       return
     }
     setSubmitting(true)
     try {
-      const res = imageToImageMode
+      const res = isEditMode
         ? await api.createImageEditJob(payload)
         : await api.createImageJob(payload)
       setCurrentJob(res.job)
@@ -849,6 +852,9 @@ export default function ImageStudio() {
     if (isEditJob) {
       setImageToImageMode(true)
       setInputImageDataURLs(params.input_images!)
+    } else {
+      setImageToImageMode(false)
+      setInputImageDataURLs([])
     }
     navigate('/images/studio')
     void submitJob({
@@ -863,7 +869,7 @@ export default function ImageStudio() {
       api_key_id: apiKeyID ? Number(apiKeyID) : undefined,
       template_id: params.template_id ? Number(params.template_id) : undefined,
       input_images: isEditJob ? params.input_images : undefined,
-    })
+    }, isEditJob ? 'edit' : 'text')
   }
 
   const rerunFromAsset = (asset: ImageAsset) => {

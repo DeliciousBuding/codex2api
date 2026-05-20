@@ -99,17 +99,17 @@ func (s *FastScheduler) SetSchedulerMode(mode string) {
 				}
 				return usageI < usageJ
 			})
-			} else {
-				sort.SliceStable(entries, func(i, j int) bool {
-					if entries[i].dispatchScore == entries[j].dispatchScore {
-						if entries[i].proven != entries[j].proven {
-							return entries[i].proven
-						}
-						return entries[i].dbID < entries[j].dbID
+		} else {
+			sort.SliceStable(entries, func(i, j int) bool {
+				if entries[i].dispatchScore == entries[j].dispatchScore {
+					if entries[i].proven != entries[j].proven {
+						return entries[i].proven
 					}
-					return entries[i].dispatchScore > entries[j].dispatchScore
-				})
-			}
+					return entries[i].dbID < entries[j].dbID
+				}
+				return entries[i].dispatchScore > entries[j].dispatchScore
+			})
+		}
 		s.buckets[tier] = entries
 		s.rebuildPositionsLocked(tier)
 	}

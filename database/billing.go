@@ -355,15 +355,5 @@ func calculateCost(inputTokens, outputTokens, cachedTokens int, model string, se
 }
 
 func calculateCostBreakdown(inputTokens, outputTokens, cachedTokens int, model string, serviceTier string) CostBreakdown {
-	bd := CalculateCostBreakdown(inputTokens, outputTokens, cachedTokens, model, serviceTier)
-	return CostBreakdown{
-		InputCost:                 bd.InputCost,
-		OutputCost:                bd.OutputCost,
-		CacheReadCost:             bd.CacheReadCost,
-		TotalCost:                 bd.TotalCost,
-		InputPricePerMToken:       bd.InputPricePerMToken,
-		OutputPricePerMToken:      bd.OutputPricePerMToken,
-		CacheReadPricePerMToken:   bd.CacheReadPricePerMToken,
-		ServiceTierCostMultiplier: bd.ServiceTierCostMultiplier,
-	}
+	return CalculateCostBreakdown(inputTokens, outputTokens, cachedTokens, model, serviceTier)
 }

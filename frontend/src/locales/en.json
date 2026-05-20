@@ -1261,6 +1261,7 @@
   "images": {
     "title": "Image Studio",
     "description": "Text-to-image generation, prompt templates, and server gallery",
+    "mode": "Mode",
     "views": {
       "studio": "Studio",
       "prompts": "Prompts",
