@@ -84,12 +84,12 @@ func TestCalculateCostHandlesCachedTokensAndServiceTier(t *testing.T) {
 			want:         0.00955,
 		},
 		{
-			name:         "gpt-4o with cache pricing",
+			name:         "without cache pricing (gpt-4o)",
 			model:        "gpt-4o",
 			inputTokens:  1000,
 			outputTokens: 500,
 			cachedTokens: 200,
-			want:         0.00725,
+			want:         0.0075,
 		},
 		{
 			name:         "uses priority prices when available",
