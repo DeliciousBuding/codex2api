@@ -204,3 +204,23 @@ func assertFloatEqual(t *testing.T, got, want float64) {
 		t.Fatalf("got %.12f, want %.12f", got, want)
 	}
 }
+
+func TestProModelsHaveCorrectPricing(t *testing.T) {
+	p55 := GetModelPricing("gpt-5.5-pro")
+	if p55.InputPricePerMToken != 30.0 || p55.OutputPricePerMToken != 180.0 {
+		t.Fatalf("gpt-5.5-pro pricing = input %.1f output %.1f, want input 30.0 output 180.0",
+			p55.InputPricePerMToken, p55.OutputPricePerMToken)
+	}
+
+	p54 := GetModelPricing("gpt-5.4-pro")
+	if p54.InputPricePerMToken != 30.0 || p54.OutputPricePerMToken != 180.0 {
+		t.Fatalf("gpt-5.4-pro pricing = input %.1f output %.1f, want input 30.0 output 180.0",
+			p54.InputPricePerMToken, p54.OutputPricePerMToken)
+	}
+
+	// Verify pro is NOT same as standard
+	std55 := GetModelPricing("gpt-5.5")
+	if std55.InputPricePerMToken == p55.InputPricePerMToken {
+		t.Fatal("gpt-5.5-pro should have different pricing from gpt-5.5")
+	}
+}

@@ -232,12 +232,16 @@ func normalizeBillingModelName(model string) string {
 func normalizeCodexBillingModel(model string) (string, bool) {
 	compact := strings.NewReplacer(" ", "-", "_", "-").Replace(model)
 	switch {
+	case strings.Contains(compact, "gpt-5.5-pro") || strings.Contains(compact, "gpt5-5-pro") || strings.Contains(compact, "gpt5.5-pro"):
+		return "gpt-5.5-pro", true
 	case strings.Contains(compact, "gpt-5.5") || strings.Contains(compact, "gpt5-5") || strings.Contains(compact, "gpt5.5"):
 		return "gpt-5.5", true
 	case strings.Contains(compact, "gpt-5.4-mini") || strings.Contains(compact, "gpt5-4-mini") || strings.Contains(compact, "gpt5.4-mini"):
 		return "gpt-5.4-mini", true
 	case strings.Contains(compact, "gpt-5.4-nano") || strings.Contains(compact, "gpt5-4-nano") || strings.Contains(compact, "gpt5.4-nano"):
 		return "gpt-5.4-nano", true
+	case strings.Contains(compact, "gpt-5.4-pro") || strings.Contains(compact, "gpt5-4-pro") || strings.Contains(compact, "gpt5.4-pro"):
+		return "gpt-5.4-pro", true
 	case strings.Contains(compact, "gpt-5.4") || strings.Contains(compact, "gpt5-4") || strings.Contains(compact, "gpt5.4"):
 		return "gpt-5.4", true
 	case strings.Contains(compact, "gpt-5.2") || strings.Contains(compact, "gpt5-2") || strings.Contains(compact, "gpt5.2"):
