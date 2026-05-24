@@ -2714,18 +2714,17 @@ func (h *Handler) BatchResetStatus(c *gin.Context) {
 	})
 }
 
-func (h *Handler) syncAccountPlanAfterReset(parent context.Context, acc *auth.Account) {
+func (h *Handler) syncAccountPlanAfterReset(_ context.Context, acc *auth.Account) {
 	if h == nil || h.syncAccountPlanOnReset == nil || acc == nil {
 		return
 	}
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
-	defer cancel()
-	if err := h.syncAccountPlanOnReset(ctx, acc); err != nil {
-		log.Printf("[account %d] sync Codex plan type after reset failed: %v", acc.DBID, err)
-	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := h.syncAccountPlanOnReset(ctx, acc); err != nil {
+			log.Printf("[账号 %d] 重置后同步 Codex plan type 失败: %v", acc.DBID, err)
+		}
+	}()
 }
 
 func (h *Handler) syncSingleAccountPlanOnReset(ctx context.Context, acc *auth.Account) error {

@@ -155,14 +155,16 @@ func TestResetAccountStatusSyncsPlanMetadata(t *testing.T) {
 	account.SetUsageSnapshot(88, time.Now().Add(time.Hour))
 	store.AddAccount(account)
 
-	var called bool
+	called := make(chan int64, 1)
 	handler := &Handler{
 		store: store,
 		syncAccountPlanOnReset: func(_ context.Context, acc *auth.Account) error {
-			called = true
-			if acc == nil || acc.DBID != 42 {
-				t.Fatalf("sync account = %#v, want DBID 42", acc)
+			if acc == nil {
+				t.Errorf("sync account is nil")
+				called <- -1
+				return nil
 			}
+			called <- acc.DBID
 			return nil
 		},
 	}
@@ -177,7 +179,12 @@ func TestResetAccountStatusSyncsPlanMetadata(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
-	if !called {
+	select {
+	case id := <-called:
+		if id != 42 {
+			t.Fatalf("sync DBID = %d, want 42", id)
+		}
+	case <-time.After(2 * time.Second):
 		t.Fatal("expected reset to sync plan metadata")
 	}
 	if _, ok := account.GetUsagePercent7d(); ok {
@@ -192,11 +199,11 @@ func TestBatchResetStatusSyncsEachResolvedAccount(t *testing.T) {
 	store.AddAccount(&auth.Account{DBID: 11, AccessToken: "at-11", PlanType: "free"})
 	store.AddAccount(&auth.Account{DBID: 22, AccessToken: "at-22", PlanType: "plus"})
 
-	var gotIDs []int64
+	gotIDs := make(chan int64, 2)
 	handler := &Handler{
 		store: store,
 		syncAccountPlanOnReset: func(_ context.Context, acc *auth.Account) error {
-			gotIDs = append(gotIDs, acc.DBID)
+			gotIDs <- acc.DBID
 			if acc.DBID == 22 {
 				return errors.New("temporary upstream failure")
 			}
@@ -214,15 +221,26 @@ func TestBatchResetStatusSyncsEachResolvedAccount(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
-	if fmt.Sprint(gotIDs) != "[11 22]" {
-		t.Fatalf("synced ids = %v, want [11 22]", gotIDs)
-	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if payload["success"] != float64(2) || payload["failed"] != float64(1) {
 		t.Fatalf("payload = %#v, want success=2 failed=1", payload)
+	}
+
+	collected := make(map[int64]bool)
+	deadline := time.After(2 * time.Second)
+	for len(collected) < 2 {
+		select {
+		case id := <-gotIDs:
+			collected[id] = true
+		case <-deadline:
+			t.Fatalf("synced ids = %v, want {11,22}", collected)
+		}
+	}
+	if !collected[11] || !collected[22] {
+		t.Fatalf("synced ids = %v, want both 11 and 22", collected)
 	}
 }
 

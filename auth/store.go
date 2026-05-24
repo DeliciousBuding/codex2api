@@ -4009,7 +4009,7 @@ func (s *Store) UpdateAccountPlanType(acc *Account, planType string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := s.db.UpdateCredentials(ctx, acc.DBID, map[string]interface{}{"plan_type": plan}); err != nil {
-		log.Printf("[璐﹀彿 %d] 鎸佷箙鍖?plan_type 澶辫触: %v", acc.DBID, err)
+		log.Printf("[账号 %d] 持久化 plan_type 失败: %v", acc.DBID, err)
 	}
 	return changed
 }
