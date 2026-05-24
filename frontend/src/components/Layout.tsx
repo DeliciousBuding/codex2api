@@ -1,4 +1,4 @@
-import { type PropsWithChildren, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type PropsWithChildren, type ReactNode, useEffect, useRef, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { LayoutDashboard, Users, Activity, Settings, Server, Sun, Moon, Languages, Globe, BookOpen, KeyRound, Image as ImageIcon, ShieldAlert, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -108,10 +108,10 @@ export default function Layout({ children }: PropsWithChildren) {
   return (
     <div className="min-h-dvh">
       <div
-        className="grid max-w-full max-lg:grid-cols-1 max-lg:px-3 transition-[grid-template-columns] duration-200"
+        className="grid max-w-full grid-cols-1 max-lg:px-3 lg:grid-cols-[var(--admin-layout-columns)] transition-[grid-template-columns] duration-200"
         style={{
-          gridTemplateColumns: sidebarCollapsed ? '64px minmax(0,1fr)' : '264px minmax(0,1fr)',
-        }}
+          '--admin-layout-columns': sidebarCollapsed ? '64px minmax(0,1fr)' : '264px minmax(0,1fr)',
+        } as CSSProperties}
       >
         {/* Sidebar - desktop */}
         <aside className="sticky top-0 self-start h-dvh border-r border-border bg-[hsl(var(--sidebar-background))] max-lg:hidden">
@@ -268,12 +268,12 @@ export default function Layout({ children }: PropsWithChildren) {
         {/* Main content */}
         <main className="min-w-0 p-5 max-lg:p-3 max-lg:pb-[92px]">
           {/* Mobile topbar */}
-          <header className="hidden max-lg:flex items-center justify-between gap-4 mb-4 p-3 border border-border rounded-lg bg-card/95 shadow-sm">
-            <div className="flex items-center gap-3">
+          <header className="hidden max-lg:flex min-w-0 w-full max-w-full items-center justify-between gap-2 overflow-hidden mb-4 p-3 border border-border rounded-lg bg-card/95 shadow-sm">
+            <div className="flex min-w-0 flex-1 items-center gap-3">
               <img src={logoSrc} alt={siteName} className="w-8 h-8 rounded-[10px] object-cover" />
-              <strong className="max-w-[150px] truncate text-lg" title={siteName}>{siteName}</strong>
+              <strong className="min-w-0 flex-1 truncate text-lg" title={siteName}>{siteName}</strong>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1.5">
               <button
                 onClick={toggleLang}
                 className="flex items-center justify-center size-8 rounded-lg text-muted-foreground hover:text-foreground transition-colors text-[11px] font-bold"
@@ -290,7 +290,7 @@ export default function Layout({ children }: PropsWithChildren) {
                   {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
                 </span>
               </button>
-              <span className="inline-flex items-center justify-center min-h-[28px] px-2.5 rounded-full text-[12px] font-bold bg-[hsl(var(--success-bg))] text-[hsl(var(--success))] shrink-0 whitespace-nowrap">
+              <span className="inline-flex items-center justify-center min-h-[28px] px-2.5 rounded-full text-[12px] font-bold bg-[hsl(var(--success-bg))] text-[hsl(var(--success))] shrink-0 whitespace-nowrap max-[420px]:hidden">
                 {t('common.online')}
               </span>
             </div>
@@ -316,7 +316,7 @@ export default function Layout({ children }: PropsWithChildren) {
                 }`}
               >
                 {item.icon}
-                <span>{t(item.labelKey)}</span>
+                <span className="w-full truncate leading-tight">{t(item.labelKey)}</span>
               </NavLink>
             )
           })}

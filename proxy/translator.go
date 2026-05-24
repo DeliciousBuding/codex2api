@@ -1897,6 +1897,11 @@ func sanitizeSchemaForUpstream(schema map[string]interface{}) {
 	ensureArrayItems(schema)
 }
 
+func sanitizeStructuredOutputSchemaForUpstream(schema map[string]interface{}) {
+	sanitizeSchemaForUpstream(schema)
+	ensureObjectAdditionalPropertiesFalse(schema)
+}
+
 func normalizeResponsesStructuredOutputFormat(body map[string]any) bool {
 	if len(body) == 0 {
 		return false
@@ -2053,12 +2058,12 @@ func responsesTextFormatFromResponseFormat(responseFormat map[string]any) map[st
 func sanitizeStructuredOutputSchema(format map[string]any) bool {
 	modified := false
 	if schema, ok := format["schema"].(map[string]any); ok && schema != nil {
-		sanitizeSchemaForUpstream(schema)
+		sanitizeStructuredOutputSchemaForUpstream(schema)
 		modified = true
 	}
 	if jsonSchema, ok := format["json_schema"].(map[string]any); ok && jsonSchema != nil {
 		if schema, ok := jsonSchema["schema"].(map[string]any); ok && schema != nil {
-			sanitizeSchemaForUpstream(schema)
+			sanitizeStructuredOutputSchemaForUpstream(schema)
 			modified = true
 		}
 	}
@@ -2185,6 +2190,41 @@ func ensureArrayItems(schema map[string]interface{}) {
 	}
 }
 
+func ensureObjectAdditionalPropertiesFalse(schema map[string]interface{}) {
+	if schemaDeclaresObject(schema) {
+		schema["additionalProperties"] = false
+	}
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		for _, v := range props {
+			if sub, ok := v.(map[string]interface{}); ok {
+				ensureObjectAdditionalPropertiesFalse(sub)
+			}
+		}
+	}
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		ensureObjectAdditionalPropertiesFalse(items)
+	}
+	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+		if arr, ok := schema[key].([]interface{}); ok {
+			for _, item := range arr {
+				if sub, ok := item.(map[string]interface{}); ok {
+					ensureObjectAdditionalPropertiesFalse(sub)
+				}
+			}
+		}
+	}
+	if addProps, ok := schema["additionalProperties"].(map[string]interface{}); ok {
+		ensureObjectAdditionalPropertiesFalse(addProps)
+	}
+	if defs, ok := schema["$defs"].(map[string]interface{}); ok {
+		for _, v := range defs {
+			if sub, ok := v.(map[string]interface{}); ok {
+				ensureObjectAdditionalPropertiesFalse(sub)
+			}
+		}
+	}
+}
+
 func schemaDeclaresArray(schema map[string]interface{}) bool {
 	switch t := schema["type"].(type) {
 	case string:
@@ -2192,6 +2232,20 @@ func schemaDeclaresArray(schema map[string]interface{}) bool {
 	case []interface{}:
 		for _, item := range t {
 			if s, ok := item.(string); ok && s == "array" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func schemaDeclaresObject(schema map[string]interface{}) bool {
+	switch t := schema["type"].(type) {
+	case string:
+		return t == "object"
+	case []interface{}:
+		for _, item := range t {
+			if s, ok := item.(string); ok && s == "object" {
 				return true
 			}
 		}

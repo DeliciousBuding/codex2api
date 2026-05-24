@@ -711,6 +711,12 @@ func TestPrepareResponsesBody_ConvertsAndSanitizesLegacyResponseFormat(t *testin
 	if gjson.GetBytes(got, "text.format.schema.properties.testEnvironmentContract.minProperties").Exists() {
 		t.Fatalf("minProperties should be stripped after response_format conversion; body=%s", got)
 	}
+	if v := gjson.GetBytes(got, "text.format.schema.additionalProperties"); !v.Exists() || v.Bool() {
+		t.Fatalf("root object should get additionalProperties=false, got %s; body=%s", v.Raw, got)
+	}
+	if v := gjson.GetBytes(got, "text.format.schema.properties.testEnvironmentContract.additionalProperties"); !v.Exists() || v.Bool() {
+		t.Fatalf("nested object should get additionalProperties=false, got %s; body=%s", v.Raw, got)
+	}
 }
 
 func TestTranslateRequest_ConvertsAndSanitizesResponseFormat(t *testing.T) {
@@ -748,6 +754,12 @@ func TestTranslateRequest_ConvertsAndSanitizesResponseFormat(t *testing.T) {
 	}
 	if gjson.GetBytes(got, "text.format.schema.properties.testEnvironmentContract.minProperties").Exists() {
 		t.Fatalf("minProperties should be stripped in translated response_format schema; body=%s", got)
+	}
+	if v := gjson.GetBytes(got, "text.format.schema.additionalProperties"); !v.Exists() || v.Bool() {
+		t.Fatalf("root object should get additionalProperties=false, got %s; body=%s", v.Raw, got)
+	}
+	if v := gjson.GetBytes(got, "text.format.schema.properties.testEnvironmentContract.additionalProperties"); !v.Exists() || v.Bool() {
+		t.Fatalf("nested object should get additionalProperties=false, got %s; body=%s", v.Raw, got)
 	}
 }
 
