@@ -237,6 +237,15 @@ function UsageCostCell({ log }: { log: UsageLog }) {
           {log.cached_tokens > 0 && log.cache_read_price_per_mtoken > 0 && (
             <CostTooltipRow label={t('usage.cacheReadUnitPrice')} value={formatTokenPricePerMillion(log.cache_read_price_per_mtoken)} valueClassName="text-cyan-300" />
           )}
+          <CostTooltipRow
+            label={t('usage.billingTier')}
+            value={(log.service_tier === 'fast' || log.service_tier === 'priority')
+              ? t('usage.billingTierFast')
+              : t('usage.billingTierStandard')}
+            valueClassName={(log.service_tier === 'fast' || log.service_tier === 'priority')
+              ? 'text-amber-300'
+              : 'text-slate-200'}
+          />
         </div>
       </TooltipContent>
     </Tooltip>
