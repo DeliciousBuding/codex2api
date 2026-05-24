@@ -1815,26 +1815,24 @@ func resolveServiceTier(actualTier, requestedTier string) string {
 	return final
 }
 
-// resolveBillingServiceTier keeps UI tier normalization separate from billing:
-// fast/priority intent is billed as priority only when the upstream does not
-// report a concrete tier, or when it confirms fast/priority. Any concrete
-// upstream tier wins so billing follows the actual tier reported by upstream.
+// resolveBillingServiceTier 按"请求意图"决定计费 tier：
+// 只要客户端显式请求 fast/priority，就锁定为 priority 计费（×2），
+// 不被上游降级值（如 default）掩盖——保证 fast 用户不会因为上游通道波动而漏费。
+// 客户端没指定 tier 时，才回退到上游实际报告的 tier。
 func resolveBillingServiceTier(actualTier, requestedTier string) string {
-	actualTier = strings.ToLower(strings.TrimSpace(actualTier))
-	if actualTier != "" {
-		if actualTier == "priority" || actualTier == "fast" {
-			return "priority"
-		}
-		return actualTier
+	requestedTier = strings.ToLower(strings.TrimSpace(requestedTier))
+	if requestedTier == "priority" || requestedTier == "fast" {
+		return "priority"
 	}
 
-	requestedTier = strings.ToLower(strings.TrimSpace(requestedTier))
-	switch requestedTier {
-	case "priority", "fast":
+	actualTier = strings.ToLower(strings.TrimSpace(actualTier))
+	if actualTier == "priority" || actualTier == "fast" {
 		return "priority"
-	default:
-		return requestedTier
 	}
+	if actualTier != "" {
+		return actualTier
+	}
+	return requestedTier
 }
 
 // 上游不支持的 JSON Schema 验证约束关键字
