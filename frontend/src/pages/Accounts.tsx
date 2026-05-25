@@ -4812,8 +4812,12 @@ function formatJSONText(text: string) {
 
 async function copyTextToClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back for non-secure contexts or browsers that block clipboard writes.
+    }
   }
 
   const textarea = document.createElement("textarea");
@@ -4822,8 +4826,11 @@ async function copyTextToClipboard(text: string) {
   textarea.style.position = "fixed";
   textarea.style.top = "-1000px";
   textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
   document.body.appendChild(textarea);
+  textarea.focus({ preventScroll: true });
   textarea.select();
+  textarea.setSelectionRange(0, text.length);
   const copied = document.execCommand("copy");
   document.body.removeChild(textarea);
   if (!copied) {
