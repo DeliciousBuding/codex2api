@@ -1,10 +1,10 @@
 import { type CSSProperties, type PropsWithChildren, type ReactNode, useEffect, useRef, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Users, Activity, Settings, Server, Sun, Moon, Languages, Globe, BookOpen, KeyRound, Image as ImageIcon, ShieldAlert, ExternalLink, ChevronLeft } from 'lucide-react'
+import { LayoutDashboard, Users, Activity, Settings, Server, Languages, Globe, BookOpen, KeyRound, Image as ImageIcon, ShieldAlert, ExternalLink, ChevronLeft, Palette, Sun, Moon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { DEFAULT_SITE_LOGO, useBranding } from '../branding'
-import { useTheme } from '../hooks/useTheme'
 import { useVersionCheck } from '../hooks/useVersionCheck'
+import { useTheme } from '../hooks/useTheme'
 import SecurityBanner from './SecurityBanner'
 
 type NavDef = {
@@ -24,18 +24,19 @@ const navDefs: NavDef[] = [
   { to: '/prompt-filter/overview', labelKey: 'nav.promptFilter', icon: <ShieldAlert className="size-[18px]" />, activePrefix: '/prompt-filter' },
   { to: '/ops/overview', labelKey: 'nav.ops', icon: <Server className="size-[18px]" />, activePrefix: '/ops' },
   { to: '/usage', labelKey: 'nav.usage', icon: <Activity className="size-[18px]" /> },
+  { to: '/theme', labelKey: 'nav.theme', icon: <Palette className="size-[18px]" /> },
   { to: '/settings', labelKey: 'nav.settings', icon: <Settings className="size-[18px]" /> },
   { to: '/docs', labelKey: 'nav2.docs', icon: <BookOpen className="size-[18px]" /> },
 ]
 
 export default function Layout({ children }: PropsWithChildren) {
   const location = useLocation()
-  const { theme, toggle } = useTheme()
   const { t, i18n } = useTranslation()
   const { hasUpdate, latestVersion } = useVersionCheck(location.pathname)
   const { siteName, siteLogo } = useBranding()
-  const logoSrc = siteLogo || DEFAULT_SITE_LOGO
+  const { theme, toggle } = useTheme()
   const [spinning, setSpinning] = useState(false)
+  const logoSrc = siteLogo || DEFAULT_SITE_LOGO
   const [showVersionPopover, setShowVersionPopover] = useState(false)
   // 侧栏折叠状态。lg+ 屏才生效;collapsed=true 时只显示 icon,列宽从 264 → 64。
   // localStorage 持久化跨刷新保留选择。
@@ -83,16 +84,16 @@ export default function Layout({ children }: PropsWithChildren) {
     }
   }, [showVersionPopover])
 
-  const handleThemeToggle = (e: React.MouseEvent) => {
-    setSpinning(true)
-    toggle(e)
-    setTimeout(() => setSpinning(false), 500)
-  }
-
   const toggleLang = () => {
     const next = i18n.language === 'zh' ? 'en' : 'zh'
     i18n.changeLanguage(next)
     localStorage.setItem('lang', next)
+  }
+
+  const handleThemeToggle = (e: React.MouseEvent) => {
+    setSpinning(true)
+    toggle(e)
+    setTimeout(() => setSpinning(false), 500)
   }
 
   const isNavActive = (item: NavDef) => {
@@ -213,7 +214,7 @@ export default function Layout({ children }: PropsWithChildren) {
             </button>
 
             {/* Nav */}
-            <nav className="flex-1 flex flex-col gap-1 pt-3" aria-label="Main navigation">
+            <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pt-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label="Main navigation">
               <span
                 className={`mb-1 overflow-hidden whitespace-nowrap px-2 text-[11px] font-bold uppercase text-muted-foreground transition-[max-height,opacity,margin] ${textEase} ${textRevealDelay} ${
                   sidebarCollapsed ? 'mb-0 max-h-0 opacity-0' : 'max-h-5 opacity-100'
@@ -290,6 +291,7 @@ export default function Layout({ children }: PropsWithChildren) {
                   onClick={handleThemeToggle}
                   className="flex items-center justify-center size-9 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors duration-150"
                   title={theme === 'dark' ? t('common.switchToLight') : t('common.switchToDark')}
+                  aria-label={theme === 'dark' ? t('common.switchToLight') : t('common.switchToDark')}
                 >
                   <span className={`inline-flex transition-transform duration-500 ease-out ${spinning ? 'rotate-[360deg] scale-110' : 'rotate-0 scale-100'}`}>
                     {theme === 'dark' ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
@@ -320,6 +322,7 @@ export default function Layout({ children }: PropsWithChildren) {
                 onClick={handleThemeToggle}
                 className="flex items-center justify-center size-8 rounded-lg text-muted-foreground hover:text-foreground transition-colors"
                 title={theme === 'dark' ? t('common.switchToLight') : t('common.switchToDark')}
+                aria-label={theme === 'dark' ? t('common.switchToLight') : t('common.switchToDark')}
               >
                 <span className={`inline-flex transition-transform duration-500 ease-out ${spinning ? 'rotate-[360deg] scale-110' : 'rotate-0 scale-100'}`}>
                   {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
