@@ -1353,11 +1353,11 @@ export default function Accounts() {
         const blob = new Blob([JSON.stringify(data, null, 2)], {
           type: "application/json",
         });
-        downloadBlob(blob, `cpa-${ts}-${data.length}.json`);
+        downloadBlob(blob, `codex2api-${ts}-${data.length}.json`);
       } else {
         const text = data.map((e) => e.refresh_token).join("\n");
         const blob = new Blob([text], { type: "text/plain" });
-        downloadBlob(blob, `rt-${ts}-${data.length}.txt`);
+        downloadBlob(blob, `codex2api-rt-${ts}-${data.length}.txt`);
       }
       showToast(t("accounts.exportSuccess", { count: data.length }));
     } catch (error) {

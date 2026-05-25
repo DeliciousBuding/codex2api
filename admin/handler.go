@@ -4891,6 +4891,11 @@ func (h *Handler) ExportAccounts(c *gin.Context) {
 		if rt == "" && at == "" {
 			continue
 		}
+		// account_id 在凭据中存储为 chatgpt_account_id（新字段）或 account_id（历史字段）
+		accountID := row.GetCredential("chatgpt_account_id")
+		if accountID == "" {
+			accountID = row.GetCredential("account_id")
+		}
 		entries = append(entries, cpaExportEntry{
 			Type:                "codex",
 			Email:               row.GetCredential("email"),
@@ -4902,7 +4907,7 @@ func (h *Handler) ExportAccounts(c *gin.Context) {
 			CodexUsageUpdatedAt: row.GetCredential("codex_usage_updated_at"),
 			Expired:             row.GetCredential("expires_at"),
 			IDToken:             row.GetCredential("id_token"),
-			AccountID:           row.GetCredential("account_id"),
+			AccountID:           accountID,
 			AccessToken:         at,
 			LastRefresh:         row.UpdatedAt.Format(time.RFC3339),
 			RefreshToken:        rt,
