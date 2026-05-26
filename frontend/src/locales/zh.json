@@ -19,6 +19,7 @@
     "currentVersion": "当前版本：{{version}}",
     "latestVersion": "最新版本：{{version}}",
     "versionLatest": "已是最新版本",
+    "versionChecking": "正在检查最新版本…",
     "viewReleaseNotes": "查看更新内容",
     "logout": "退出登录",
     "refresh": "刷新",

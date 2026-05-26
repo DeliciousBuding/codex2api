@@ -19,6 +19,7 @@
     "currentVersion": "Current version: {{version}}",
     "latestVersion": "Latest version: {{version}}",
     "versionLatest": "You are on the latest version",
+    "versionChecking": "Checking for the latest version…",
     "viewReleaseNotes": "View release notes",
     "logout": "Log out",
     "refresh": "Refresh",
