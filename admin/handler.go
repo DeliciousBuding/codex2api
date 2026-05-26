@@ -66,6 +66,10 @@ type Handler struct {
 	reqCountMu        sync.RWMutex
 	reqCountCache     map[int64]*database.AccountRequestCount
 	reqCountExpiresAt time.Time
+
+	resetRadarHookMu     sync.Mutex
+	resetRadarHookState  resetRadarHookState
+	resetRadarHookRunner func(context.Context, string) resetRadarHookResult
 }
 
 type chartCacheEntry struct {
@@ -184,6 +188,7 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 	}
 	handler.refreshAccount = handler.refreshSingleAccount
 	handler.syncAccountPlanOnReset = handler.syncSingleAccountPlanOnReset
+	handler.resetRadarHookRunner = handler.runResetRadarSignalHook
 	if db != nil {
 		if err := db.MarkInterruptedImageJobs(context.Background()); err != nil {
 			log.Printf("标记中断生图任务失败: %v", err)
@@ -264,6 +269,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors", h.GetOpsErrorLogs)
 	api.GET("/ops/errors/export", h.ExportOpsErrorLogs)
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
+	api.GET("/reset-radar", h.GetResetRadar)
 	api.GET("/settings", h.GetSettings)
 	api.PUT("/settings", h.UpdateSettings)
 	api.POST("/settings/background-upload", h.UploadBackgroundAsset)

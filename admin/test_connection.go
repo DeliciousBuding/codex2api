@@ -721,6 +721,9 @@ func (h *Handler) runSingleBatchTest(ctx context.Context, acc *auth.Account) (st
 			if msg, limited := formatUsageLimitedTestError(usageState); limited {
 				return "rate_limited", msg
 			}
+			if !usageState.HasUsage7d && !usageState.HasUsage5h {
+				acc.ClearUsageCache()
+			}
 		}
 		// 测试成功即重置冷却状态，用量限制由调度器自行判断
 		h.store.ClearCooldown(acc)
