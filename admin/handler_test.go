@@ -312,6 +312,79 @@ func TestRefreshAccountReturnsRefreshFailure(t *testing.T) {
 	}
 }
 
+func TestBatchRefreshAccountsReportsCounts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := &Handler{
+		refreshAccount: func(_ context.Context, id int64) error {
+			if id == 8 {
+				return errors.New("upstream unavailable")
+			}
+			return nil
+		},
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/batch-refresh", strings.NewReader(`{"ids":[7,8,7,0]}`))
+
+	handler.BatchRefreshAccounts(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := payload["success"]; got != float64(1) {
+		t.Fatalf("success = %v, want 1", got)
+	}
+	if got := payload["failed"]; got != float64(1) {
+		t.Fatalf("failed = %v, want 1", got)
+	}
+}
+
+func TestBatchRefreshAccountsStreamsProgress(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := &Handler{
+		refreshAccount: func(_ context.Context, id int64) error {
+			if id == 8 {
+				return errors.New("账号 8 不存在")
+			}
+			return nil
+		},
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/batch-refresh?stream=true", strings.NewReader(`{"ids":[7,8]}`))
+
+	handler.BatchRefreshAccounts(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("content-type = %q, want event-stream", got)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`"type":"start"`,
+		`"type":"progress"`,
+		`"type":"complete"`,
+		`"action":"batch_refresh"`,
+		`"success":1`,
+		`"failed":1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream body missing %s:\n%s", want, body)
+		}
+	}
+}
+
 func TestResetAccountStatusSyncsPlanMetadata(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

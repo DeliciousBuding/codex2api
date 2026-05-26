@@ -11,6 +11,7 @@ export type AccountStatus = 'active' | 'ready' | 'cooldown' | 'error' | 'refresh
 export interface StatsResponse {
   total: number
   available: number
+  rate_limited: number
   error: number
   today_requests: number
 }
@@ -27,6 +28,7 @@ export interface AccountRow {
   name: string
   email: string
   plan_type: string
+  subscription_expires_at?: string
   status: AccountStatus
   error_message?: string
   at_only?: boolean
