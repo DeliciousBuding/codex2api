@@ -8,10 +8,18 @@ body:
       value: |
         随手记下来就行，哪怕只是个一句话的方向，也欢迎提。
 
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: 提交前我已确认
+      options:
+        - label: 我搜过 [已有 issues](https://github.com/james-6-23/codex2api/issues?q=is%3Aissue)，没看到类似的想法
+          required: true
+
   - type: textarea
     id: idea
     attributes:
-      label: 你的想法
+      label: 我的想法
       placeholder: |
         例如：希望调度器支持按地区/延迟分组；希望 Image Studio 支持批量任务；
         希望 API Key 可以设置请求频率上限……
@@ -21,16 +29,16 @@ body:
   - type: textarea
     id: why
     attributes:
-      label: 想解决什么问题 / 用在什么场景？（可选）
-      placeholder: 现在是怎么用的，哪里别扭，加上这个会变成什么样。
+      label: 我想解决什么问题 / 用在什么场景？（可选）
+      placeholder: 我现在是怎么用的，哪里别扭，加上这个会变成什么样。
 
   - type: dropdown
     id: priority
     attributes:
-      label: 对你来说有多重要？（随手选）
+      label: 对我来说有多重要？（随手选）
       options:
         - 顺手提一下，有就更好
-        - 挺需要的，会影响日常使用
+        - 挺需要的，会影响我的日常使用
         - 强烈想要，目前是个明显痛点
     validations:
       required: false
