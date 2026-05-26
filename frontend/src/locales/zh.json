@@ -1181,6 +1181,8 @@
     "timezone": "系统时区",
     "timezoneDesc": "控制前端日期/时间显示。修改后页面自动刷新生效。",
     "timezoneAuto": "自动（浏览器时区）",
+    "showFullUsageNumbers": "显示完整用量数字",
+    "showFullUsageNumbersDesc": "开启后 Usage 页请求数、Tokens 等统计显示完整数字；关闭时默认显示 1.2M、3.4B 等紧凑单位。",
     "fastSchedulerEnabled": "快速调度器",
     "fastSchedulerEnabledDesc": "启用后，账号选择将使用内存快速调度算法，大幅降低高并发场景下的调度延迟。适合大号池（100+ 账号）场景。",
     "schedulerMode": "调度模式",

@@ -451,6 +451,7 @@ export default function Settings() {
     stream_flush_policy: 'immediate',
     stream_flush_interval_ms: 20,
     first_token_timeout_seconds: 0,
+    show_full_usage_numbers: false,
     image_storage_backend: 'local',
     image_s3_endpoint: '',
     image_s3_region: '',
@@ -1200,6 +1201,13 @@ export default function Settings() {
                       { label: '(GMT+10:00) Australia/Sydney', value: 'Australia/Sydney' },
                       { label: '(GMT+12:00) Pacific/Auckland', value: 'Pacific/Auckland' },
                     ]}
+                  />
+                </SettingField>
+                <SettingField label={t('settings.showFullUsageNumbers')} description={t('settings.showFullUsageNumbersDesc')}>
+                  <Select
+                    value={settingsForm.show_full_usage_numbers ? 'true' : 'false'}
+                    onValueChange={(value) => setSettingsForm((f) => ({ ...f, show_full_usage_numbers: value === 'true' }))}
+                    options={booleanOptions}
                   />
                 </SettingField>
               </div>

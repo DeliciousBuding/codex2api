@@ -1181,6 +1181,8 @@
     "timezone": "System Timezone",
     "timezoneDesc": "Controls date/time display in the frontend. The page will reload automatically after changing.",
     "timezoneAuto": "Auto (Browser Timezone)",
+    "showFullUsageNumbers": "Show full usage numbers",
+    "showFullUsageNumbersDesc": "When enabled, the Usage page shows full request and token counts. When disabled, it uses compact units like 1.2M and 3.4B.",
     "fastSchedulerEnabled": "Fast Scheduler",
     "fastSchedulerEnabledDesc": "Uses an in-memory fast scheduling algorithm, significantly reducing dispatch latency under high concurrency. Recommended for large account pools (100+).",
     "schedulerMode": "Scheduler Mode",

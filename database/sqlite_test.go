@@ -595,6 +595,7 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 		SchedulerMode:                    "round_robin",
 		AffinityMode:                     "bounded",
 		BackgroundConfig:                 "{}",
+		ShowFullUsageNumbers:             true,
 	}); err != nil {
 		t.Fatalf("UpdateSystemSettings 返回错误: %v", err)
 	}
@@ -608,6 +609,9 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 	}
 	if settings.FirstTokenTimeoutSeconds != 17 {
 		t.Fatalf("FirstTokenTimeoutSeconds = %d, want 17", settings.FirstTokenTimeoutSeconds)
+	}
+	if !settings.ShowFullUsageNumbers {
+		t.Fatal("ShowFullUsageNumbers = false, want true")
 	}
 }
 

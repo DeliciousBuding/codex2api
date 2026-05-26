@@ -143,6 +143,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 				stream_flush_interval_ms INTEGER DEFAULT 20,
 				first_token_timeout_seconds INTEGER DEFAULT 0,
 				image_storage_config TEXT DEFAULT '{}',
+				show_full_usage_numbers INTEGER DEFAULT 0,
 				scheduler_mode TEXT DEFAULT 'round_robin',
 				affinity_mode TEXT DEFAULT 'bounded'
 			);`,
@@ -341,6 +342,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "stream_flush_interval_ms", "INTEGER DEFAULT 20"},
 		{"system_settings", "first_token_timeout_seconds", "INTEGER DEFAULT 0"},
 		{"system_settings", "image_storage_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "show_full_usage_numbers", "INTEGER DEFAULT 0"},
 		{"system_settings", "scheduler_mode", "TEXT DEFAULT 'round_robin'"},
 		{"system_settings", "affinity_mode", "TEXT DEFAULT 'bounded'"},
 		{"accounts", "enabled", "INTEGER DEFAULT 1"},

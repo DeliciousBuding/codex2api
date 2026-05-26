@@ -4226,6 +4226,7 @@ type settingsResponse struct {
 	StreamFlushPolicy                string `json:"stream_flush_policy"`
 	StreamFlushIntervalMS            int    `json:"stream_flush_interval_ms"`
 	FirstTokenTimeoutSeconds         int    `json:"first_token_timeout_seconds"`
+	ShowFullUsageNumbers             bool   `json:"show_full_usage_numbers"`
 	ImageStorageBackend              string `json:"image_storage_backend"`
 	ImageS3Endpoint                  string `json:"image_s3_endpoint"`
 	ImageS3Region                    string `json:"image_s3_region"`
@@ -4289,6 +4290,7 @@ type updateSettingsReq struct {
 	StreamFlushPolicy                *string `json:"stream_flush_policy"`
 	StreamFlushIntervalMS            *int    `json:"stream_flush_interval_ms"`
 	FirstTokenTimeoutSeconds         *int    `json:"first_token_timeout_seconds"`
+	ShowFullUsageNumbers             *bool   `json:"show_full_usage_numbers"`
 	ImageStorageBackend              *string `json:"image_storage_backend"`
 	ImageS3Endpoint                  *string `json:"image_s3_endpoint"`
 	ImageS3Region                    *string `json:"image_s3_region"`
@@ -4770,12 +4772,14 @@ func (h *Handler) GetSettings(c *gin.Context) {
 	adminSecret := ""
 	var resinURL, resinPlatformName string
 	branding := brandingFromSettings(dbSettings)
+	showFullUsageNumbers := false
 	if dbSettings != nil && adminAuthSource != "env" {
 		adminSecret = dbSettings.AdminSecret
 	}
 	if dbSettings != nil {
 		resinURL = dbSettings.ResinURL
 		resinPlatformName = dbSettings.ResinPlatformName
+		showFullUsageNumbers = dbSettings.ShowFullUsageNumbers
 	}
 	promptFilterCfg := h.store.GetPromptFilterConfig()
 	runtimeCfg := proxy.CurrentRuntimeSettings()
@@ -4843,6 +4847,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		StreamFlushPolicy:                runtimeCfg.StreamFlushPolicy,
 		StreamFlushIntervalMS:            runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenTimeoutSeconds:         runtimeCfg.FirstTokenTimeoutSec,
+		ShowFullUsageNumbers:             showFullUsageNumbers,
 		ImageStorageBackend:              imgCfg.Backend,
 		ImageS3Endpoint:                  imgCfg.Endpoint,
 		ImageS3Region:                    imgCfg.Region,
@@ -4866,12 +4871,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	siteName := database.DefaultSiteName
 	siteLogo := ""
 	bgCfg := defaultBackgroundConfig()
+	showFullUsageNumbers := false
 	existingSettings, _ := h.db.GetSystemSettings(c.Request.Context())
 	if existingSettings != nil {
 		currentAdminSecret = existingSettings.AdminSecret
 		siteName = database.NormalizeSiteName(existingSettings.SiteName)
 		siteLogo = strings.TrimSpace(existingSettings.SiteLogo)
 		bgCfg = decodeBackgroundConfig(existingSettings.BackgroundConfig)
+		showFullUsageNumbers = existingSettings.ShowFullUsageNumbers
 	}
 	if req.AdminSecret != nil {
 		if h.adminSecretEnv == "" {
@@ -5163,6 +5170,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.FirstTokenTimeoutSec = *req.FirstTokenTimeoutSeconds
 		log.Printf("设置已更新: first_token_timeout_seconds = %d", runtimeCfg.FirstTokenTimeoutSec)
 	}
+	if req.ShowFullUsageNumbers != nil {
+		showFullUsageNumbers = *req.ShowFullUsageNumbers
+		log.Printf("设置已更新: show_full_usage_numbers = %t", showFullUsageNumbers)
+	}
 	runtimeCfg = proxy.ApplyRuntimeSettings(runtimeCfg)
 
 	usageLogChanged := false
@@ -5375,6 +5386,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		StreamFlushPolicy:                runtimeCfg.StreamFlushPolicy,
 		StreamFlushIntervalMS:            runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenTimeoutSeconds:         runtimeCfg.FirstTokenTimeoutSec,
+		ShowFullUsageNumbers:             showFullUsageNumbers,
 		ImageStorageConfig:               imgConfigJSON,
 		BackgroundConfig:                 encodeBackgroundConfig(bgCfg),
 	})
@@ -5454,6 +5466,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		StreamFlushPolicy:                runtimeCfg.StreamFlushPolicy,
 		StreamFlushIntervalMS:            runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenTimeoutSeconds:         runtimeCfg.FirstTokenTimeoutSec,
+		ShowFullUsageNumbers:             showFullUsageNumbers,
 		ImageStorageBackend:              imgCfg.Backend,
 		ImageS3Endpoint:                  imgCfg.Endpoint,
 		ImageS3Region:                    imgCfg.Region,

@@ -454,6 +454,7 @@ export interface SystemSettings {
   stream_flush_policy: 'immediate' | 'coalesce' | string
   stream_flush_interval_ms: number
   first_token_timeout_seconds: number
+  show_full_usage_numbers: boolean
   image_storage_backend: 'local' | 's3' | string
   image_s3_endpoint: string
   image_s3_region: string
