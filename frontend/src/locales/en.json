@@ -622,6 +622,8 @@
     "groupDeleteForce": "Force delete",
     "columnSettings": "Columns",
     "columnReset": "Reset columns",
+    "viewModeTable": "Table",
+    "viewModeGrid": "Cards",
     "schedulerPreviewTitle": "Current Scheduler Preview",
     "schedulerPreviewRawScore": "Raw Score",
     "schedulerPreviewDispatchScore": "Dispatch Score",

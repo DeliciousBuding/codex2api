@@ -622,6 +622,8 @@
     "groupDeleteForce": "强制删除",
     "columnSettings": "列设置",
     "columnReset": "重置列",
+    "viewModeTable": "表格",
+    "viewModeGrid": "卡片",
     "schedulerPreviewTitle": "当前调度预览",
     "schedulerPreviewRawScore": "原始分",
     "schedulerPreviewDispatchScore": "当前调度分",

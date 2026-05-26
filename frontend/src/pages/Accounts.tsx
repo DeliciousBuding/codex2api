@@ -74,6 +74,8 @@ import {
   Hourglass,
   X,
   SlidersHorizontal,
+  LayoutGrid,
+  Rows3,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AccountUsageModal from "../components/AccountUsageModal";
@@ -162,6 +164,27 @@ function persistAccountVisibleColumns(
     );
   } catch {
     // Keep the in-memory preference working when localStorage is unavailable.
+  }
+}
+
+const ACCOUNT_VIEW_MODE_KEY = "codex2api:accounts:view-mode";
+type AccountViewMode = "table" | "grid";
+
+function getInitialAccountViewMode(): AccountViewMode {
+  try {
+    const raw = window.localStorage.getItem(ACCOUNT_VIEW_MODE_KEY);
+    if (raw === "grid" || raw === "table") return raw;
+  } catch {
+    // ignore
+  }
+  return "table";
+}
+
+function persistAccountViewMode(mode: AccountViewMode) {
+  try {
+    window.localStorage.setItem(ACCOUNT_VIEW_MODE_KEY, mode);
+  } catch {
+    // ignore
   }
 }
 
@@ -496,6 +519,9 @@ export default function Accounts() {
   const [visibleColumns, setVisibleColumns] = useState<
     Record<AccountTableColumn, boolean>
   >(getInitialAccountVisibleColumns);
+  const [viewMode, setViewMode] = useState<AccountViewMode>(
+    getInitialAccountViewMode,
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const jsonAtInputRef = useRef<HTMLInputElement>(null);
@@ -635,6 +661,10 @@ export default function Accounts() {
   useEffect(() => {
     persistAccountVisibleColumns(visibleColumns);
   }, [visibleColumns]);
+
+  useEffect(() => {
+    persistAccountViewMode(viewMode);
+  }, [viewMode]);
 
   useEffect(() => {
     if (groupFilter === null) return;
@@ -2674,7 +2704,39 @@ export default function Accounts() {
               <FolderOpen className="size-3.5" />
               {t("accounts.groupManage")}
             </Button>
-            <div className="ml-auto shrink-0">
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              <div className="hidden lg:inline-flex items-center rounded-md border border-border bg-muted/50 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setViewMode("table")}
+                  title={t("accounts.viewModeTable")}
+                  aria-label={t("accounts.viewModeTable")}
+                  aria-pressed={viewMode === "table"}
+                  className={`inline-flex items-center gap-1 rounded-sm px-2 py-1 text-[12px] font-medium transition-colors ${
+                    viewMode === "table"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Rows3 className="size-3.5" />
+                  {t("accounts.viewModeTable")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode("grid")}
+                  title={t("accounts.viewModeGrid")}
+                  aria-label={t("accounts.viewModeGrid")}
+                  aria-pressed={viewMode === "grid"}
+                  className={`inline-flex items-center gap-1 rounded-sm px-2 py-1 text-[12px] font-medium transition-colors ${
+                    viewMode === "grid"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <LayoutGrid className="size-3.5" />
+                  {t("accounts.viewModeGrid")}
+                </button>
+              </div>
               <ColumnSettingsMenu
                 columns={visibleColumns}
                 onToggle={(column) =>
@@ -2818,7 +2880,13 @@ export default function Accounts() {
                   </Button>
                 }
               >
-                <div className="grid gap-3 lg:hidden">
+                <div
+                  className={
+                    viewMode === "grid"
+                      ? "grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"
+                      : "grid gap-3 lg:hidden"
+                  }
+                >
                   {pagedAccounts.map((account, index) => {
                     const isSelected = selected.has(account.id);
                     return (
@@ -2851,7 +2919,9 @@ export default function Accounts() {
                   })}
                 </div>
 
-                <div className="data-table-shell hidden lg:block">
+                <div
+                  className={`data-table-shell hidden lg:block ${viewMode === "grid" ? "lg:hidden" : ""}`}
+                >
                   <Table>
                     <TableHeader>
                       <TableRow>
