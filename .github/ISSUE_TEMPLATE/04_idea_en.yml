@@ -8,10 +8,18 @@ body:
       value: |
         Even a one-liner is welcome. Don't worry about writing a full spec.
 
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Before I submit
+      options:
+        - label: I searched [existing issues](https://github.com/james-6-23/codex2api/issues?q=is%3Aissue) and didn't see a similar idea
+          required: true
+
   - type: textarea
     id: idea
     attributes:
-      label: Your idea
+      label: My idea
       placeholder: |
         e.g. group accounts by region/latency in the scheduler;
         batch jobs in Image Studio; per-API-key rate limits…
@@ -22,11 +30,12 @@ body:
     id: why
     attributes:
       label: What problem does it solve? (optional)
+      placeholder: How I'm using it today, what's awkward, and what changes if this lands.
 
   - type: dropdown
     id: priority
     attributes:
-      label: How important is it to you? (just a vibe check)
+      label: How important is it to me? (just a vibe check)
       options:
         - Nice to have
         - Would noticeably improve daily use
