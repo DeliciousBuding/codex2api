@@ -1,4 +1,5 @@
 import { type CSSProperties, type PropsWithChildren, type ReactNode, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { NavLink, useLocation } from 'react-router-dom'
 import { LayoutDashboard, Users, Activity, Settings, Server, Languages, Globe, BookOpen, KeyRound, Image as ImageIcon, ShieldAlert, ExternalLink, ChevronLeft, Palette, Sun, Moon, LogOut, Radar } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -62,6 +63,8 @@ export default function Layout({ children }: PropsWithChildren) {
     })
   }
   const versionPopoverRef = useRef<HTMLDivElement | null>(null)
+  const versionButtonRef = useRef<HTMLButtonElement | null>(null)
+  const [versionPopoverPos, setVersionPopoverPos] = useState<{ top: number; left: number } | null>(null)
   const releaseURL = latestVersion
     ? `https://github.com/james-6-23/codex2api/releases/tag/${encodeURIComponent(latestVersion)}`
     : undefined
@@ -69,9 +72,17 @@ export default function Layout({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!showVersionPopover) return
 
+    const updatePosition = () => {
+      const rect = versionButtonRef.current?.getBoundingClientRect()
+      if (!rect) return
+      setVersionPopoverPos({ top: rect.bottom + 8, left: rect.left })
+    }
+    updatePosition()
+
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Node ? event.target : null
       if (target && versionPopoverRef.current?.contains(target)) return
+      if (target && versionButtonRef.current?.contains(target)) return
       setShowVersionPopover(false)
     }
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -80,9 +91,13 @@ export default function Layout({ children }: PropsWithChildren) {
 
     document.addEventListener('pointerdown', handlePointerDown)
     document.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
     }
   }, [showVersionPopover])
 
@@ -232,6 +247,7 @@ export default function Layout({ children }: PropsWithChildren) {
                     </h1>
                     <div ref={versionPopoverRef} className="relative w-fit">
                       <button
+                        ref={versionButtonRef}
                         type="button"
                         className="relative inline-flex cursor-pointer items-center rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary ring-1 ring-primary/10 transition-colors hover:bg-primary/15"
                         title={hasUpdate && latestVersion ? t('common.newVersionAvailable', { version: latestVersion }) : undefined}
@@ -243,8 +259,12 @@ export default function Layout({ children }: PropsWithChildren) {
                           <span className="absolute -top-1.5 left-1/2 size-2.5 -translate-x-1/2 rounded-full bg-red-500 shadow-sm ring-2 ring-[hsl(var(--sidebar-background))] animate-pulse" />
                         )}
                       </button>
-                      {showVersionPopover && (
-                        <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-[240px] rounded-lg border border-border bg-popover p-3 text-left shadow-xl">
+                      {showVersionPopover && versionPopoverPos && createPortal(
+                        <div
+                          ref={versionPopoverRef}
+                          style={{ position: 'fixed', top: versionPopoverPos.top, left: versionPopoverPos.left }}
+                          className="z-[100] w-[240px] rounded-lg border border-border bg-popover p-3 text-left shadow-xl"
+                        >
                           <div className="text-[13px] font-semibold text-foreground">
                             {latestVersion
                               ? hasUpdate
@@ -272,7 +292,8 @@ export default function Layout({ children }: PropsWithChildren) {
                               <ExternalLink className="size-3.5" />
                             </a>
                           )}
-                        </div>
+                        </div>,
+                        document.body,
                       )}
                     </div>
                   </div>
