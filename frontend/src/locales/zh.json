@@ -1890,7 +1890,9 @@
       "required": "必填",
       "keyPlaceholder": "输入密钥",
       "requestBody": "请求体",
-      "responseTitle": "响应结果"
+      "responseTitle": "响应结果",
+      "imagePreview": "图片预览",
+      "downloadImage": "下载图片"
     }
   },
   "docs": {

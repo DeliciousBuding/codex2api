@@ -1890,7 +1890,9 @@
       "required": "Required",
       "keyPlaceholder": "Enter key",
       "requestBody": "Request body",
-      "responseTitle": "Response"
+      "responseTitle": "Response",
+      "imagePreview": "Image preview",
+      "downloadImage": "Download image"
     }
   },
   "docs": {
