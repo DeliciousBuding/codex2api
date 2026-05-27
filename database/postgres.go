@@ -1638,51 +1638,53 @@ func (db *DB) UpdateProxyTestResult(ctx context.Context, id int64, ip, location 
 
 // UsageLog 请求日志行
 type UsageLog struct {
-	ID                int64     `json:"id"`
-	AccountID         int64     `json:"account_id"`
-	Endpoint          string    `json:"endpoint"`
-	Model             string    `json:"model"`
-	EffectiveModel    string    `json:"effective_model"`
-	PromptTokens      int       `json:"prompt_tokens"`
-	CompletionTokens  int       `json:"completion_tokens"`
-	TotalTokens       int       `json:"total_tokens"`
-	StatusCode        int       `json:"status_code"`
-	DurationMs        int       `json:"duration_ms"`
-	InputTokens       int       `json:"input_tokens"`
-	OutputTokens      int       `json:"output_tokens"`
-	ReasoningTokens   int       `json:"reasoning_tokens"`
-	FirstTokenMs      int       `json:"first_token_ms"`
-	ReasoningEffort   string    `json:"reasoning_effort"`
-	InboundEndpoint   string    `json:"inbound_endpoint"`
-	UpstreamEndpoint  string    `json:"upstream_endpoint"`
-	Stream            bool      `json:"stream"`
-	CachedTokens      int       `json:"cached_tokens"`
-	ServiceTier       string    `json:"service_tier"`
-	APIKeyID          int64     `json:"api_key_id"`
-	APIKeyName        string    `json:"api_key_name"`
-	APIKeyMasked      string    `json:"api_key_masked"`
-	ImageCount        int       `json:"image_count"`
-	ImageWidth        int       `json:"image_width"`
-	ImageHeight       int       `json:"image_height"`
-	ImageBytes        int       `json:"image_bytes"`
-	ImageFormat       string    `json:"image_format"`
-	ImageSize         string    `json:"image_size"`
-	AccountEmail      string    `json:"account_email"`
-	CreatedAt         time.Time `json:"created_at"`
-	AccountBilled     float64   `json:"account_billed"`
-	UserBilled        float64   `json:"user_billed"`
-	InputCost         float64   `json:"input_cost"`
-	OutputCost        float64   `json:"output_cost"`
-	CacheReadCost     float64   `json:"cache_read_cost"`
-	TotalCost         float64   `json:"total_cost"`
-	InputPrice        float64   `json:"input_price_per_mtoken"`
-	OutputPrice       float64   `json:"output_price_per_mtoken"`
-	CacheReadPrice    float64   `json:"cache_read_price_per_mtoken"`
-	RateMultiplier    float64   `json:"rate_multiplier"`
-	IsRetryAttempt    bool      `json:"is_retry_attempt"`
-	AttemptIndex      int       `json:"attempt_index"`
-	UpstreamErrorKind string    `json:"upstream_error_kind"`
-	ErrorMessage      string    `json:"error_message"`
+	ID                   int64     `json:"id"`
+	AccountID            int64     `json:"account_id"`
+	Endpoint             string    `json:"endpoint"`
+	Model                string    `json:"model"`
+	EffectiveModel       string    `json:"effective_model"`
+	PromptTokens         int       `json:"prompt_tokens"`
+	CompletionTokens     int       `json:"completion_tokens"`
+	TotalTokens          int       `json:"total_tokens"`
+	StatusCode           int       `json:"status_code"`
+	DurationMs           int       `json:"duration_ms"`
+	InputTokens          int       `json:"input_tokens"`
+	OutputTokens         int       `json:"output_tokens"`
+	ReasoningTokens      int       `json:"reasoning_tokens"`
+	FirstTokenMs         int       `json:"first_token_ms"`
+	ReasoningEffort      string    `json:"reasoning_effort"`
+	InboundEndpoint      string    `json:"inbound_endpoint"`
+	UpstreamEndpoint     string    `json:"upstream_endpoint"`
+	Stream               bool      `json:"stream"`
+	CachedTokens         int       `json:"cached_tokens"`
+	ServiceTier          string    `json:"service_tier"`
+	APIKeyID             int64     `json:"api_key_id"`
+	APIKeyName           string    `json:"api_key_name"`
+	APIKeyMasked         string    `json:"api_key_masked"`
+	ImageCount           int       `json:"image_count"`
+	ImageWidth           int       `json:"image_width"`
+	ImageHeight          int       `json:"image_height"`
+	ImageBytes           int       `json:"image_bytes"`
+	ImageFormat          string    `json:"image_format"`
+	ImageSize            string    `json:"image_size"`
+	AccountEmail         string    `json:"account_email"`
+	CreatedAt            time.Time `json:"created_at"`
+	AccountBilled        float64   `json:"account_billed"`
+	UserBilled           float64   `json:"user_billed"`
+	InputCost            float64   `json:"input_cost"`
+	OutputCost           float64   `json:"output_cost"`
+	CacheReadCost        float64   `json:"cache_read_cost"`
+	TotalCost            float64   `json:"total_cost"`
+	InputPrice           float64   `json:"input_price_per_mtoken"`
+	OutputPrice          float64   `json:"output_price_per_mtoken"`
+	CacheReadPrice       float64   `json:"cache_read_price_per_mtoken"`
+	RateMultiplier       float64   `json:"rate_multiplier"`
+	LongContext          bool      `json:"long_context"`
+	LongContextThreshold int       `json:"long_context_threshold"`
+	IsRetryAttempt       bool      `json:"is_retry_attempt"`
+	AttemptIndex         int       `json:"attempt_index"`
+	UpstreamErrorKind    string    `json:"upstream_error_kind"`
+	ErrorMessage         string    `json:"error_message"`
 }
 
 // InsertUsageLog 将日志追加到内存缓冲（非阻塞）
@@ -1807,6 +1809,8 @@ func (l *UsageLog) populateBillingBreakdown() {
 	l.OutputPrice = breakdown.OutputPricePerMToken
 	l.CacheReadPrice = breakdown.CacheReadPricePerMToken
 	l.RateMultiplier = breakdown.ServiceTierCostMultiplier
+	l.LongContext = breakdown.LongContext
+	l.LongContextThreshold = breakdown.LongContextThreshold
 
 	displayTotal := l.UserBilled
 	if displayTotal <= 0 {

@@ -830,6 +830,8 @@ export interface UsageLog {
   output_price_per_mtoken: number
   cache_read_price_per_mtoken: number
   rate_multiplier: number
+  long_context?: boolean
+  long_context_threshold?: number
   is_retry_attempt: boolean
   attempt_index: number
   upstream_error_kind: string

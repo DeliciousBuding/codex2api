@@ -1078,6 +1078,8 @@
     "billingTier": "计费模式",
     "billingTierStandard": "Standard",
     "billingTierFast": "⚡ Fast",
+    "billingContext": "上下文计费",
+    "billingContextLong": "Long context（输入 {{input}} > {{threshold}}）",
     "statusErrorDetails": "错误详情",
     "statusErrorEmpty": "未记录具体错误信息",
     "clearFilters": "清除筛选",

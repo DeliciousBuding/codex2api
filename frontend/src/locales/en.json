@@ -1078,6 +1078,8 @@
     "billingTier": "Billing Tier",
     "billingTierStandard": "Standard",
     "billingTierFast": "⚡ Fast",
+    "billingContext": "Billing Context",
+    "billingContextLong": "Long context (input {{input}} > {{threshold}})",
     "statusErrorDetails": "Error Details",
     "statusErrorEmpty": "No detailed error message recorded",
     "clearFilters": "Clear Filters",

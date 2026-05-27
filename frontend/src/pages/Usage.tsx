@@ -210,6 +210,7 @@ function UsageCostCell({ log }: { log: UsageLog }) {
   const userBilled = safeNumber(log.user_billed)
   const totalCost = safeNumber(log.total_cost)
   const displayCost = userBilled > 0 ? userBilled : accountBilled
+  const longContextThreshold = safeNumber(log.long_context_threshold)
   const hasCostContext = log.status_code < 400 && (
     accountBilled > 0 ||
     userBilled > 0 ||
@@ -236,7 +237,7 @@ function UsageCostCell({ log }: { log: UsageLog }) {
           <Info className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-blue-500" />
         </button>
       </TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8} className="w-72 max-w-none whitespace-nowrap rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-xs text-slate-50 shadow-xl">
+      <TooltipContent side="right" sideOffset={8} className="w-96 max-w-none whitespace-nowrap rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-xs text-slate-50 shadow-xl">
         <div className="space-y-1.5">
           <div className="mb-1 text-xs font-semibold text-slate-300">{t('usage.costDetails')}</div>
           {log.input_cost > 0 && (
@@ -266,6 +267,16 @@ function UsageCostCell({ log }: { log: UsageLog }) {
               ? 'text-amber-300'
               : 'text-slate-200'}
           />
+          {log.long_context && longContextThreshold > 0 && (
+            <CostTooltipRow
+              label={t('usage.billingContext')}
+              value={t('usage.billingContextLong', {
+                input: formatTokens(log.input_tokens, true),
+                threshold: formatTokens(longContextThreshold, true),
+              })}
+              valueClassName="text-orange-300"
+            />
+          )}
         </div>
       </TooltipContent>
     </Tooltip>
