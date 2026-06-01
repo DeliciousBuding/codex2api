@@ -377,6 +377,10 @@ export default function Settings() {
     { label: t('settings.usageLogErrors'), value: 'errors' },
     { label: t('settings.usageLogOff'), value: 'off' },
   ]
+  const billingTierPolicyOptions = [
+    { label: t('settings.billingTierPolicyActual'), value: 'actual' },
+    { label: t('settings.billingTierPolicyRequested'), value: 'requested' },
+  ]
   const streamFlushPolicyOptions = [
     { label: t('settings.streamFlushImmediate'), value: 'immediate' },
     { label: t('settings.streamFlushCoalesce'), value: 'coalesce' },
@@ -451,6 +455,7 @@ export default function Settings() {
     stream_flush_policy: 'immediate',
     stream_flush_interval_ms: 20,
     first_token_timeout_seconds: 0,
+    billing_tier_policy: 'actual',
     show_full_usage_numbers: false,
     image_storage_backend: 'local',
     image_s3_endpoint: '',
@@ -923,6 +928,13 @@ export default function Settings() {
                   max={300}
                   value={settingsForm.usage_log_flush_interval_seconds}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => setSettingsForm(f => ({ ...f, usage_log_flush_interval_seconds: parseInt(e.target.value) || 5 }))}
+                />
+              </SettingField>
+              <SettingField label={t('settings.billingTierPolicy')} description={t('settings.billingTierPolicyDesc')}>
+                <Select
+                  value={settingsForm.billing_tier_policy}
+                  onValueChange={(value) => setSettingsForm((f) => ({ ...f, billing_tier_policy: value }))}
+                  options={billingTierPolicyOptions}
                 />
               </SettingField>
               <SettingField label={t('settings.streamFlushPolicy')} description={t('settings.streamFlushPolicyDesc')}>

@@ -4261,6 +4261,7 @@ type settingsResponse struct {
 	StreamFlushPolicy                string `json:"stream_flush_policy"`
 	StreamFlushIntervalMS            int    `json:"stream_flush_interval_ms"`
 	FirstTokenTimeoutSeconds         int    `json:"first_token_timeout_seconds"`
+	BillingTierPolicy                string `json:"billing_tier_policy"`
 	ShowFullUsageNumbers             bool   `json:"show_full_usage_numbers"`
 	ImageStorageBackend              string `json:"image_storage_backend"`
 	ImageS3Endpoint                  string `json:"image_s3_endpoint"`
@@ -4325,6 +4326,7 @@ type updateSettingsReq struct {
 	StreamFlushPolicy                *string `json:"stream_flush_policy"`
 	StreamFlushIntervalMS            *int    `json:"stream_flush_interval_ms"`
 	FirstTokenTimeoutSeconds         *int    `json:"first_token_timeout_seconds"`
+	BillingTierPolicy                *string `json:"billing_tier_policy"`
 	ShowFullUsageNumbers             *bool   `json:"show_full_usage_numbers"`
 	ImageStorageBackend              *string `json:"image_storage_backend"`
 	ImageS3Endpoint                  *string `json:"image_s3_endpoint"`
@@ -4882,6 +4884,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		StreamFlushPolicy:                runtimeCfg.StreamFlushPolicy,
 		StreamFlushIntervalMS:            runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenTimeoutSeconds:         runtimeCfg.FirstTokenTimeoutSec,
+		BillingTierPolicy:                runtimeCfg.BillingTierPolicy,
 		ShowFullUsageNumbers:             showFullUsageNumbers,
 		ImageStorageBackend:              imgCfg.Backend,
 		ImageS3Endpoint:                  imgCfg.Endpoint,
@@ -5205,6 +5208,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.FirstTokenTimeoutSec = *req.FirstTokenTimeoutSeconds
 		log.Printf("设置已更新: first_token_timeout_seconds = %d", runtimeCfg.FirstTokenTimeoutSec)
 	}
+	if req.BillingTierPolicy != nil {
+		runtimeCfg.BillingTierPolicy = proxy.NormalizeBillingTierPolicy(*req.BillingTierPolicy)
+		log.Printf("设置已更新: billing_tier_policy = %s", runtimeCfg.BillingTierPolicy)
+	}
 	if req.ShowFullUsageNumbers != nil {
 		showFullUsageNumbers = *req.ShowFullUsageNumbers
 		log.Printf("设置已更新: show_full_usage_numbers = %t", showFullUsageNumbers)
@@ -5421,6 +5428,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		StreamFlushPolicy:                runtimeCfg.StreamFlushPolicy,
 		StreamFlushIntervalMS:            runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenTimeoutSeconds:         runtimeCfg.FirstTokenTimeoutSec,
+		BillingTierPolicy:                runtimeCfg.BillingTierPolicy,
 		ShowFullUsageNumbers:             showFullUsageNumbers,
 		ImageStorageConfig:               imgConfigJSON,
 		BackgroundConfig:                 encodeBackgroundConfig(bgCfg),

@@ -361,6 +361,7 @@ func defaultBootstrapSettings() *database.SystemSettings {
 		StreamFlushPolicy:                proxy.StreamFlushPolicyImmediate,
 		StreamFlushIntervalMS:            20,
 		FirstTokenTimeoutSeconds:         0,
+		BillingTierPolicy:                proxy.BillingTierPolicyActual,
 		AffinityMode:                     "bounded",
 	}
 }

@@ -558,6 +558,7 @@ export interface SystemSettings {
   stream_flush_policy: 'immediate' | 'coalesce' | string
   stream_flush_interval_ms: number
   first_token_timeout_seconds: number
+  billing_tier_policy: 'actual' | 'requested' | string
   show_full_usage_numbers: boolean
   image_storage_backend: 'local' | 's3' | string
   image_s3_endpoint: string
@@ -809,6 +810,9 @@ export interface UsageLog {
   stream: boolean
   cached_tokens: number
   service_tier: string
+  requested_service_tier: string
+  actual_service_tier: string
+  billing_service_tier: string
   api_key_id: number
   api_key_name: string
   api_key_masked: string

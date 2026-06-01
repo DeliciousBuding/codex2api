@@ -591,6 +591,7 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 		StreamFlushPolicy:                "immediate",
 		StreamFlushIntervalMS:            20,
 		FirstTokenTimeoutSeconds:         17,
+		BillingTierPolicy:                "requested",
 		ImageStorageConfig:               "{}",
 		SchedulerMode:                    "round_robin",
 		AffinityMode:                     "bounded",
@@ -612,6 +613,9 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 	}
 	if !settings.ShowFullUsageNumbers {
 		t.Fatal("ShowFullUsageNumbers = false, want true")
+	}
+	if settings.BillingTierPolicy != "requested" {
+		t.Fatalf("BillingTierPolicy = %q, want requested", settings.BillingTierPolicy)
 	}
 }
 
@@ -768,16 +772,18 @@ func TestUsageLogsReturnBillingFields(t *testing.T) {
 
 	ctx := context.Background()
 	if err := db.InsertUsageLog(ctx, &UsageLogInput{
-		AccountID:        1,
-		Endpoint:         "/v1/responses",
-		InboundEndpoint:  "/v1/responses",
-		UpstreamEndpoint: "/v1/responses",
-		Model:            "gpt-5.5",
-		StatusCode:       200,
-		InputTokens:      476,
-		OutputTokens:     252,
-		TotalTokens:      728,
-		ServiceTier:      "default",
+		AccountID:          1,
+		Endpoint:           "/v1/responses",
+		InboundEndpoint:    "/v1/responses",
+		UpstreamEndpoint:   "/v1/responses",
+		Model:              "gpt-5.5",
+		StatusCode:         200,
+		InputTokens:        476,
+		OutputTokens:       252,
+		TotalTokens:        728,
+		ServiceTier:        "default",
+		ActualServiceTier:  "default",
+		BillingServiceTier: "default",
 	}); err != nil {
 		t.Fatalf("InsertUsageLog 返回错误: %v", err)
 	}
@@ -799,6 +805,9 @@ func TestUsageLogsReturnBillingFields(t *testing.T) {
 	if got.InputCost <= 0 || got.OutputCost <= 0 || got.TotalCost != want {
 		t.Fatalf("billing breakdown = input %.12f output %.12f total %.12f, want total %.12f", got.InputCost, got.OutputCost, got.TotalCost, want)
 	}
+	if got.ActualServiceTier != "default" || got.BillingServiceTier != "default" {
+		t.Fatalf("tiers actual=%q billing=%q, want default/default", got.ActualServiceTier, got.BillingServiceTier)
+	}
 }
 
 func TestUsageLogsBillFastByActualServiceTier(t *testing.T) {
@@ -812,28 +821,32 @@ func TestUsageLogsBillFastByActualServiceTier(t *testing.T) {
 
 	ctx := context.Background()
 	if err := db.InsertUsageLog(ctx, &UsageLogInput{
-		AccountID:          1,
-		Endpoint:           "/v1/responses",
-		Model:              "gpt-5.4",
-		StatusCode:         200,
-		InputTokens:        1000,
-		OutputTokens:       500,
-		CachedTokens:       200,
-		ServiceTier:        "fast",
-		BillingServiceTier: "default",
+		AccountID:            1,
+		Endpoint:             "/v1/responses",
+		Model:                "gpt-5.4",
+		StatusCode:           200,
+		InputTokens:          1000,
+		OutputTokens:         500,
+		CachedTokens:         200,
+		ServiceTier:          "fast",
+		RequestedServiceTier: "priority",
+		ActualServiceTier:    "default",
+		BillingServiceTier:   "default",
 	}); err != nil {
 		t.Fatalf("InsertUsageLog 返回错误: %v", err)
 	}
 	if err := db.InsertUsageLog(ctx, &UsageLogInput{
-		AccountID:          1,
-		Endpoint:           "/v1/responses",
-		Model:              "gpt-5.4",
-		StatusCode:         200,
-		InputTokens:        1000,
-		OutputTokens:       500,
-		CachedTokens:       200,
-		ServiceTier:        "fast",
-		BillingServiceTier: "priority",
+		AccountID:            1,
+		Endpoint:             "/v1/responses",
+		Model:                "gpt-5.4",
+		StatusCode:           200,
+		InputTokens:          1000,
+		OutputTokens:         500,
+		CachedTokens:         200,
+		ServiceTier:          "fast",
+		RequestedServiceTier: "priority",
+		ActualServiceTier:    "priority",
+		BillingServiceTier:   "priority",
 	}); err != nil {
 		t.Fatalf("InsertUsageLog 返回错误: %v", err)
 	}
