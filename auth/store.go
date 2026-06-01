@@ -74,6 +74,10 @@ type Account struct {
 	UsageUpdatedAt        time.Time
 	usageProbeInFlight    bool
 	recoveryProbeInFlight bool
+	AutoPause5hThreshold  float64 // 0..1, 0 = disabled
+	AutoPause7dThreshold  float64 // 0..1, 0 = disabled
+	AutoPause5hDisabled   bool
+	AutoPause7dDisabled   bool
 
 	// 调度健康信号
 	HealthTier               AccountHealthTier
@@ -767,6 +771,9 @@ func (a *Account) dispatchBonusEligibleLocked(now time.Time, tier AccountHealthT
 	if a.usageExhaustedLocked() {
 		return false
 	}
+	if a.quotaAutoPausedLocked(now) {
+		return false
+	}
 	if !a.hasDispatchCredentialLocked() {
 		return false
 	}
@@ -910,11 +917,43 @@ func (a *Account) IsAvailable() bool {
 	if a.premium5hRateLimitedLocked(time.Now()) {
 		return false
 	}
+	now := time.Now()
+	if a.quotaAutoPausedLocked(now) {
+		return false
+	}
 	// 冷却期过了自动恢复
-	if a.Status == StatusCooldown && !time.Now().Before(a.CooldownUtil) {
+	if a.Status == StatusCooldown && !now.Before(a.CooldownUtil) {
 		return a.hasDispatchCredentialLocked()
 	}
 	return a.hasDispatchCredentialLocked()
+}
+
+func normalizeQuotaAutoPauseThreshold(value float64) float64 {
+	switch {
+	case value <= 0:
+		return 0
+	case value > 1:
+		return 1
+	default:
+		return value
+	}
+}
+
+func quotaAutoPausedByWindow(usage float64, valid bool, resetAt time.Time, threshold float64, disabled bool, now time.Time) bool {
+	if disabled || threshold <= 0 || !valid {
+		return false
+	}
+	if !resetAt.IsZero() && !now.Before(resetAt) {
+		return false
+	}
+	return usage/100 >= threshold
+}
+
+func (a *Account) quotaAutoPausedLocked(now time.Time) bool {
+	if quotaAutoPausedByWindow(a.UsagePercent5h, a.UsagePercent5hValid, a.Reset5hAt, a.AutoPause5hThreshold, a.AutoPause5hDisabled, now) {
+		return true
+	}
+	return quotaAutoPausedByWindow(a.UsagePercent7d, a.UsagePercent7dValid, a.Reset7dAt, a.AutoPause7dThreshold, a.AutoPause7dDisabled, now)
 }
 
 // usageExhaustedLocked 判断 Free 账号 7d 用量是否已耗尽（需持有 mu 读锁）
@@ -2501,6 +2540,14 @@ func (s *Store) loadFromDB(ctx context.Context) error {
 				account.SetUsageSnapshot5h(parsed, resetAt)
 			}
 		}
+		if threshold, ok := row.GetCredentialFloat64("auto_pause_5h_threshold"); ok {
+			account.AutoPause5hThreshold = normalizeQuotaAutoPauseThreshold(threshold)
+		}
+		if threshold, ok := row.GetCredentialFloat64("auto_pause_7d_threshold"); ok {
+			account.AutoPause7dThreshold = normalizeQuotaAutoPauseThreshold(threshold)
+		}
+		account.AutoPause5hDisabled = row.GetCredentialBool("auto_pause_5h_disabled")
+		account.AutoPause7dDisabled = row.GetCredentialBool("auto_pause_7d_disabled")
 		for _, cooldown := range modelCooldowns[row.ID] {
 			account.RestoreModelCooldown(cooldown.Model, cooldown.Reason, cooldown.ResetAt, cooldown.UpdatedAt)
 		}
@@ -2690,7 +2737,7 @@ func (s *Store) NextExcludingWithFilter(apiKeyID int64, exclude map[int64]bool, 
 		for attempts := 0; attempts < 16; attempts++ {
 			acc := scheduler.AcquireExcludingWithFilter(apiKeyID, exclude, filter)
 			if acc == nil {
-				return nil
+				break
 			}
 			if s.accountHasCachedCooldown(acc) {
 				scheduler.Release(acc)
@@ -2698,7 +2745,6 @@ func (s *Store) NextExcludingWithFilter(apiKeyID int64, exclude map[int64]bool, 
 			}
 			return acc
 		}
-		return nil
 	}
 
 	for attempts := 0; attempts < 16; attempts++ {
@@ -2782,6 +2828,9 @@ func (s *Store) accountLazySelectable(acc *Account) bool {
 		return false
 	}
 	if acc.premium5hRateLimitedLocked(now) {
+		return false
+	}
+	if acc.quotaAutoPausedLocked(now) {
 		return false
 	}
 	if acc.isOpenAIResponsesAPILocked() {
@@ -3568,6 +3617,31 @@ func (s *Store) ApplyAccountAllowedAPIKeys(dbID int64, allowedAPIKeyIDs []int64)
 
 	acc.mu.Lock()
 	acc.setAllowedAPIKeyIDsLocked(allowedAPIKeyIDs)
+	acc.mu.Unlock()
+	s.fastSchedulerUpdate(acc)
+	return true
+}
+
+func (s *Store) ApplyAccountQuotaAutoPauseConfig(dbID int64, threshold5h, threshold7d *float64, disabled5h, disabled7d *bool) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+
+	acc.mu.Lock()
+	if threshold5h != nil {
+		acc.AutoPause5hThreshold = normalizeQuotaAutoPauseThreshold(*threshold5h)
+	}
+	if threshold7d != nil {
+		acc.AutoPause7dThreshold = normalizeQuotaAutoPauseThreshold(*threshold7d)
+	}
+	if disabled5h != nil {
+		acc.AutoPause5hDisabled = *disabled5h
+	}
+	if disabled7d != nil {
+		acc.AutoPause7dDisabled = *disabled7d
+	}
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	acc.mu.Unlock()
 	s.fastSchedulerUpdate(acc)
 	return true

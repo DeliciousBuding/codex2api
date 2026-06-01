@@ -465,6 +465,10 @@ type accountResponse struct {
 	RateLimitAttempts        int64                      `json:"rate_limit_attempts"`
 	UsagePercent7d           *float64                   `json:"usage_percent_7d"`
 	UsagePercent5h           *float64                   `json:"usage_percent_5h"`
+	AutoPause5hThreshold     *float64                   `json:"auto_pause_5h_threshold"`
+	AutoPause7dThreshold     *float64                   `json:"auto_pause_7d_threshold"`
+	AutoPause5hDisabled      bool                       `json:"auto_pause_5h_disabled"`
+	AutoPause7dDisabled      bool                       `json:"auto_pause_7d_disabled"`
 	Usage5hDetail            *accountUsageWindow        `json:"usage_5h_detail,omitempty"`
 	Usage7dDetail            *accountUsageWindow        `json:"usage_7d_detail,omitempty"`
 	Reset5hAt                string                     `json:"reset_5h_at,omitempty"`
@@ -585,6 +589,10 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			UpdatedAt:                row.UpdatedAt.Format(time.RFC3339),
 			CodexUsageUpdatedAt:      row.GetCredential("codex_usage_updated_at"),
 		}
+		resp.AutoPause5hThreshold = accountQuotaAutoPauseThreshold(row, "auto_pause_5h_threshold")
+		resp.AutoPause7dThreshold = accountQuotaAutoPauseThreshold(row, "auto_pause_7d_threshold")
+		resp.AutoPause5hDisabled = row.GetCredentialBool("auto_pause_5h_disabled")
+		resp.AutoPause7dDisabled = row.GetCredentialBool("auto_pause_7d_disabled")
 		if acc, ok := accountMap[row.ID]; ok {
 			acc.Mu().RLock()
 			resp.GroupIDs = append([]int64(nil), acc.GroupIDs...)
@@ -738,6 +746,10 @@ type updateAccountSchedulerReq struct {
 	AllowedAPIKeyIDs        json.RawMessage `json:"allowed_api_key_ids"`
 	Tags                    json.RawMessage `json:"tags"`
 	GroupIDs                json.RawMessage `json:"group_ids"`
+	AutoPause5hThreshold    json.RawMessage `json:"auto_pause_5h_threshold"`
+	AutoPause7dThreshold    json.RawMessage `json:"auto_pause_7d_threshold"`
+	AutoPause5hDisabled     json.RawMessage `json:"auto_pause_5h_disabled"`
+	AutoPause7dDisabled     json.RawMessage `json:"auto_pause_7d_disabled"`
 	ProxyURL                *string         `json:"proxy_url"`
 }
 
@@ -826,6 +838,26 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	autoPause5hThreshold, err := parseOptionalRatioField(req.AutoPause5hThreshold, "auto_pause_5h_threshold")
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	autoPause7dThreshold, err := parseOptionalRatioField(req.AutoPause7dThreshold, "auto_pause_7d_threshold")
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	autoPause5hDisabled, err := parseOptionalBoolField(req.AutoPause5hDisabled, "auto_pause_5h_disabled")
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	autoPause7dDisabled, err := parseOptionalBoolField(req.AutoPause7dDisabled, "auto_pause_7d_disabled")
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -865,7 +897,23 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 	if req.ProxyURL != nil {
 		proxyURL = database.OptionalString{Set: true, Value: *req.ProxyURL}
 	}
-	if err := h.db.UpdateAccountSchedulerMetadata(ctx, id, scoreBiasOverride, baseConcurrencyOverride, skipWarmTier, allowedAPIKeyIDs, database.OptionalStringSlice{Set: tags.Set, Values: tags.Values}, groupIDs, proxyURL); err != nil {
+	credentialUpdates := make(map[string]interface{})
+	if autoPause5hThreshold.Set {
+		credentialUpdates["auto_pause_5h_threshold"] = autoPause5hThreshold.Value
+	}
+	if autoPause7dThreshold.Set {
+		credentialUpdates["auto_pause_7d_threshold"] = autoPause7dThreshold.Value
+	}
+	if autoPause5hDisabled.Set {
+		credentialUpdates["auto_pause_5h_disabled"] = autoPause5hDisabled.Value
+	}
+	if autoPause7dDisabled.Set {
+		credentialUpdates["auto_pause_7d_disabled"] = autoPause7dDisabled.Value
+	}
+	if len(credentialUpdates) == 0 {
+		credentialUpdates = nil
+	}
+	if err := h.db.UpdateAccountSchedulerMetadata(ctx, id, scoreBiasOverride, baseConcurrencyOverride, skipWarmTier, allowedAPIKeyIDs, database.OptionalStringSlice{Set: tags.Set, Values: tags.Values}, groupIDs, proxyURL, credentialUpdates); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "账号不存在")
 			return
@@ -907,6 +955,15 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 		if allowedAPIKeyIDs.Set {
 			h.store.ApplyAccountAllowedAPIKeys(id, allowedAPIKeyIDs.Values)
 		}
+		if autoPause5hThreshold.Set || autoPause7dThreshold.Set || autoPause5hDisabled.Set || autoPause7dDisabled.Set {
+			h.store.ApplyAccountQuotaAutoPauseConfig(
+				id,
+				optionalFloat64Ptr(autoPause5hThreshold),
+				optionalFloat64Ptr(autoPause7dThreshold),
+				optionalBoolPtr(autoPause5hDisabled),
+				optionalBoolPtr(autoPause7dDisabled),
+			)
+		}
 	}
 	if h.store != nil && tags.Set {
 		h.store.ApplyAccountTags(id, tags.Values)
@@ -924,6 +981,22 @@ func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 type optionalStringSlice struct {
 	Set    bool
 	Values []string
+}
+
+type optionalFloat64 struct {
+	Set   bool
+	Value float64
+}
+
+func accountQuotaAutoPauseThreshold(row *database.AccountRow, key string) *float64 {
+	value, ok := row.GetCredentialFloat64(key)
+	if !ok || value <= 0 {
+		return nil
+	}
+	if value > 1 {
+		value = 1
+	}
+	return &value
 }
 
 func parseOptionalStringSliceField(raw json.RawMessage, field string) (optionalStringSlice, error) {
@@ -980,6 +1053,28 @@ func parseOptionalIntegerField(raw json.RawMessage, field string, minValue, maxV
 		return database.OptionalNullInt64{}, fmt.Errorf("%s 超出范围，必须在 %d..%d 之间", field, minValue, maxValue)
 	}
 	return database.OptionalNullInt64{Set: true, Value: sql.NullInt64{Int64: value, Valid: true}}, nil
+}
+
+func parseOptionalRatioField(raw json.RawMessage, field string) (optionalFloat64, error) {
+	if len(raw) == 0 {
+		return optionalFloat64{}, nil
+	}
+	if string(raw) == "null" {
+		return optionalFloat64{Set: true, Value: 0}, nil
+	}
+
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return optionalFloat64{}, fmt.Errorf("%s 必须是 0..1 之间的小数或 null", field)
+	}
+	value, err := number.Float64()
+	if err != nil {
+		return optionalFloat64{}, fmt.Errorf("%s 必须是 0..1 之间的小数或 null", field)
+	}
+	if value < 0 || value > 1 {
+		return optionalFloat64{}, fmt.Errorf("%s 超出范围，必须在 0..1 之间", field)
+	}
+	return optionalFloat64{Set: true, Value: value}, nil
 }
 
 func parseOptionalBoolField(raw json.RawMessage, field string) (database.OptionalBool, error) {
@@ -1068,6 +1163,22 @@ func nullableInt64Pointer(v sql.NullInt64) *int64 {
 	}
 	value := v.Int64
 	return &value
+}
+
+func optionalFloat64Ptr(value optionalFloat64) *float64 {
+	if !value.Set {
+		return nil
+	}
+	v := value.Value
+	return &v
+}
+
+func optionalBoolPtr(value database.OptionalBool) *bool {
+	if !value.Set {
+		return nil
+	}
+	v := value.Value
+	return &v
 }
 
 func effectiveScoreBias(planType string, override sql.NullInt64) int64 {

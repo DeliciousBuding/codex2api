@@ -3567,7 +3567,7 @@ func (db *DB) UpdateAccountSchedulerConfig(ctx context.Context, id int64, scoreB
 
 // UpdateAccountSchedulerMetadata applies scheduler overrides and UI metadata in
 // one transaction. Runtime store updates should happen only after this returns.
-func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scoreBiasOverride OptionalNullInt64, baseConcurrencyOverride OptionalNullInt64, skipWarmTier OptionalBool, allowedAPIKeyIDs OptionalInt64Slice, tags OptionalStringSlice, groupIDs OptionalInt64Slice, proxyURL OptionalString) error {
+func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scoreBiasOverride OptionalNullInt64, baseConcurrencyOverride OptionalNullInt64, skipWarmTier OptionalBool, allowedAPIKeyIDs OptionalInt64Slice, tags OptionalStringSlice, groupIDs OptionalInt64Slice, proxyURL OptionalString, credentialUpdates map[string]interface{}) error {
 	tx, err := db.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -3619,9 +3619,13 @@ func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scor
 		add("proxy_url", strings.TrimSpace(proxyURL.Value))
 	}
 	if allowedAPIKeyIDs.Set {
-		merged := mergeCredentialMaps(decodeCredentials(currentRaw), map[string]interface{}{
-			"allowed_api_key_ids": normalizePositiveInt64Slice(allowedAPIKeyIDs.Values),
-		})
+		if credentialUpdates == nil {
+			credentialUpdates = make(map[string]interface{}, 1)
+		}
+		credentialUpdates["allowed_api_key_ids"] = normalizePositiveInt64Slice(allowedAPIKeyIDs.Values)
+	}
+	if len(credentialUpdates) > 0 {
+		merged := mergeCredentialMaps(decodeCredentials(currentRaw), credentialUpdates)
 		credJSON, err := json.Marshal(merged)
 		if err != nil {
 			return fmt.Errorf("序列化 credentials 失败: %w", err)

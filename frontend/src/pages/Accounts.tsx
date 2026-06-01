@@ -245,6 +245,28 @@ function formatAccountName(account: AccountRow): string {
   return account.email || account.name || `ID ${account.id}`;
 }
 
+function formatQuotaAutoPausePercentInput(value?: number | null): string {
+  if (typeof value !== "number" || value <= 0) return "";
+  const percent = value * 100;
+  if (Number.isInteger(percent)) return String(percent);
+  return String(Number(percent.toFixed(2)));
+}
+
+function isPercentThresholdInputInvalid(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  const parsed = Number(trimmed);
+  return !Number.isFinite(parsed) || parsed < 0 || parsed > 100;
+}
+
+function percentThresholdInputToRatio(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed / 100;
+}
+
 function getMediaQueryMatch(query: string): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     return false;
@@ -459,6 +481,14 @@ export default function Accounts() {
   );
   const [concurrencyInput, setConcurrencyInput] = useState("");
   const [skipWarmTier, setSkipWarmTier] = useState(false);
+  const [editAutoPause5hThresholdInput, setEditAutoPause5hThresholdInput] =
+    useState("");
+  const [editAutoPause7dThresholdInput, setEditAutoPause7dThresholdInput] =
+    useState("");
+  const [editAutoPause5hDisabled, setEditAutoPause5hDisabled] =
+    useState(false);
+  const [editAutoPause7dDisabled, setEditAutoPause7dDisabled] =
+    useState(false);
   const [allowedAPIKeySelection, setAllowedAPIKeySelection] = useState<
     number[]
   >([]);
@@ -549,6 +579,18 @@ export default function Accounts() {
   const [batchTags, setBatchTags] = useState<string[]>([]);
   const [batchGroupIds, setBatchGroupIds] = useState<number[]>([]);
   const [batchMetaSubmitting, setBatchMetaSubmitting] = useState(false);
+  const [showBatchQuotaAutoPauseEditor, setShowBatchQuotaAutoPauseEditor] =
+    useState(false);
+  const [batchAutoPause5hThresholdInput, setBatchAutoPause5hThresholdInput] =
+    useState("");
+  const [batchAutoPause7dThresholdInput, setBatchAutoPause7dThresholdInput] =
+    useState("");
+  const [batchAutoPause5hDisabled, setBatchAutoPause5hDisabled] =
+    useState(false);
+  const [batchAutoPause7dDisabled, setBatchAutoPause7dDisabled] =
+    useState(false);
+  const [batchQuotaAutoPauseSubmitting, setBatchQuotaAutoPauseSubmitting] =
+    useState(false);
   const [visibleColumns, setVisibleColumns] = useState<
     Record<AccountTableColumn, boolean>
   >(getInitialAccountVisibleColumns);
@@ -2028,6 +2070,52 @@ export default function Accounts() {
     }
   };
 
+  const openBatchQuotaAutoPauseEditor = () => {
+    setBatchAutoPause5hThresholdInput("");
+    setBatchAutoPause7dThresholdInput("");
+    setBatchAutoPause5hDisabled(false);
+    setBatchAutoPause7dDisabled(false);
+    setShowBatchQuotaAutoPauseEditor(true);
+  };
+
+  const handleBatchSaveQuotaAutoPause = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (
+      isPercentThresholdInputInvalid(batchAutoPause5hThresholdInput) ||
+      isPercentThresholdInputInvalid(batchAutoPause7dThresholdInput)
+    ) {
+      showToast(t("accounts.autoPauseThresholdRange"), "error");
+      return;
+    }
+    setBatchQuotaAutoPauseSubmitting(true);
+    try {
+      const payload = {
+        auto_pause_5h_threshold: percentThresholdInputToRatio(
+          batchAutoPause5hThresholdInput,
+        ),
+        auto_pause_7d_threshold: percentThresholdInputToRatio(
+          batchAutoPause7dThresholdInput,
+        ),
+        auto_pause_5h_disabled: batchAutoPause5hDisabled,
+        auto_pause_7d_disabled: batchAutoPause7dDisabled,
+      };
+      const { success, fail } = await runAccountBatch(ids, (id) =>
+        api.updateAccountScheduler(id, payload),
+      );
+      showToast(t("accounts.batchAutoPauseDone", { success, fail }));
+      setShowBatchQuotaAutoPauseEditor(false);
+      await reload();
+    } catch (error) {
+      showToast(
+        t("accounts.batchAutoPauseFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
+    } finally {
+      setBatchQuotaAutoPauseSubmitting(false);
+    }
+  };
+
   const handleBatchTest = async (ids?: number[]) => {
     if (ids && ids.length === 0) return;
     setBatchTesting(true);
@@ -2153,6 +2241,14 @@ export default function Accounts() {
         : String(account.base_concurrency_override),
     );
     setSkipWarmTier(account.skip_warm_tier ?? false);
+    setEditAutoPause5hThresholdInput(
+      formatQuotaAutoPausePercentInput(account.auto_pause_5h_threshold),
+    );
+    setEditAutoPause7dThresholdInput(
+      formatQuotaAutoPausePercentInput(account.auto_pause_7d_threshold),
+    );
+    setEditAutoPause5hDisabled(account.auto_pause_5h_disabled ?? false);
+    setEditAutoPause7dDisabled(account.auto_pause_7d_disabled ?? false);
     setAllowedAPIKeySelection(
       filterExistingAPIKeyIDs(account.allowed_api_key_ids ?? [], apiKeys),
     );
@@ -2178,6 +2274,10 @@ export default function Accounts() {
     setConcurrencyMode("default");
     setConcurrencyInput("");
     setSkipWarmTier(false);
+    setEditAutoPause5hThresholdInput("");
+    setEditAutoPause7dThresholdInput("");
+    setEditAutoPause5hDisabled(false);
+    setEditAutoPause7dDisabled(false);
     setAllowedAPIKeySelection([]);
     setEditProxyUrl("");
     setEditTags([]);
@@ -2206,6 +2306,18 @@ export default function Accounts() {
     (parsedBaseConcurrency === null ||
       parsedBaseConcurrency < 1 ||
       parsedBaseConcurrency > 50);
+  const editAutoPause5hThresholdInvalid = isPercentThresholdInputInvalid(
+    editAutoPause5hThresholdInput,
+  );
+  const editAutoPause7dThresholdInvalid = isPercentThresholdInputInvalid(
+    editAutoPause7dThresholdInput,
+  );
+  const batchAutoPause5hThresholdInvalid = isPercentThresholdInputInvalid(
+    batchAutoPause5hThresholdInput,
+  );
+  const batchAutoPause7dThresholdInvalid = isPercentThresholdInputInvalid(
+    batchAutoPause7dThresholdInput,
+  );
   const openAIAccountInputInvalid = Boolean(
     editingAccount?.openai_responses_api &&
     editTab === "account" &&
@@ -2253,7 +2365,12 @@ export default function Accounts() {
 
   const handleSaveScheduler = async () => {
     if (!editingAccount) return;
-    if (scoreInputInvalid || concurrencyInputInvalid) {
+    if (
+      scoreInputInvalid ||
+      concurrencyInputInvalid ||
+      editAutoPause5hThresholdInvalid ||
+      editAutoPause7dThresholdInvalid
+    ) {
       showToast(t("accounts.schedulerInvalidInput"), "error");
       return;
     }
@@ -2269,6 +2386,14 @@ export default function Accounts() {
         proxy_url: editProxyUrl.trim() || null,
         tags: editTags,
         group_ids: editGroupIds,
+        auto_pause_5h_threshold: percentThresholdInputToRatio(
+          editAutoPause5hThresholdInput,
+        ),
+        auto_pause_7d_threshold: percentThresholdInputToRatio(
+          editAutoPause7dThresholdInput,
+        ),
+        auto_pause_5h_disabled: editAutoPause5hDisabled,
+        auto_pause_7d_disabled: editAutoPause7dDisabled,
       };
       await api.updateAccountScheduler(editingAccount.id, payload);
       showToast(t("accounts.schedulerSaveSuccess"));
@@ -2941,6 +3066,15 @@ export default function Accounts() {
                 >
                   <FolderOpen className="size-3 mr-1" />
                   {t("accounts.batchMetaEdit")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={batchLoading || batchTesting}
+                  onClick={openBatchQuotaAutoPauseEditor}
+                >
+                  <Hourglass className="size-3 mr-1" />
+                  {t("accounts.batchAutoPauseEdit")}
                 </Button>
                 <Button
                   variant="outline"
@@ -4347,7 +4481,10 @@ export default function Accounts() {
                   disabled={
                     editSubmitting ||
                     (editTab === "scheduler" &&
-                      (scoreInputInvalid || concurrencyInputInvalid)) ||
+                      (scoreInputInvalid ||
+                        concurrencyInputInvalid ||
+                        editAutoPause5hThresholdInvalid ||
+                        editAutoPause7dThresholdInvalid)) ||
                     openAIAccountInputInvalid
                   }
                 >
@@ -4666,6 +4803,51 @@ export default function Accounts() {
                         </div>
                       </div>
 
+                      <div className="rounded-xl border border-border p-4 md:col-span-2">
+                        <div className="text-sm font-semibold text-foreground">
+                          {t("accounts.autoPauseTitle")}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {t("accounts.autoPauseHint")}
+                        </div>
+                        <div className="mt-4 grid gap-4 md:grid-cols-2">
+                          <QuotaAutoPauseWindowEditor
+                            disabledLabel={t("accounts.autoPause5hDisabled")}
+                            disabledHint={t("accounts.autoPauseDisabledHint")}
+                            thresholdLabel={t(
+                              "accounts.autoPause5hThreshold",
+                            )}
+                            thresholdHint={t("accounts.autoPauseThresholdHint")}
+                            thresholdPlaceholder={t(
+                              "accounts.autoPauseThresholdPlaceholder",
+                            )}
+                            thresholdValue={editAutoPause5hThresholdInput}
+                            thresholdInvalid={editAutoPause5hThresholdInvalid}
+                            disabled={editAutoPause5hDisabled}
+                            invalidLabel={t("accounts.autoPauseThresholdRange")}
+                            onThresholdChange={setEditAutoPause5hThresholdInput}
+                            onDisabledChange={setEditAutoPause5hDisabled}
+                          />
+                          <QuotaAutoPauseWindowEditor
+                            disabledLabel={t("accounts.autoPause7dDisabled")}
+                            disabledHint={t("accounts.autoPauseDisabledHint")}
+                            thresholdLabel={t(
+                              "accounts.autoPause7dThreshold",
+                            )}
+                            thresholdHint={t("accounts.autoPauseThresholdHint")}
+                            thresholdPlaceholder={t(
+                              "accounts.autoPauseThresholdPlaceholder",
+                            )}
+                            thresholdValue={editAutoPause7dThresholdInput}
+                            thresholdInvalid={editAutoPause7dThresholdInvalid}
+                            disabled={editAutoPause7dDisabled}
+                            invalidLabel={t("accounts.autoPauseThresholdRange")}
+                            onThresholdChange={setEditAutoPause7dThresholdInput}
+                            onDisabledChange={setEditAutoPause7dDisabled}
+                          />
+                        </div>
+                      </div>
+
                       <div className="rounded-xl border border-border p-4">
                         <div className="text-sm font-semibold text-foreground">
                           {t("accounts.allowedAPIKeysLabel")}
@@ -4899,6 +5081,79 @@ export default function Accounts() {
                     })
                   )}
                 </div>
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
+            show={showBatchQuotaAutoPauseEditor}
+            title={t("accounts.batchAutoPauseTitle")}
+            contentClassName="sm:max-w-[680px]"
+            onClose={() => {
+              if (batchQuotaAutoPauseSubmitting) return;
+              setShowBatchQuotaAutoPauseEditor(false);
+            }}
+            footer={
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setShowBatchQuotaAutoPauseEditor(false)}
+                  disabled={batchQuotaAutoPauseSubmitting}
+                >
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void handleBatchSaveQuotaAutoPause()}
+                  disabled={
+                    batchQuotaAutoPauseSubmitting ||
+                    batchAutoPause5hThresholdInvalid ||
+                    batchAutoPause7dThresholdInvalid
+                  }
+                >
+                  {batchQuotaAutoPauseSubmitting
+                    ? t("common.saving")
+                    : t("common.save")}
+                </Button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+                {t("accounts.batchAutoPauseDesc", { count: selected.size })}
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <QuotaAutoPauseWindowEditor
+                  disabledLabel={t("accounts.autoPause5hDisabled")}
+                  disabledHint={t("accounts.autoPauseDisabledHint")}
+                  thresholdLabel={t("accounts.autoPause5hThreshold")}
+                  thresholdHint={t("accounts.autoPauseThresholdHint")}
+                  thresholdPlaceholder={t(
+                    "accounts.autoPauseThresholdPlaceholder",
+                  )}
+                  thresholdValue={batchAutoPause5hThresholdInput}
+                  thresholdInvalid={batchAutoPause5hThresholdInvalid}
+                  disabled={batchAutoPause5hDisabled}
+                  invalidLabel={t("accounts.autoPauseThresholdRange")}
+                  onThresholdChange={setBatchAutoPause5hThresholdInput}
+                  onDisabledChange={setBatchAutoPause5hDisabled}
+                />
+                <QuotaAutoPauseWindowEditor
+                  disabledLabel={t("accounts.autoPause7dDisabled")}
+                  disabledHint={t("accounts.autoPauseDisabledHint")}
+                  thresholdLabel={t("accounts.autoPause7dThreshold")}
+                  thresholdHint={t("accounts.autoPauseThresholdHint")}
+                  thresholdPlaceholder={t(
+                    "accounts.autoPauseThresholdPlaceholder",
+                  )}
+                  thresholdValue={batchAutoPause7dThresholdInput}
+                  thresholdInvalid={batchAutoPause7dThresholdInvalid}
+                  disabled={batchAutoPause7dDisabled}
+                  invalidLabel={t("accounts.autoPauseThresholdRange")}
+                  onThresholdChange={setBatchAutoPause7dThresholdInput}
+                  onDisabledChange={setBatchAutoPause7dDisabled}
+                />
               </div>
             </div>
           </Modal>
@@ -5455,6 +5710,80 @@ function PreviewItem({ label, value }: { label: string; value: string }) {
       </div>
       <div className="mt-1 text-base font-semibold text-foreground">
         {value}
+      </div>
+    </div>
+  );
+}
+
+function QuotaAutoPauseWindowEditor({
+  disabledLabel,
+  disabledHint,
+  thresholdLabel,
+  thresholdHint,
+  thresholdPlaceholder,
+  thresholdValue,
+  thresholdInvalid,
+  disabled,
+  invalidLabel,
+  onThresholdChange,
+  onDisabledChange,
+}: {
+  disabledLabel: string;
+  disabledHint: string;
+  thresholdLabel: string;
+  thresholdHint: string;
+  thresholdPlaceholder: string;
+  thresholdValue: string;
+  thresholdInvalid: boolean;
+  disabled: boolean;
+  invalidLabel: string;
+  onThresholdChange: (value: string) => void;
+  onDisabledChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-muted/10 p-3">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-sm font-semibold text-foreground">
+            {disabledLabel}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {disabledHint}
+          </div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-label={disabledLabel}
+          aria-checked={disabled}
+          onClick={() => onDisabledChange(!disabled)}
+          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 ${disabled ? "bg-primary" : "bg-muted"}`}
+        >
+          <span
+            className={`pointer-events-none block size-4 rounded-full bg-white shadow transition-transform ${disabled ? "translate-x-4" : "translate-x-0"}`}
+          />
+        </button>
+      </div>
+      <label className="mt-4 block text-sm font-semibold text-muted-foreground">
+        {thresholdLabel}
+      </label>
+      <Input
+        className="mt-2"
+        type="number"
+        min={0}
+        max={100}
+        step={0.1}
+        inputMode="decimal"
+        value={thresholdValue}
+        placeholder={thresholdPlaceholder}
+        onChange={(event: ChangeEvent<HTMLInputElement>) =>
+          onThresholdChange(event.target.value)
+        }
+      />
+      <div
+        className={`mt-1.5 text-xs ${thresholdInvalid ? "text-red-500" : "text-muted-foreground"}`}
+      >
+        {thresholdInvalid ? invalidLabel : thresholdHint}
       </div>
     </div>
   );

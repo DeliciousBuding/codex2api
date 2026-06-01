@@ -78,6 +78,10 @@ export interface AccountRow {
   rate_limit_attempts?: number
   usage_percent_7d?: number | null
   usage_percent_5h?: number | null
+  auto_pause_5h_threshold?: number | null
+  auto_pause_7d_threshold?: number | null
+  auto_pause_5h_disabled?: boolean
+  auto_pause_7d_disabled?: boolean
   usage_5h_detail?: AccountUsageWindow
   usage_7d_detail?: AccountUsageWindow
   reset_5h_at?: ISODateString
@@ -154,6 +158,10 @@ export interface UpdateAccountSchedulerRequest {
   proxy_url?: string | null
   tags?: string[] | null
   group_ids?: number[] | null
+  auto_pause_5h_threshold?: number | null
+  auto_pause_7d_threshold?: number | null
+  auto_pause_5h_disabled?: boolean
+  auto_pause_7d_disabled?: boolean
 }
 
 export interface AccountGroup {

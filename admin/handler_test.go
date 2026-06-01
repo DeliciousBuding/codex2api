@@ -925,6 +925,16 @@ func TestUpdateAccountSchedulerRejectsOutOfRangeValues(t *testing.T) {
 			body:    `{"base_concurrency_override":0}`,
 			message: "base_concurrency_override 超出范围，必须在 1..50 之间",
 		},
+		{
+			name:    "5h auto pause threshold out of range",
+			body:    `{"auto_pause_5h_threshold":1.01}`,
+			message: "auto_pause_5h_threshold 超出范围，必须在 0..1 之间",
+		},
+		{
+			name:    "7d auto pause threshold out of range",
+			body:    `{"auto_pause_7d_threshold":-0.01}`,
+			message: "auto_pause_7d_threshold 超出范围，必须在 0..1 之间",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -1009,6 +1019,45 @@ func TestUpdateAccountSchedulerPersistsAllowedAPIKeyIDs(t *testing.T) {
 	}
 	if got := rows[0].GetCredentialInt64Slice("allowed_api_key_ids"); len(got) != 2 || got[0] != keyID1 || got[1] != keyID2 {
 		t.Fatalf("allowed_api_key_ids = %v, want [%d %d]", got, keyID1, keyID2)
+	}
+}
+
+func TestUpdateAccountSchedulerPersistsQuotaAutoPauseConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	accountID := insertTestAccount(t, db)
+	handler := &Handler{db: db}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
+	ctx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(`{"auto_pause_5h_threshold":0.95,"auto_pause_7d_threshold":null,"auto_pause_5h_disabled":true,"auto_pause_7d_disabled":false}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.UpdateAccountScheduler(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	rows, err := db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	threshold5h, ok := rows[0].GetCredentialFloat64("auto_pause_5h_threshold")
+	if !ok || threshold5h != 0.95 {
+		t.Fatalf("auto_pause_5h_threshold = (%v, %t), want (0.95, true)", threshold5h, ok)
+	}
+	threshold7d, ok := rows[0].GetCredentialFloat64("auto_pause_7d_threshold")
+	if !ok || threshold7d != 0 {
+		t.Fatalf("auto_pause_7d_threshold = (%v, %t), want (0, true)", threshold7d, ok)
+	}
+	if !rows[0].GetCredentialBool("auto_pause_5h_disabled") {
+		t.Fatal("auto_pause_5h_disabled = false, want true")
+	}
+	if rows[0].GetCredentialBool("auto_pause_7d_disabled") {
+		t.Fatal("auto_pause_7d_disabled = true, want false")
 	}
 }
 
@@ -1202,7 +1251,7 @@ func TestUpdateAccountSchedulerUpdatesRuntimeOverrides(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(recorder)
 	ginCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
-	ginCtx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(fmt.Sprintf(`{"score_bias_override":33,"base_concurrency_override":5,"skip_warm_tier":true,"allowed_api_key_ids":[%d,%d]}`, keyID2, keyID1)))
+	ginCtx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(fmt.Sprintf(`{"score_bias_override":33,"base_concurrency_override":5,"skip_warm_tier":true,"allowed_api_key_ids":[%d,%d],"auto_pause_5h_threshold":0.95,"auto_pause_7d_threshold":0.9,"auto_pause_5h_disabled":true,"auto_pause_7d_disabled":false}`, keyID2, keyID1)))
 	ginCtx.Request.Header.Set("Content-Type", "application/json")
 
 	handler.UpdateAccountScheduler(ginCtx)
@@ -1224,6 +1273,20 @@ func TestUpdateAccountSchedulerUpdatesRuntimeOverrides(t *testing.T) {
 	}
 	if got := runtimeAccount.GetAllowedAPIKeyIDs(); len(got) != 2 || got[0] != keyID1 || got[1] != keyID2 {
 		t.Fatalf("runtime allowed_api_key_ids = %v, want [%d %d]", got, keyID1, keyID2)
+	}
+	runtimeAccount.Mu().RLock()
+	defer runtimeAccount.Mu().RUnlock()
+	if runtimeAccount.AutoPause5hThreshold != 0.95 {
+		t.Fatalf("runtime auto_pause_5h_threshold = %v, want 0.95", runtimeAccount.AutoPause5hThreshold)
+	}
+	if runtimeAccount.AutoPause7dThreshold != 0.9 {
+		t.Fatalf("runtime auto_pause_7d_threshold = %v, want 0.9", runtimeAccount.AutoPause7dThreshold)
+	}
+	if !runtimeAccount.AutoPause5hDisabled {
+		t.Fatal("runtime auto_pause_5h_disabled = false, want true")
+	}
+	if runtimeAccount.AutoPause7dDisabled {
+		t.Fatal("runtime auto_pause_7d_disabled = true, want false")
 	}
 }
 
