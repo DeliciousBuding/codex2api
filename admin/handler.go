@@ -4368,6 +4368,7 @@ type settingsResponse struct {
 	ExpiredCleaned                   int    `json:"expired_cleaned,omitempty"`
 	ModelMapping                     string `json:"model_mapping"`
 	CodexModelMapping                string `json:"codex_model_mapping"`
+	ReasoningEffortModels            string `json:"reasoning_effort_models"`
 	ResinURL                         string `json:"resin_url"`
 	ResinPlatformName                string `json:"resin_platform_name"`
 	PromptFilterEnabled              bool   `json:"prompt_filter_enabled"`
@@ -4434,6 +4435,7 @@ type updateSettingsReq struct {
 	AllowRemoteMigration             *bool   `json:"allow_remote_migration"`
 	ModelMapping                     *string `json:"model_mapping"`
 	CodexModelMapping                *string `json:"codex_model_mapping"`
+	ReasoningEffortModels            *string `json:"reasoning_effort_models"`
 	ResinURL                         *string `json:"resin_url"`
 	ResinPlatformName                *string `json:"resin_platform_name"`
 	PromptFilterEnabled              *bool   `json:"prompt_filter_enabled"`
@@ -4993,6 +4995,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CacheLabel:                       h.cacheLabel,
 		ModelMapping:                     h.store.GetModelMapping(),
 		CodexModelMapping:                h.store.GetCodexModelMapping(),
+		ReasoningEffortModels:            h.store.GetReasoningEffortModels(),
 		ResinURL:                         resinURL,
 		ResinPlatformName:                resinPlatformName,
 		PromptFilterEnabled:              promptFilterCfg.Enabled,
@@ -5319,6 +5322,15 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		h.store.SetCodexModelMapping(*req.CodexModelMapping)
 		log.Printf("设置已更新: codex_model_mapping")
 	}
+	if req.ReasoningEffortModels != nil {
+		normalized, err := proxy.NormalizeReasoningEffortModelsJSON(*req.ReasoningEffortModels, proxy.SupportedModelIDs(c.Request.Context(), h.db))
+		if err != nil {
+			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.store.SetReasoningEffortModels(normalized)
+		log.Printf("设置已更新: reasoning_effort_models")
+	}
 
 	if req.ClientCompatMode != nil {
 		runtimeCfg.ClientCompatMode = proxy.NormalizeClientCompatMode(*req.ClientCompatMode)
@@ -5542,6 +5554,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		AllowRemoteMigration:             h.store.GetAllowRemoteMigration() && hasAdminSecret,
 		ModelMapping:                     h.store.GetModelMapping(),
 		CodexModelMapping:                h.store.GetCodexModelMapping(),
+		ReasoningEffortModels:            h.store.GetReasoningEffortModels(),
 		ResinURL:                         resinURL,
 		ResinPlatformName:                resinPlatformName,
 		PromptFilterEnabled:              promptFilterCfg.Enabled,
@@ -5624,6 +5637,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ExpiredCleaned:                   expiredCleaned,
 		ModelMapping:                     h.store.GetModelMapping(),
 		CodexModelMapping:                h.store.GetCodexModelMapping(),
+		ReasoningEffortModels:            h.store.GetReasoningEffortModels(),
 		ResinURL:                         resinURL,
 		ResinPlatformName:                resinPlatformName,
 		PromptFilterEnabled:              promptFilterCfg.Enabled,

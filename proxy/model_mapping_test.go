@@ -114,6 +114,56 @@ func TestApplyConfiguredModelMappingToBodyRewritesBeforeValidation(t *testing.T)
 	}
 }
 
+func TestApplyReasoningEffortModelAliasToBody(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	store.SetReasoningEffortModels(`[{"model":"gpt-5.5","effort":"xhigh"}]`)
+	handler := NewHandler(store, nil, nil, nil)
+
+	body, original, effective, mapped := handler.applyConfiguredModelMappingToBody(
+		[]byte(`{"model":"gpt-5.5(xhigh)","input":"hello"}`),
+		[]string{"gpt-5.5", "gpt-5.5(xhigh)"},
+	)
+	if !mapped {
+		t.Fatal("expected alias to be resolved")
+	}
+	if original != "gpt-5.5(xhigh)" || effective != "gpt-5.5" {
+		t.Fatalf("original/effective = %q/%q, want gpt-5.5(xhigh)/gpt-5.5", original, effective)
+	}
+	if got := gjson.GetBytes(body, "model").String(); got != "gpt-5.5" {
+		t.Fatalf("body model = %q, want gpt-5.5; body=%s", got, body)
+	}
+	if got := gjson.GetBytes(body, "reasoning_effort").String(); got != "xhigh" {
+		t.Fatalf("reasoning_effort = %q, want xhigh; body=%s", got, body)
+	}
+	if got := gjson.GetBytes(body, "reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, body)
+	}
+}
+
+func TestApplyReasoningEffortModelAliasBeforeCodexMapping(t *testing.T) {
+	store := auth.NewStore(nil, nil, nil)
+	store.SetReasoningEffortModels(`[{"model":"gpt-5.5","effort":"xhigh"}]`)
+	store.SetCodexModelMapping(`{"gpt-5.5":"gpt-5.4"}`)
+	handler := NewHandler(store, nil, nil, nil)
+
+	body, original, effective, mapped := handler.applyConfiguredModelMappingToBody(
+		[]byte(`{"model":"gpt-5.5(xhigh)","input":"hello"}`),
+		[]string{"gpt-5.5", "gpt-5.4", "gpt-5.5(xhigh)"},
+	)
+	if !mapped {
+		t.Fatal("expected alias and mapping to be applied")
+	}
+	if original != "gpt-5.5(xhigh)" || effective != "gpt-5.4" {
+		t.Fatalf("original/effective = %q/%q, want gpt-5.5(xhigh)/gpt-5.4", original, effective)
+	}
+	if got := gjson.GetBytes(body, "model").String(); got != "gpt-5.4" {
+		t.Fatalf("body model = %q, want gpt-5.4; body=%s", got, body)
+	}
+	if got := gjson.GetBytes(body, "reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("reasoning.effort = %q, want xhigh; body=%s", got, body)
+	}
+}
+
 func TestApplyConfiguredModelMappingToBodyIgnoresClaudeMappingSetting(t *testing.T) {
 	store := auth.NewStore(nil, nil, nil)
 	store.SetModelMapping(`{"gpt-5.2":"gpt-5.5"}`)

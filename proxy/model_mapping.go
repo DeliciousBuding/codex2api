@@ -160,15 +160,39 @@ func (h *Handler) applyConfiguredModelMappingToBody(rawBody []byte, supportedMod
 		return rawBody, originalModel, effectiveModel, false
 	}
 
-	mappedModel, ok := resolveConfiguredModelMapping(originalModel, h.store.GetCodexModelMapping(), supportedModels)
-	if !ok || mappedModel == "" || mappedModel == originalModel {
-		return rawBody, originalModel, effectiveModel, false
+	updatedBody := rawBody
+	modelForMapping := originalModel
+	mappingApplied := false
+	if entry, ok := resolveReasoningEffortModelAlias(originalModel, h.store.GetReasoningEffortModels(), supportedModels); ok {
+		var err error
+		updatedBody, err = sjson.SetBytes(updatedBody, "model", entry.Model)
+		if err != nil {
+			return rawBody, originalModel, effectiveModel, false
+		}
+		updatedBody, err = sjson.SetBytes(updatedBody, "reasoning_effort", entry.Effort)
+		if err != nil {
+			return rawBody, originalModel, effectiveModel, false
+		}
+		updatedBody, err = sjson.SetBytes(updatedBody, "reasoning.effort", entry.Effort)
+		if err != nil {
+			return rawBody, originalModel, effectiveModel, false
+		}
+		modelForMapping = entry.Model
+		effectiveModel = entry.Model
+		mappingApplied = !strings.EqualFold(originalModel, entry.Model)
 	}
-	updatedBody, err := sjson.SetBytes(rawBody, "model", mappedModel)
-	if err != nil {
-		return rawBody, originalModel, effectiveModel, false
+
+	mappedModel, ok := resolveConfiguredModelMapping(modelForMapping, h.store.GetCodexModelMapping(), supportedModels)
+	if ok && mappedModel != "" && !strings.EqualFold(mappedModel, modelForMapping) {
+		var err error
+		updatedBody, err = sjson.SetBytes(updatedBody, "model", mappedModel)
+		if err != nil {
+			return rawBody, originalModel, effectiveModel, mappingApplied
+		}
+		effectiveModel = mappedModel
+		mappingApplied = true
 	}
-	return updatedBody, originalModel, mappedModel, !strings.EqualFold(originalModel, mappedModel)
+	return updatedBody, originalModel, effectiveModel, mappingApplied
 }
 
 func (h *Handler) resolveConfiguredRequestModel(model string, supportedModels []string) (string, bool) {
@@ -176,9 +200,14 @@ func (h *Handler) resolveConfiguredRequestModel(model string, supportedModels []
 	if model == "" || h == nil || h.store == nil {
 		return model, false
 	}
+	resolved := false
+	if entry, ok := resolveReasoningEffortModelAlias(model, h.store.GetReasoningEffortModels(), supportedModels); ok {
+		model = entry.Model
+		resolved = true
+	}
 	mappedModel, ok := resolveConfiguredModelMapping(model, h.store.GetCodexModelMapping(), supportedModels)
 	if !ok || mappedModel == "" || mappedModel == model {
-		return model, false
+		return model, resolved
 	}
 	return mappedModel, true
 }

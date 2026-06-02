@@ -698,6 +698,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS lazy_mode BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS model_mapping TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_model_mapping TEXT DEFAULT '{}';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS reasoning_effort_models TEXT DEFAULT '[]';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS background_refresh_interval_minutes INT DEFAULT 2;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS usage_probe_max_age_minutes INT DEFAULT 10;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS usage_probe_concurrency INT DEFAULT 16;
@@ -1239,6 +1240,7 @@ type SystemSettings struct {
 	AllowRemoteMigration             bool
 	ModelMapping                     string // JSON: {"anthropic_model": "codex_model", ...}
 	CodexModelMapping                string // JSON: {"requested_codex_model": "upstream_codex_model", ...}
+	ReasoningEffortModels            string // JSON: [{"model":"gpt-5.5","effort":"xhigh"}, ...]
 	BackgroundRefreshIntervalMinutes int
 	UsageProbeMaxAgeMinutes          int
 	UsageProbeConcurrency            int
@@ -1314,7 +1316,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 			       COALESCE(billing_tier_policy, 'actual'),
 			       COALESCE(image_storage_config, '{}'),
 		       COALESCE(background_config, '{}'),
-		       COALESCE(show_full_usage_numbers, false)
+		       COALESCE(show_full_usage_numbers, false),
+		       COALESCE(reasoning_effort_models, '[]')
 		FROM system_settings WHERE id = 1
 	`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -1336,17 +1339,25 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.ImageStorageConfig,
 		&s.BackgroundConfig,
 		&s.ShowFullUsageNumbers,
+		&s.ReasoningEffortModels,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	s.SiteName = NormalizeSiteName(s.SiteName)
 	s.SiteLogo = strings.TrimSpace(s.SiteLogo)
+	if strings.TrimSpace(s.ReasoningEffortModels) == "" {
+		s.ReasoningEffortModels = "[]"
+	}
 	return s, err
 }
 
 // UpdateSystemSettings 更新全局设置（upsert：无行时自动插入）
 func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error {
+	reasoningEffortModels := strings.TrimSpace(s.ReasoningEffortModels)
+	if reasoningEffortModels == "" {
+		reasoningEffortModels = "[]"
+	}
 	_, err := db.conn.ExecContext(ctx, `
 			INSERT INTO system_settings (
 				id, site_name, site_logo, max_concurrency, global_rpm, test_model, test_concurrency, proxy_url, pg_max_conns, redis_pool_size,
@@ -1365,9 +1376,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				scheduler_mode,
 				affinity_mode,
 				background_config,
-				show_full_usage_numbers
+				show_full_usage_numbers,
+				reasoning_effort_models
 			)
-				VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52)
+				VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53)
 			ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -1420,7 +1432,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				scheduler_mode = EXCLUDED.scheduler_mode,
 				affinity_mode = EXCLUDED.affinity_mode,
 				background_config = EXCLUDED.background_config,
-				show_full_usage_numbers = EXCLUDED.show_full_usage_numbers
+				show_full_usage_numbers = EXCLUDED.show_full_usage_numbers,
+				reasoning_effort_models = EXCLUDED.reasoning_effort_models
 		`, NormalizeSiteName(s.SiteName), strings.TrimSpace(s.SiteLogo),
 		s.MaxConcurrency, s.GlobalRPM, s.TestModel, s.TestConcurrency, s.ProxyURL, s.PgMaxConns, s.RedisPoolSize,
 		s.AutoCleanUnauthorized, s.AutoCleanRateLimited, s.AdminSecret, s.AutoCleanFullUsage, s.ProxyPoolEnabled,
@@ -1432,7 +1445,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.PromptFilterSensitiveWords, s.PromptFilterCustomPatterns, s.PromptFilterDisabledPatterns,
 		s.ClientCompatMode, s.CodexMinCLIVersion, s.UsageLogMode, s.UsageLogBatchSize,
 		s.UsageLogFlushIntervalSeconds, s.StreamFlushPolicy, s.StreamFlushIntervalMS,
-		s.FirstTokenTimeoutSeconds, s.BillingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers)
+		s.FirstTokenTimeoutSeconds, s.BillingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers, reasoningEffortModels)
 	return err
 }
 

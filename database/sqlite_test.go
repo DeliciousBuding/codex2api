@@ -702,6 +702,7 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 		MaxRateLimitRetries:              1,
 		ModelMapping:                     "{}",
 		CodexModelMapping:                `{"gpt-5.2":"gpt-5.5"}`,
+		ReasoningEffortModels:            `[{"model":"gpt-5.5","effort":"xhigh"}]`,
 		PromptFilterMode:                 "monitor",
 		PromptFilterThreshold:            50,
 		PromptFilterStrictThreshold:      90,
@@ -745,6 +746,9 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 	}
 	if settings.CodexModelMapping != `{"gpt-5.2":"gpt-5.5"}` {
 		t.Fatalf("CodexModelMapping = %q, want gpt-5.2 mapping", settings.CodexModelMapping)
+	}
+	if settings.ReasoningEffortModels != `[{"model":"gpt-5.5","effort":"xhigh"}]` {
+		t.Fatalf("ReasoningEffortModels = %q, want gpt-5.5 xhigh entry", settings.ReasoningEffortModels)
 	}
 }
 

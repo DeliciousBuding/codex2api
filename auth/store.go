@@ -1584,14 +1584,15 @@ type Store struct {
 	// 智能刷新调度器
 	refreshScheduler atomic.Pointer[RefreshSchedulerIntegration]
 
-	allowRemoteMigration atomic.Bool  // 是否允许远程迁移拉取账号
-	modelMapping         atomic.Value // 模型映射 JSON 字符串
-	codexModelMapping    atomic.Value // Codex 模型映射 JSON 字符串
-	schedulerMode        atomic.Value // string: "round_robin" or "remaining_quota"
-	affinityMode         atomic.Value // string: "bounded" / "off" / "strict"
-	promptFilterConfig   atomic.Value // promptfilter.Config
-	sessionMu            sync.RWMutex
-	sessionBindings      map[string]sessionAffinity
+	allowRemoteMigration  atomic.Bool  // 是否允许远程迁移拉取账号
+	modelMapping          atomic.Value // 模型映射 JSON 字符串
+	codexModelMapping     atomic.Value // Codex 模型映射 JSON 字符串
+	reasoningEffortModels atomic.Value // 带思考强度的模型别名 JSON 数组
+	schedulerMode         atomic.Value // string: "round_robin" or "remaining_quota"
+	affinityMode          atomic.Value // string: "bounded" / "off" / "strict"
+	promptFilterConfig    atomic.Value // promptfilter.Config
+	sessionMu             sync.RWMutex
+	sessionBindings       map[string]sessionAffinity
 }
 
 // sessionAffinity 记录某个 sessionKey 当前粘附到哪个账号/代理。
@@ -2007,6 +2008,9 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	}
 	if settings.CodexModelMapping != "" {
 		s.codexModelMapping.Store(settings.CodexModelMapping)
+	}
+	if settings.ReasoningEffortModels != "" {
+		s.reasoningEffortModels.Store(settings.ReasoningEffortModels)
 	}
 	s.SetPromptFilterConfig(promptFilterConfigFromSettings(settings))
 	// 环境变量优先，否则读数据库设置
@@ -3467,6 +3471,19 @@ func (s *Store) GetCodexModelMapping() string {
 		return v
 	}
 	return "{}"
+}
+
+// SetReasoningEffortModels 动态更新带思考强度的模型别名 JSON 数组。
+func (s *Store) SetReasoningEffortModels(value string) {
+	s.reasoningEffortModels.Store(value)
+}
+
+// GetReasoningEffortModels 获取当前带思考强度的模型别名 JSON 数组。
+func (s *Store) GetReasoningEffortModels() string {
+	if v, ok := s.reasoningEffortModels.Load().(string); ok && v != "" {
+		return v
+	}
+	return "[]"
 }
 
 // GetSchedulerMode 获取当前调度模式
