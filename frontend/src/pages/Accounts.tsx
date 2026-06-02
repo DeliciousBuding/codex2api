@@ -51,6 +51,8 @@ import {
   Upload,
   Download,
   ArrowDownToLine,
+  Eye,
+  EyeOff,
   KeyRound,
   ExternalLink,
   FileText,
@@ -86,6 +88,8 @@ import ChipInput from "../components/ChipInput";
 const ACCOUNT_BATCH_CONCURRENCY = 6;
 const OPERATION_PROGRESS_FLUSH_INTERVAL_MS = 200;
 const ACCOUNT_ANALYSIS_VISIBILITY_KEY = "codex2api:accounts:analysis-visible";
+const ACCOUNT_EMAIL_DOMAIN_VISIBILITY_KEY =
+  "codex2api:accounts:email-domain-tags-visible";
 const ACCOUNT_VISIBLE_COLUMNS_KEY = "codex2api:accounts:visible-columns";
 const ACCOUNT_TABLE_COLUMNS = [
   "sequence",
@@ -223,6 +227,27 @@ function persistAnalysisVisibility(visible: boolean) {
     );
   } catch {
     // Local storage can be unavailable in restricted browser modes; keep the in-memory toggle working.
+  }
+}
+
+function getInitialEmailDomainVisibility(): boolean {
+  try {
+    return (
+      window.localStorage.getItem(ACCOUNT_EMAIL_DOMAIN_VISIBILITY_KEY) !== "false"
+    );
+  } catch {
+    return true;
+  }
+}
+
+function persistEmailDomainVisibility(visible: boolean) {
+  try {
+    window.localStorage.setItem(
+      ACCOUNT_EMAIL_DOMAIN_VISIBILITY_KEY,
+      visible ? "true" : "false",
+    );
+  } catch {
+    // Keep the in-memory toggle working when localStorage is unavailable.
   }
 }
 
@@ -531,6 +556,9 @@ export default function Accounts() {
   const [showAnalysisCharts, setShowAnalysisCharts] = useState(
     getInitialAnalysisVisibility,
   );
+  const [showEmailDomainTags, setShowEmailDomainTags] = useState(
+    getInitialEmailDomainVisibility,
+  );
   const [migrateUrl, setMigrateUrl] = useState("");
   const [migrateKey, setMigrateKey] = useState("");
   const [migrating, setMigrating] = useState(false);
@@ -811,6 +839,10 @@ export default function Accounts() {
   useEffect(() => {
     persistAnalysisVisibility(showAnalysisCharts);
   }, [showAnalysisCharts]);
+
+  useEffect(() => {
+    persistEmailDomainVisibility(showEmailDomainTags);
+  }, [showEmailDomainTags]);
 
   useEffect(() => {
     persistAccountVisibleColumns(visibleColumns);
@@ -2966,6 +2998,23 @@ export default function Accounts() {
                 })),
               ]}
             />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              aria-pressed={showEmailDomainTags}
+              onClick={() => setShowEmailDomainTags((visible) => !visible)}
+            >
+              {showEmailDomainTags ? (
+                <EyeOff className="size-3.5" />
+              ) : (
+                <Eye className="size-3.5" />
+              )}
+              {showEmailDomainTags
+                ? t("accounts.hideEmailDomainTags")
+                : t("accounts.showEmailDomainTags")}
+            </Button>
             <Select
               className="w-36 shrink-0"
               compact
@@ -3195,6 +3244,7 @@ export default function Accounts() {
                           selected={isSelected}
                           allGroups={allGroups}
                           lazyMode={lazyMode}
+                          showEmailDomainTags={showEmailDomainTags}
                           refreshing={refreshingIds.has(account.id)}
                           authJsonExporting={authJsonExportingIds.has(account.id)}
                           t={t}
@@ -3380,7 +3430,8 @@ export default function Accounts() {
                                       ? formatAccountName(account)
                                       : formatAccountListEmail(account)}
                                   </span>
-                                  {getAccountEmailDomain(account) && (
+                                  {showEmailDomainTags &&
+                                    getAccountEmailDomain(account) && (
                                     <EmailDomainBadge
                                       domain={getAccountEmailDomain(account)}
                                       t={t}
@@ -3424,7 +3475,8 @@ export default function Accounts() {
                                   items={account.tags ?? []}
                                   tone="purple"
                                 />
-                                {getAccountEmailDomain(account) && (
+                                {showEmailDomainTags &&
+                                  getAccountEmailDomain(account) && (
                                   <div className="mt-1.5 flex flex-wrap gap-1">
                                     <EmailDomainBadge
                                       domain={getAccountEmailDomain(account)}
@@ -6690,6 +6742,7 @@ function AccountMobileCard({
   selected,
   allGroups,
   lazyMode,
+  showEmailDomainTags,
   refreshing,
   authJsonExporting,
   t,
@@ -6709,6 +6762,7 @@ function AccountMobileCard({
   selected: boolean;
   allGroups: AccountGroup[];
   lazyMode: boolean;
+  showEmailDomainTags: boolean;
   refreshing: boolean;
   authJsonExporting: boolean;
   t: ReturnType<typeof useTranslation>["t"];
@@ -6759,7 +6813,7 @@ function AccountMobileCard({
                   expiresAt={account.subscription_expires_at}
                   planType={account.plan_type}
                 />
-                {getAccountEmailDomain(account) && (
+                {showEmailDomainTags && getAccountEmailDomain(account) && (
                   <EmailDomainBadge
                     domain={getAccountEmailDomain(account)}
                     t={t}
@@ -6890,11 +6944,11 @@ function AccountMobileCard({
       </div>
 
       {((account.tags ?? []).length > 0 ||
-        getAccountEmailDomain(account) ||
+        (showEmailDomainTags && getAccountEmailDomain(account)) ||
         groups.length > 0) && (
         <div className="mt-3 space-y-1.5 border-t border-border pt-2">
           <ChipList items={account.tags ?? []} tone="purple" />
-          {getAccountEmailDomain(account) && (
+          {showEmailDomainTags && getAccountEmailDomain(account) && (
             <div className="mt-1.5 flex flex-wrap gap-1">
               <EmailDomainBadge domain={getAccountEmailDomain(account)} t={t} />
             </div>

@@ -605,6 +605,8 @@
     "emailDomainFilter": "全部邮箱域名",
     "emailDomainFilterOption": "{{domain}} · 封禁 {{banned}} / 总 {{total}}",
     "emailDomainSystemTag": "邮箱域名系统标签",
+    "showEmailDomainTags": "显示域名标签",
+    "hideEmailDomainTags": "隐藏域名标签",
     "groupsLabel": "账号分组",
     "groupsHint": "限制账号所属分组，用于 API Key 调度范围。",
     "groupsPlaceholder": "选择分组",

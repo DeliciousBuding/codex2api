@@ -605,6 +605,8 @@
     "emailDomainFilter": "All email domains",
     "emailDomainFilterOption": "{{domain}} · banned {{banned}} / total {{total}}",
     "emailDomainSystemTag": "Email domain system tag",
+    "showEmailDomainTags": "Show domain tags",
+    "hideEmailDomainTags": "Hide domain tags",
     "groupsLabel": "Account Groups",
     "groupsHint": "Assign groups for API key routing limits.",
     "groupsPlaceholder": "Select groups",
