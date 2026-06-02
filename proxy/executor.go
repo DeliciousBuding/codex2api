@@ -244,15 +244,20 @@ func promptCacheRetention() string {
 	return defaultPromptCacheRetention
 }
 
-// ApplyPromptCacheRetention 统一处理请求体里的 prompt_cache_retention：
-//   - 配置(promptCacheRetention())为空 → 删除该字段(旧的"剥离"行为，强制生效)；
-//   - 客户端已显式传了非空值 → 保留(尊重客户端意图)；
-//   - 否则注入默认值。
-// 三条上游路径(HTTP / compact / WebSocket)共用此函数，避免按传输模式漂移。
+// ApplyPromptCacheRetention 处理 WebSocket 上游请求体里的 prompt_cache_retention。
+//
+// 重要：HTTP POST /responses 上游【不接受】该参数（会返回 400 Unsupported parameter），
+// 只有 WebSocket 帧（官方 Codex CLI 走的 responses_websockets 路径）才接受它。
+// 因此本函数仅在 WS 路径调用；HTTP / compact 路径必须始终删除该字段。
+//
+// 语义：
+//   - 配置(promptCacheRetention())为空 → 删除该字段（关闭注入）；
+//   - 客户端已显式传了非空值 → 保留（尊重客户端意图）；
+//   - 否则注入默认值（24h），获得跨请求 prompt cache 复用收益。
 func ApplyPromptCacheRetention(body []byte) []byte {
 	retention := promptCacheRetention()
 	if retention == "" {
-		// 显式配置为空：强制剥离客户端可能传来的该字段，恢复旧行为。
+		// 显式配置为空：强制剥离客户端可能传来的该字段。
 		body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 		return body
 	}
@@ -329,7 +334,9 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 
 	// 2. 清理可能导致上游报错的多余字段
 	requestBody, _ = sjson.DeleteBytes(requestBody, "previous_response_id")
-	requestBody = ApplyPromptCacheRetention(requestBody)
+	// 注意：HTTP /responses 上游不接受 prompt_cache_retention（会 400），必须删除；
+	// 该字段的 cache 收益只在 WS 路径注入（见 wsrelay 的 prepareWebsocketBody）。
+	requestBody, _ = sjson.DeleteBytes(requestBody, "prompt_cache_retention")
 	requestBody, _ = sjson.DeleteBytes(requestBody, "safety_identifier")
 	requestBody, _ = sjson.DeleteBytes(requestBody, "disable_response_storage")
 
@@ -443,7 +450,8 @@ func ExecuteCompactRequest(ctx context.Context, account *auth.Account, requestBo
 		requestBody, _ = sjson.SetBytes(requestBody, "instructions", "")
 	}
 	requestBody, _ = sjson.DeleteBytes(requestBody, "previous_response_id")
-	requestBody = ApplyPromptCacheRetention(requestBody)
+	// compact 端点同样走 HTTP，不接受 prompt_cache_retention，必须删除。
+	requestBody, _ = sjson.DeleteBytes(requestBody, "prompt_cache_retention")
 	requestBody, _ = sjson.DeleteBytes(requestBody, "safety_identifier")
 	requestBody, _ = sjson.DeleteBytes(requestBody, "disable_response_storage")
 
