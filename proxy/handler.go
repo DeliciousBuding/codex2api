@@ -75,6 +75,11 @@ func (h *Handler) shouldUseWebsocketForHTTP() bool {
 	if h == nil || h.cfg == nil {
 		return false
 	}
+	// 运行时 DB 级开关 codex_force_websocket 优先：开启则强制走 WS
+	// （与 ExecuteRequest 的 wantWebsocket 判定保持一致，也用于 usage 日志的 WS 标记）。
+	if CurrentRuntimeSettings().CodexForceWebsocket {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(h.cfg.CodexUpstreamTransport)) {
 	case "ws":
 		return true
@@ -1409,6 +1414,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					InboundEndpoint:      "/v1/responses",
 					UpstreamEndpoint:     upstreamEndpoint,
 					Stream:               isStream,
+					ViaWebsocket:         useWebsocket,
 					ServiceTier:          usageTiers.ServiceTier,
 					RequestedServiceTier: usageTiers.RequestedServiceTier,
 					ActualServiceTier:    usageTiers.ActualServiceTier,
@@ -1589,6 +1595,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				InboundEndpoint:      "/v1/responses",
 				UpstreamEndpoint:     upstreamEndpoint,
 				Stream:               isStream,
+				ViaWebsocket:         useWebsocket,
 				ServiceTier:          usageTiers.ServiceTier,
 				RequestedServiceTier: usageTiers.RequestedServiceTier,
 				ActualServiceTier:    usageTiers.ActualServiceTier,
@@ -1727,6 +1734,7 @@ func (h *Handler) Responses(c *gin.Context) {
 				InboundEndpoint:      "/v1/responses",
 				UpstreamEndpoint:     "/v1/responses",
 				Stream:               isStream,
+				ViaWebsocket:         useWebsocket,
 				ServiceTier:          usageTiers.ServiceTier,
 				RequestedServiceTier: usageTiers.RequestedServiceTier,
 				ActualServiceTier:    usageTiers.ActualServiceTier,
@@ -1977,6 +1985,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			InboundEndpoint:      "/v1/responses",
 			UpstreamEndpoint:     "/v1/responses",
 			Stream:               isStream,
+			ViaWebsocket:         useWebsocket,
 			ServiceTier:          usageTiers.ServiceTier,
 			RequestedServiceTier: usageTiers.RequestedServiceTier,
 			ActualServiceTier:    usageTiers.ActualServiceTier,
@@ -2486,6 +2495,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				InboundEndpoint:      "/v1/chat/completions",
 				UpstreamEndpoint:     "/v1/responses",
 				Stream:               isStream,
+				ViaWebsocket:         useWebsocket,
 				ServiceTier:          usageTiers.ServiceTier,
 				RequestedServiceTier: usageTiers.RequestedServiceTier,
 				ActualServiceTier:    usageTiers.ActualServiceTier,
@@ -2739,6 +2749,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			InboundEndpoint:      "/v1/chat/completions",
 			UpstreamEndpoint:     "/v1/responses",
 			Stream:               isStream,
+			ViaWebsocket:         useWebsocket,
 			ServiceTier:          usageTiers.ServiceTier,
 			RequestedServiceTier: usageTiers.RequestedServiceTier,
 			ActualServiceTier:    usageTiers.ActualServiceTier,

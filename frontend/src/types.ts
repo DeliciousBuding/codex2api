@@ -823,6 +823,7 @@ export interface UsageLog {
   upstream_endpoint: string
   stream: boolean
   compact: boolean
+  via_websocket?: boolean
   cached_tokens: number
   service_tier: string
   requested_service_tier: string
