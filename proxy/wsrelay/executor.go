@@ -165,8 +165,8 @@ func (e *Executor) prepareWebsocketBody(body []byte, sessionID string) []byte {
 		wsBody, _ = sjson.SetBytes(wsBody, "instructions", "")
 	}
 
-	// 2. 清理多余字段（prompt_cache_retention 统一交给 proxy 层处理：保留客户端值或注入默认 24h）
-	wsBody = proxy.ApplyPromptCacheRetention(wsBody)
+	// 2. 清理多余字段（prompt_cache_retention 上游不接受，会返回 400 Unsupported parameter，必须删除）
+	wsBody, _ = sjson.DeleteBytes(wsBody, "prompt_cache_retention")
 	wsBody, _ = sjson.DeleteBytes(wsBody, "safety_identifier")
 	wsBody, _ = sjson.DeleteBytes(wsBody, "disable_response_storage")
 

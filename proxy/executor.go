@@ -227,46 +227,7 @@ func getPooledClient(account *auth.Account, proxyURL string) *http.Client {
 const (
 	CodexBaseURL = "https://chatgpt.com/backend-api/codex"
 	Originator   = "codex_cli_rs"
-
-	// defaultPromptCacheRetention 是注入给上游的默认 prompt cache 保留期。
-	// 抓包确认官方 Codex CLI 主动发送 "24h"，更长的保留期能让跨请求(尤其多轮对话/
-	// Agent 循环)复用 prompt prefix 缓存，省 input token 成本并降低首字延迟。
-	defaultPromptCacheRetention = "24h"
 )
-
-// promptCacheRetention 返回应注入上游的 prompt_cache_retention 值。
-// 可用环境变量 CODEX_PROMPT_CACHE_RETENTION 覆盖；显式设为空字符串则恢复旧行为
-// (不注入、并剥离客户端传来的该字段)。
-func promptCacheRetention() string {
-	if v, ok := os.LookupEnv("CODEX_PROMPT_CACHE_RETENTION"); ok {
-		return strings.TrimSpace(v)
-	}
-	return defaultPromptCacheRetention
-}
-
-// ApplyPromptCacheRetention 处理 WebSocket 上游请求体里的 prompt_cache_retention。
-//
-// 重要：HTTP POST /responses 上游【不接受】该参数（会返回 400 Unsupported parameter），
-// 只有 WebSocket 帧（官方 Codex CLI 走的 responses_websockets 路径）才接受它。
-// 因此本函数仅在 WS 路径调用；HTTP / compact 路径必须始终删除该字段。
-//
-// 语义：
-//   - 配置(promptCacheRetention())为空 → 删除该字段（关闭注入）；
-//   - 客户端已显式传了非空值 → 保留（尊重客户端意图）；
-//   - 否则注入默认值（24h），获得跨请求 prompt cache 复用收益。
-func ApplyPromptCacheRetention(body []byte) []byte {
-	retention := promptCacheRetention()
-	if retention == "" {
-		// 显式配置为空：强制剥离客户端可能传来的该字段。
-		body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-		return body
-	}
-	if existing := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_retention").String()); existing != "" {
-		return body
-	}
-	body, _ = sjson.SetBytes(body, "prompt_cache_retention", retention)
-	return body
-}
 
 var codexAllowedForwardHeaders = []string{
 	"X-Codex-Turn-State",
