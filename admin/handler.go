@@ -432,6 +432,7 @@ type accountResponse struct {
 	ID                       int64                      `json:"id"`
 	Name                     string                     `json:"name"`
 	Email                    string                     `json:"email"`
+	EmailDomain              string                     `json:"email_domain,omitempty"`
 	PlanType                 string                     `json:"plan_type"`
 	SubscriptionExpiresAt    string                     `json:"subscription_expires_at,omitempty"`
 	Status                   string                     `json:"status"`
@@ -509,6 +510,22 @@ type accountUsageWindow struct {
 	UserBilled    float64 `json:"user_billed"`
 }
 
+func accountEmailDomain(email string) string {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || strings.ContainsAny(email, " \t\r\n") {
+		return ""
+	}
+	at := strings.LastIndex(email, "@")
+	if at <= 0 || at == len(email)-1 {
+		return ""
+	}
+	domain := strings.Trim(strings.TrimSpace(email[at+1:]), ".")
+	if domain == "" || strings.ContainsAny(domain, " /\\:") || !strings.Contains(domain, ".") {
+		return ""
+	}
+	return domain
+}
+
 type schedulerBreakdownResponse struct {
 	UnauthorizedPenalty float64 `json:"unauthorized_penalty"`
 	RateLimitPenalty    float64 `json:"rate_limit_penalty"`
@@ -564,6 +581,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			ID:                       row.ID,
 			Name:                     row.Name,
 			Email:                    email,
+			EmailDomain:              accountEmailDomain(email),
 			PlanType:                 planType,
 			SubscriptionExpiresAt:    row.GetCredential("subscription_expires_at"),
 			Status:                   row.Status,

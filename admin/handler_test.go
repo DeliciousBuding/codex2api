@@ -53,6 +53,28 @@ func TestRefreshAccountRejectsInvalidID(t *testing.T) {
 	}
 }
 
+func TestAccountEmailDomain(t *testing.T) {
+	tests := []struct {
+		name  string
+		email string
+		want  string
+	}{
+		{name: "lowercases domain", email: "User@Example.COM", want: "example.com"},
+		{name: "trims whitespace", email: " user@mail.example.com ", want: "mail.example.com"},
+		{name: "rejects missing at", email: "https://api.openai.com", want: ""},
+		{name: "rejects blank local", email: "@example.com", want: ""},
+		{name: "rejects malformed domain", email: "user@example com", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := accountEmailDomain(tt.email); got != tt.want {
+				t.Fatalf("accountEmailDomain(%q) = %q, want %q", tt.email, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeBackgroundUploadMedia(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1469,6 +1491,9 @@ func TestListAccountsPopulatesBilledWindows(t *testing.T) {
 		t.Fatalf("accounts len = %d, want 1", len(payload.Accounts))
 	}
 	account := payload.Accounts[0]
+	if account.EmailDomain != "example.com" {
+		t.Fatalf("EmailDomain = %q, want example.com", account.EmailDomain)
+	}
 	if account.Billed5h == nil || *account.Billed5h <= 0 {
 		t.Fatalf("Billed5h = %v, want positive value", account.Billed5h)
 	}

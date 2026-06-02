@@ -27,6 +27,7 @@ export interface AccountRow {
   id: number
   name: string
   email: string
+  email_domain?: string
   plan_type: string
   subscription_expires_at?: string
   status: AccountStatus

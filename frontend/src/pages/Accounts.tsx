@@ -25,7 +25,6 @@ import type {
   SystemSettings,
 } from "../types";
 import { getErrorMessage } from "../utils/error";
-import { formatCompactEmail } from "../lib/utils";
 import { formatRelativeTime, formatBeijingTime } from "../utils/time";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -170,6 +169,11 @@ function persistAccountVisibleColumns(
 
 const ACCOUNT_VIEW_MODE_KEY = "codex2api:accounts:view-mode";
 type AccountViewMode = "table" | "grid";
+type EmailDomainStat = {
+  domain: string;
+  total: number;
+  banned: number;
+};
 
 function getInitialAccountViewMode(): AccountViewMode {
   try {
@@ -187,6 +191,18 @@ function persistAccountViewMode(mode: AccountViewMode) {
   } catch {
     // ignore
   }
+}
+
+function getAccountEmailDomain(account: AccountRow): string {
+  return (account.email_domain || "").trim().toLowerCase();
+}
+
+function emailDomainTag(domain: string): string {
+  return domain ? `@${domain}` : "";
+}
+
+function formatAccountListEmail(account: AccountRow): string {
+  return account.email?.trim() || account.name || `ID ${account.id}`;
 }
 
 function getInitialAnalysisVisibility(): boolean {
@@ -565,6 +581,7 @@ export default function Accounts() {
   const [editTags, setEditTags] = useState<string[]>([]);
   const [editGroupIds, setEditGroupIds] = useState<number[]>([]);
   const [tagFilter, setTagFilter] = useState<string>("");
+  const [domainFilter, setDomainFilter] = useState<string>("");
   const [groupFilter, setGroupFilter] = useState<number | null>(null);
   const [allGroups, setAllGroups] = useState<AccountGroup[]>([]);
   const [showGroupManager, setShowGroupManager] = useState(false);
@@ -947,6 +964,25 @@ export default function Accounts() {
     return Array.from(tags).sort();
   }, [accounts]);
 
+  const emailDomainStats = useMemo(() => {
+    const byDomain = new Map<string, EmailDomainStat>();
+    for (const account of accounts) {
+      const domain = getAccountEmailDomain(account);
+      if (!domain) continue;
+      const stat = byDomain.get(domain) ?? { domain, total: 0, banned: 0 };
+      stat.total += 1;
+      if (account.status === "unauthorized") {
+        stat.banned += 1;
+      }
+      byDomain.set(domain, stat);
+    }
+    return Array.from(byDomain.values()).sort((a, b) => {
+      if (b.banned !== a.banned) return b.banned - a.banned;
+      if (b.total !== a.total) return b.total - a.total;
+      return a.domain.localeCompare(b.domain);
+    });
+  }, [accounts]);
+
   const filteredAccounts = useMemo(() => {
     const query = searchQuery.toLowerCase();
     return accounts.filter((account) => {
@@ -999,9 +1035,12 @@ export default function Accounts() {
       if (query) {
         const email = (account.email || "").toLowerCase();
         const name = (account.name || "").toLowerCase();
-        if (!email.includes(query) && !name.includes(query)) return false;
+        const domain = getAccountEmailDomain(account);
+        if (!email.includes(query) && !name.includes(query) && !domain.includes(query))
+          return false;
       }
       if (tagFilter && !(account.tags ?? []).includes(tagFilter)) return false;
+      if (domainFilter && getAccountEmailDomain(account) !== domainFilter) return false;
       if (
         groupFilter !== null &&
         !(account.group_ids ?? []).includes(groupFilter)
@@ -1009,7 +1048,7 @@ export default function Accounts() {
         return false;
       return true;
     });
-  }, [accounts, groupFilter, planFilter, searchQuery, statusFilter, tagFilter]);
+  }, [accounts, domainFilter, groupFilter, planFilter, searchQuery, statusFilter, tagFilter]);
 
   const sortedAccounts = useMemo(() => {
     if (!sortKey) return filteredAccounts;
@@ -2907,6 +2946,27 @@ export default function Accounts() {
               ]}
             />
             <Select
+              className="w-64 shrink-0"
+              compact
+              value={domainFilter || "all"}
+              onValueChange={(value) => {
+                setDomainFilter(value === "all" ? "" : value);
+                setPage(1);
+              }}
+              options={[
+                { value: "all", label: t("accounts.emailDomainFilter") },
+                ...emailDomainStats.map((stat) => ({
+                  value: stat.domain,
+                  triggerLabel: stat.domain,
+                  label: t("accounts.emailDomainFilterOption", {
+                    domain: stat.domain,
+                    banned: stat.banned,
+                    total: stat.total,
+                  }),
+                })),
+              ]}
+            />
+            <Select
               className="w-36 shrink-0"
               compact
               value={groupFilter === null ? "all" : String(groupFilter)}
@@ -3313,34 +3373,49 @@ export default function Accounts() {
                               </TableCell>
                             )}
                             {visibleColumns.email && (
-                              <TableCell className="text-[14px] text-muted-foreground">
-                                <span>
-                                  {account.openai_responses_api
-                                    ? formatAccountName(account)
-                                    : formatCompactEmail(account.email)}
-                                </span>
-                                {account.at_only && (
-                                  <span className="ml-1.5 inline-flex items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-400/20">
-                                    AT
+                              <TableCell className="min-w-[220px] whitespace-normal text-[14px] text-muted-foreground">
+                                <div className="flex min-w-0 flex-col items-start gap-1">
+                                  <span className="break-all">
+                                    {account.openai_responses_api
+                                      ? formatAccountName(account)
+                                      : formatAccountListEmail(account)}
                                   </span>
-                                )}
-                                {account.openai_responses_api && (
-                                  <span className="ml-1.5 inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-400 dark:ring-emerald-400/20">
-                                    Responses API
-                                  </span>
-                                )}
-                                {account.enabled === false && (
-                                  <span className="ml-1.5 inline-flex items-center rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-500/20 dark:bg-zinc-900 dark:text-zinc-300 dark:ring-zinc-400/20">
-                                    <PowerOff className="size-2.5 mr-0.5" />
-                                    {t("accounts.disabled")}
-                                  </span>
-                                )}
-                                {account.locked && (
-                                  <span className="ml-1.5 inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20">
-                                    <Lock className="size-2.5 mr-0.5" />
-                                    {t("accounts.lock")}
-                                  </span>
-                                )}
+                                  {getAccountEmailDomain(account) && (
+                                    <EmailDomainBadge
+                                      domain={getAccountEmailDomain(account)}
+                                      t={t}
+                                    />
+                                  )}
+                                  {(account.at_only ||
+                                    account.openai_responses_api ||
+                                    account.enabled === false ||
+                                    account.locked) && (
+                                    <div className="flex flex-wrap gap-1">
+                                      {account.at_only && (
+                                        <span className="inline-flex items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-400/20">
+                                          AT
+                                        </span>
+                                      )}
+                                      {account.openai_responses_api && (
+                                        <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-400 dark:ring-emerald-400/20">
+                                          Responses API
+                                        </span>
+                                      )}
+                                      {account.enabled === false && (
+                                        <span className="inline-flex items-center rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-500/20 dark:bg-zinc-900 dark:text-zinc-300 dark:ring-zinc-400/20">
+                                          <PowerOff className="mr-0.5 size-2.5" />
+                                          {t("accounts.disabled")}
+                                        </span>
+                                      )}
+                                      {account.locked && (
+                                        <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20">
+                                          <Lock className="mr-0.5 size-2.5" />
+                                          {t("accounts.lock")}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               </TableCell>
                             )}
                             {visibleColumns.tags && (
@@ -3349,6 +3424,14 @@ export default function Accounts() {
                                   items={account.tags ?? []}
                                   tone="purple"
                                 />
+                                {getAccountEmailDomain(account) && (
+                                  <div className="mt-1.5 flex flex-wrap gap-1">
+                                    <EmailDomainBadge
+                                      domain={getAccountEmailDomain(account)}
+                                      t={t}
+                                    />
+                                  </div>
+                                )}
                               </TableCell>
                             )}
                             {visibleColumns.groups && (
@@ -6460,6 +6543,26 @@ function ChipList({
   );
 }
 
+function EmailDomainBadge({
+  domain,
+  t,
+}: {
+  domain: string;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  const label = emailDomainTag(domain);
+  if (!label) return null;
+
+  return (
+    <span
+      className="inline-flex max-w-full items-center break-all rounded-md bg-cyan-500/10 px-1.5 py-0.5 text-left text-[10px] font-semibold leading-tight text-cyan-700 ring-1 ring-inset ring-cyan-500/20 dark:text-cyan-300"
+      title={`${t("accounts.emailDomainSystemTag")}: ${label}`}
+    >
+      {label}
+    </span>
+  );
+}
+
 function normalizeGroupColor(color?: string): string {
   const value = (color || "").trim();
   return /^#[0-9a-fA-F]{6}$/.test(value) ? value : ACCOUNT_GROUP_COLORS[0];
@@ -6622,7 +6725,7 @@ function AccountMobileCard({
 }) {
   const displayName = account.openai_responses_api
     ? formatAccountName(account)
-    : formatCompactEmail(account.email);
+    : formatAccountListEmail(account);
   const fullName = formatAccountName(account);
   const groups = resolveAccountGroups(account.group_ids ?? [], allGroups);
   const refreshDisabled =
@@ -6656,9 +6759,15 @@ function AccountMobileCard({
                   expiresAt={account.subscription_expires_at}
                   planType={account.plan_type}
                 />
+                {getAccountEmailDomain(account) && (
+                  <EmailDomainBadge
+                    domain={getAccountEmailDomain(account)}
+                    t={t}
+                  />
+                )}
               </div>
               <div
-                className="mt-1 truncate text-[15px] font-semibold leading-tight text-foreground"
+                className="mt-1 break-all text-[15px] font-semibold leading-tight text-foreground"
                 title={fullName}
               >
                 {displayName}
@@ -6780,9 +6889,16 @@ function AccountMobileCard({
         </AccountMobileMetric>
       </div>
 
-      {((account.tags ?? []).length > 0 || groups.length > 0) && (
+      {((account.tags ?? []).length > 0 ||
+        getAccountEmailDomain(account) ||
+        groups.length > 0) && (
         <div className="mt-3 space-y-1.5 border-t border-border pt-2">
           <ChipList items={account.tags ?? []} tone="purple" />
+          {getAccountEmailDomain(account) && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              <EmailDomainBadge domain={getAccountEmailDomain(account)} t={t} />
+            </div>
+          )}
           <GroupChipList groups={groups} />
         </div>
       )}
