@@ -727,6 +727,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS billing_tier_policy VARCHAR(20) DEFAULT 'actual';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS image_storage_config TEXT DEFAULT '{}';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS show_full_usage_numbers BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_force_websocket BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_ws_keepalive_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_ws_keepalive_interval_sec INT DEFAULT 60;
 
 			CREATE TABLE IF NOT EXISTS prompt_filter_logs (
 				id               SERIAL PRIMARY KEY,
@@ -1269,6 +1272,9 @@ type SystemSettings struct {
 	BillingTierPolicy                string
 	ImageStorageConfig               string // JSON: {"backend":"s3","endpoint":"...","region":"...","bucket":"...","access_key":"...","secret_key":"...","prefix":"...","force_path_style":false}
 	ShowFullUsageNumbers             bool
+	CodexForceWebsocket              bool // 强制 Codex 上游走 WebSocket（复用连接池），默认 false
+	CodexWSKeepaliveEnabled          bool // 启用上游 WS 空闲连接保活（仅 Ping，不发业务帧），默认 false
+	CodexWSKeepaliveIntervalSec      int  // WS 保活 Ping 间隔（秒），默认 60
 }
 
 // GetSystemSettings 加载全局设置
@@ -1317,7 +1323,10 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 			       COALESCE(image_storage_config, '{}'),
 		       COALESCE(background_config, '{}'),
 		       COALESCE(show_full_usage_numbers, false),
-		       COALESCE(reasoning_effort_models, '[]')
+		       COALESCE(reasoning_effort_models, '[]'),
+		       COALESCE(codex_force_websocket, false),
+		       COALESCE(codex_ws_keepalive_enabled, false),
+		       COALESCE(codex_ws_keepalive_interval_sec, 60)
 		FROM system_settings WHERE id = 1
 	`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -1340,6 +1349,9 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.BackgroundConfig,
 		&s.ShowFullUsageNumbers,
 		&s.ReasoningEffortModels,
+		&s.CodexForceWebsocket,
+		&s.CodexWSKeepaliveEnabled,
+		&s.CodexWSKeepaliveIntervalSec,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1377,9 +1389,12 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				affinity_mode,
 				background_config,
 				show_full_usage_numbers,
-				reasoning_effort_models
+				reasoning_effort_models,
+				codex_force_websocket,
+				codex_ws_keepalive_enabled,
+				codex_ws_keepalive_interval_sec
 			)
-				VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53)
+				VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56)
 			ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -1433,7 +1448,10 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				affinity_mode = EXCLUDED.affinity_mode,
 				background_config = EXCLUDED.background_config,
 				show_full_usage_numbers = EXCLUDED.show_full_usage_numbers,
-				reasoning_effort_models = EXCLUDED.reasoning_effort_models
+				reasoning_effort_models = EXCLUDED.reasoning_effort_models,
+				codex_force_websocket = EXCLUDED.codex_force_websocket,
+				codex_ws_keepalive_enabled = EXCLUDED.codex_ws_keepalive_enabled,
+				codex_ws_keepalive_interval_sec = EXCLUDED.codex_ws_keepalive_interval_sec
 		`, NormalizeSiteName(s.SiteName), strings.TrimSpace(s.SiteLogo),
 		s.MaxConcurrency, s.GlobalRPM, s.TestModel, s.TestConcurrency, s.ProxyURL, s.PgMaxConns, s.RedisPoolSize,
 		s.AutoCleanUnauthorized, s.AutoCleanRateLimited, s.AdminSecret, s.AutoCleanFullUsage, s.ProxyPoolEnabled,
@@ -1445,8 +1463,17 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.PromptFilterSensitiveWords, s.PromptFilterCustomPatterns, s.PromptFilterDisabledPatterns,
 		s.ClientCompatMode, s.CodexMinCLIVersion, s.UsageLogMode, s.UsageLogBatchSize,
 		s.UsageLogFlushIntervalSeconds, s.StreamFlushPolicy, s.StreamFlushIntervalMS,
-		s.FirstTokenTimeoutSeconds, s.BillingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers, reasoningEffortModels)
+		s.FirstTokenTimeoutSeconds, s.BillingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers, reasoningEffortModels,
+		s.CodexForceWebsocket, s.CodexWSKeepaliveEnabled, normalizeCodexWSKeepaliveInterval(s.CodexWSKeepaliveIntervalSec))
 	return err
+}
+
+// normalizeCodexWSKeepaliveInterval 把 WS 保活间隔(秒)归一,非正值 → 默认 60。
+func normalizeCodexWSKeepaliveInterval(sec int) int {
+	if sec <= 0 {
+		return 60
+	}
+	return sec
 }
 
 // normalizeAffinityMode 把 SystemSettings.AffinityMode 落库前归一,空字符串 → "bounded"。

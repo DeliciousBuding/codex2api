@@ -1581,6 +1581,11 @@ type Store struct {
 	fastScheduler        atomic.Pointer[FastScheduler]
 	fastSchedulerEnabled atomic.Bool
 
+	// Codex 上游 WebSocket 相关（默认全部关闭，不影响现有 HTTP 路径）
+	codexForceWebsocket         atomic.Bool  // 强制 Codex 上游走 WebSocket（复用连接池）
+	codexWSKeepaliveEnabled     atomic.Bool  // 启用上游 WS 空闲连接保活（仅 Ping）
+	codexWSKeepaliveIntervalSec atomic.Int64 // WS 保活 Ping 间隔（秒），默认 60
+
 	// 智能刷新调度器
 	refreshScheduler atomic.Pointer[RefreshSchedulerIntegration]
 
@@ -2021,6 +2026,11 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 		log.Printf("快速调度器已启用（请求热路径将优先走本地内存调度器）")
 	}
 
+	// Codex 上游 WebSocket 相关设置（默认关闭，不影响现有路径）
+	s.codexForceWebsocket.Store(settings.CodexForceWebsocket)
+	s.codexWSKeepaliveEnabled.Store(settings.CodexWSKeepaliveEnabled)
+	s.codexWSKeepaliveIntervalSec.Store(normalizeWSKeepaliveInterval(settings.CodexWSKeepaliveIntervalSec))
+
 	// 加载代理池
 	if settings.ProxyPoolEnabled {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2111,6 +2121,66 @@ func (s *Store) FastSchedulerEnabled() bool {
 		return false
 	}
 	return s.fastSchedulerEnabled.Load()
+}
+
+// normalizeWSKeepaliveInterval 把 WS 保活间隔(秒)归一,非正值 → 默认 60。
+func normalizeWSKeepaliveInterval(sec int) int64 {
+	if sec <= 0 {
+		return 60
+	}
+	return int64(sec)
+}
+
+// SetCodexForceWebsocket 设置"强制 Codex 上游走 WebSocket"开关（运行时热更新）。
+func (s *Store) SetCodexForceWebsocket(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.codexForceWebsocket.Store(enabled)
+}
+
+// CodexForceWebsocket 返回是否强制 Codex 上游走 WebSocket。
+func (s *Store) CodexForceWebsocket() bool {
+	if s == nil {
+		return false
+	}
+	return s.codexForceWebsocket.Load()
+}
+
+// SetCodexWSKeepaliveEnabled 设置上游 WS 空闲连接保活开关（运行时热更新）。
+func (s *Store) SetCodexWSKeepaliveEnabled(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.codexWSKeepaliveEnabled.Store(enabled)
+}
+
+// CodexWSKeepaliveEnabled 返回是否启用上游 WS 连接保活。
+func (s *Store) CodexWSKeepaliveEnabled() bool {
+	if s == nil {
+		return false
+	}
+	return s.codexWSKeepaliveEnabled.Load()
+}
+
+// SetCodexWSKeepaliveIntervalSec 设置 WS 保活 Ping 间隔（秒）。
+func (s *Store) SetCodexWSKeepaliveIntervalSec(sec int) {
+	if s == nil {
+		return
+	}
+	s.codexWSKeepaliveIntervalSec.Store(normalizeWSKeepaliveInterval(sec))
+}
+
+// CodexWSKeepaliveIntervalSec 返回 WS 保活 Ping 间隔（秒），最小 60。
+func (s *Store) CodexWSKeepaliveIntervalSec() int {
+	if s == nil {
+		return 60
+	}
+	v := s.codexWSKeepaliveIntervalSec.Load()
+	if v <= 0 {
+		return 60
+	}
+	return int(v)
 }
 
 // GetProxyURL 获取全局代理地址

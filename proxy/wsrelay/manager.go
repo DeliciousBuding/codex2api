@@ -182,6 +182,9 @@ type Manager struct {
 
 	// 可选的探活函数（用于测试替换），nil 时使用默认 probeConnection
 	probeFunc func(wc *WsConnection) bool
+
+	// 可选的保活 Ping 函数（用于测试替换），nil 时使用默认 SendHeartbeat
+	keepalivePingFunc func(wc *WsConnection) error
 }
 
 // NewManager 创建连接池管理器

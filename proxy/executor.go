@@ -244,8 +244,12 @@ func IsolateCodexSessionID(apiKeyID int64, raw string) string {
 // useWebsocket 可选，如果为 true 则使用 WebSocket 连接
 // headers 下游请求头，用于设备指纹学习
 func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, useWebsocket ...bool) (*http.Response, error) {
-	// 检查是否使用 WebSocket
-	if len(useWebsocket) > 0 && useWebsocket[0] && WebsocketExecuteFunc != nil {
+	// 检查是否使用 WebSocket：调用方显式要求，或全局开关 CodexForceWebsocket 开启
+	wantWebsocket := len(useWebsocket) > 0 && useWebsocket[0]
+	if !wantWebsocket && CurrentRuntimeSettings().CodexForceWebsocket {
+		wantWebsocket = true
+	}
+	if wantWebsocket && WebsocketExecuteFunc != nil {
 		return WebsocketExecuteFunc(ctx, account, requestBody, sessionID, proxyOverride, apiKey, deviceCfg, headers)
 	}
 
