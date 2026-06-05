@@ -542,6 +542,9 @@ export interface SystemSettings {
   codex_force_websocket: boolean
   codex_ws_keepalive_enabled: boolean
   codex_ws_keepalive_interval_sec: number
+  codex_ws_hide_upstream_errors: boolean
+  codex_ws_silent_retry_enabled: boolean
+  codex_ws_silent_max_retries: number
   scheduler_mode: string
   affinity_mode?: string
   max_retries: number
