@@ -25,6 +25,7 @@ import (
 const (
 	responsesWSFirstMessageTimeout = 30 * time.Second
 	responsesWSWriteTimeout        = 30 * time.Second
+	responsesWSFriendlyUpstreamErr = "上游服务临时繁忙，请稍后重试"
 )
 
 var responsesWSUpgrader = websocket.Upgrader{
@@ -214,12 +215,19 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	accountFilter := accountFilterForModel(effectiveModel)
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
 
-	maxRetries := h.getMaxRetries()
-	maxRateLimitRetries := h.getMaxRateLimitRetries()
+	wsRetrySettings := CurrentRuntimeSettings()
+	hideUpstreamErrors := wsRetrySettings.CodexWSHideErrors
+	silentRetryEnabled := wsRetrySettings.CodexWSSilentRetry
+	maxRetries := wsRetrySettings.CodexWSSilentRetries
+	if !silentRetryEnabled {
+		maxRetries = 0
+	}
+	maxRateLimitRetries := maxRetries
 	generalRetries := 0
 	rateLimitRetries := 0
 	var lastStatusCode int
 	var lastBody []byte
+	var lastRetryableUpstreamErr *api.APIError
 	retryExclusions := newRetryAccountExclusions()
 	invalidEncryptedContentRetried := false
 	var lastUpstreamCancel context.CancelFunc
@@ -232,7 +240,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL := h.nextRetryAccountForSession(c.Request.Context(), affinityKey, apiKeyID, retryExclusions, accountFilter)
 		if account == nil {
-			if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
+			if lastRetryableUpstreamErr != nil {
+				apiErr = responsesWSClientUpstreamAPIError(lastRetryableUpstreamErr, hideUpstreamErrors)
+			} else if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
 				apiErr = responsesWSUpstreamAPIError(lastStatusCode, lastBody)
 			} else {
 				apiErr = api.NewAPIError(api.ErrCodeServiceUnavailable, noAvailableAccountMessage(effectiveModel), api.ErrorTypeServer)
@@ -271,7 +281,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			kind := classifyTransportFailure(reqErr)
 			retryable := IsRetryableError(reqErr) || kind != ""
 			shouldRetry := false
-			if retryable {
+			if silentRetryEnabled && retryable && attempt < maxRetries {
 				shouldRetry = shouldRetryRequestError(reqErr, &generalRetries, maxRetries)
 			}
 			if kind != "" && !(timedOut && shouldRetry) {
@@ -290,16 +300,19 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 
 			if !retryable {
 				apiErr = api.NewAPIError(api.ErrCodeUpstreamError, reqErr.Error(), api.ErrorTypeUpstream)
-				_ = writeResponsesWSError(conn, apiErr)
-				return newResponsesWSCloseError(websocket.CloseInternalServerErr, apiErr.Message, reqErr)
+				clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+				_ = writeResponsesWSError(conn, clientErr)
+				return newResponsesWSCloseError(websocket.CloseInternalServerErr, clientErr.Message, reqErr)
 			}
 			log.Printf("Responses WebSocket upstream request failed (attempt %d): %v", attempt+1, reqErr)
+			lastRetryableUpstreamErr = api.NewAPIError(api.ErrCodeUpstreamError, reqErr.Error(), api.ErrorTypeUpstream)
 			if shouldRetry {
 				continue
 			}
 			apiErr = api.NewAPIError(api.ErrCodeUpstreamError, reqErr.Error(), api.ErrorTypeUpstream)
-			_ = writeResponsesWSError(conn, apiErr)
-			return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, reqErr)
+			clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+			_ = writeResponsesWSError(conn, clientErr)
+			return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, reqErr)
 		}
 
 		if resp.StatusCode != http.StatusOK {
@@ -338,7 +351,10 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			logUpstreamError("/v1/responses", resp.StatusCode, logModel, account.ID(), errBody)
 			h.logUpstreamCyberPolicy(c, "/v1/responses", logModel, errBody)
 			decision := h.applyCooldownForModel(account, resp.StatusCode, errBody, resp, effectiveModel)
-			shouldRetry := shouldRetryHTTPStatus(resp.StatusCode, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries)
+			shouldRetry := false
+			if silentRetryEnabled && attempt < maxRetries {
+				shouldRetry = shouldRetryHTTPStatus(resp.StatusCode, &generalRetries, &rateLimitRetries, maxRetries, maxRateLimitRetries)
+			}
 			usageTiers := resolveUsageServiceTiers("", serviceTier)
 			h.logUsageForRequest(c, &database.UsageLogInput{
 				AccountID:            account.ID(),
@@ -365,18 +381,21 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 			if shouldRetry {
 				lastStatusCode = resp.StatusCode
 				lastBody = errBody
+				lastRetryableUpstreamErr = responsesWSUpstreamAPIError(resp.StatusCode, errBody)
 				continue
 			}
 
 			apiErr = responsesWSUpstreamAPIError(resp.StatusCode, errBody)
-			_ = writeResponsesWSError(conn, apiErr)
-			return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, apiErr)
+			clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+			_ = writeResponsesWSError(conn, clientErr)
+			return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr)
 		}
 
-		if err := h.streamResponsesWSUpstream(c, conn, resp, account, proxyURL, affinityKey, logModel, effectiveModel, logEffectiveModel, reasoningEffort, serviceTier, expandedInputRaw, start, ttftGuard); err != nil {
+		if err := h.streamResponsesWSUpstream(c, conn, resp, account, proxyURL, affinityKey, logModel, effectiveModel, logEffectiveModel, reasoningEffort, serviceTier, expandedInputRaw, start, ttftGuard, silentRetryEnabled, hideUpstreamErrors); err != nil {
 			var retryErr *responsesWSRetryableStreamError
 			if errors.As(err, &retryErr) {
-				if attempt < maxRetries {
+				lastRetryableUpstreamErr = api.NewAPIError(api.ErrCodeUpstreamError, retryErr.outcome.failureMessage, api.ErrorTypeUpstream)
+				if silentRetryEnabled && attempt < maxRetries {
 					if isFirstTokenTimeoutOutcome(retryErr.outcome) {
 						retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 					} else {
@@ -386,8 +405,9 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 					continue
 				}
 				apiErr = api.NewAPIError(api.ErrCodeUpstreamError, retryErr.outcome.failureMessage, api.ErrorTypeUpstream)
-				_ = writeResponsesWSError(conn, apiErr)
-				return newResponsesWSCloseError(websocket.CloseTryAgainLater, apiErr.Message, apiErr)
+				clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+				_ = writeResponsesWSError(conn, clientErr)
+				return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr)
 			}
 			if errors.Is(err, errResponsesWSClientGone) {
 				return err
@@ -416,6 +436,8 @@ func (h *Handler) streamResponsesWSUpstream(
 	expandedInputRaw string,
 	start time.Time,
 	ttftGuard *firstTokenTimeoutGuard,
+	silentRetryEnabled bool,
+	hideUpstreamErrors bool,
 ) error {
 	account.Mu().RLock()
 	c.Set("x-account-email", account.Email)
@@ -496,7 +518,7 @@ func (h *Handler) streamResponsesWSUpstream(
 				// 不把失败帧下发给客户端：丢弃尚未发送的前导缓冲并提前结束读取，
 				// 让外层循环透明换到健康账号重试，避免客户端反复 Reconnecting。
 				// 已经向客户端写过内容（wroteAnyBody / 已记录首 token）则照常透传。
-				if eventType == "response.failed" && !ttftRecorded && !wroteAnyBody && responseFailedRetryable(terminalFailurePayload) {
+				if (silentRetryEnabled || hideUpstreamErrors) && eventType == "response.failed" && !ttftRecorded && !wroteAnyBody && responseFailedRetryable(terminalFailurePayload) {
 					pendingFirstTokenMessages = pendingFirstTokenMessages[:0]
 					pendingFirstTokenBytes = 0
 					return false
@@ -529,7 +551,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			outcome.failureKind = upstreamErrorKind(outcome.logStatusCode, responseFailedErrorBody(terminalFailurePayload), responseFailedDecision)
 		}
 	}
-	if outcome.penalize && !wroteAnyBody && c.Request.Context().Err() == nil && writeErr == nil {
+	if silentRetryEnabled && outcome.penalize && !wroteAnyBody && c.Request.Context().Err() == nil && writeErr == nil {
 		resp.Body.Close()
 		SyncCodexUsageState(h.store, account, resp)
 		if !isFirstTokenTimeoutOutcome(outcome) {
@@ -605,10 +627,17 @@ func (h *Handler) streamResponsesWSUpstream(
 	if writeErr != nil {
 		return errResponsesWSClientGone
 	}
+	if outcome.logStatusCode != http.StatusOK && hideUpstreamErrors && len(terminalFailurePayload) > 0 && !wroteAnyBody {
+		apiErr := api.NewAPIError(api.ErrCodeUpstreamError, outcome.failureMessage, api.ErrorTypeUpstream)
+		clientErr := responsesWSClientUpstreamAPIError(apiErr, true)
+		_ = writeResponsesWSError(conn, clientErr)
+		return newResponsesWSCloseError(websocket.CloseTryAgainLater, clientErr.Message, apiErr)
+	}
 	if outcome.logStatusCode != http.StatusOK && len(terminalFailurePayload) == 0 {
 		apiErr := api.NewAPIError(api.ErrCodeUpstreamError, outcome.failureMessage, api.ErrorTypeUpstream)
-		_ = writeResponsesWSError(conn, apiErr)
-		return newResponsesWSCloseError(websocket.CloseInternalServerErr, apiErr.Message, apiErr)
+		clientErr := responsesWSClientUpstreamAPIError(apiErr, hideUpstreamErrors)
+		_ = writeResponsesWSError(conn, clientErr)
+		return newResponsesWSCloseError(websocket.CloseInternalServerErr, clientErr.Message, apiErr)
 	}
 	return nil
 }
@@ -697,6 +726,13 @@ func writeResponsesWSError(conn *websocket.Conn, apiErr *api.APIError) error {
 		return err
 	}
 	return writeResponsesWSMessage(conn, payload)
+}
+
+func responsesWSClientUpstreamAPIError(apiErr *api.APIError, hideUpstreamErrors bool) *api.APIError {
+	if !hideUpstreamErrors {
+		return apiErr
+	}
+	return api.NewAPIError(api.ErrCodeUpstreamError, responsesWSFriendlyUpstreamErr, api.ErrorTypeUpstream)
 }
 
 func writeResponsesWSMessage(conn *websocket.Conn, payload []byte) error {

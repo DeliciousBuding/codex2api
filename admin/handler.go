@@ -4378,6 +4378,9 @@ type settingsResponse struct {
 	CodexForceWebsocket                bool   `json:"codex_force_websocket"`
 	CodexWSKeepaliveEnabled            bool   `json:"codex_ws_keepalive_enabled"`
 	CodexWSKeepaliveIntervalSec        int    `json:"codex_ws_keepalive_interval_sec"`
+	CodexWSHideUpstreamErrors          bool   `json:"codex_ws_hide_upstream_errors"`
+	CodexWSSilentRetryEnabled          bool   `json:"codex_ws_silent_retry_enabled"`
+	CodexWSSilentMaxRetries            int    `json:"codex_ws_silent_max_retries"`
 	SchedulerMode                      string `json:"scheduler_mode"`
 	AffinityMode                       string `json:"affinity_mode"`
 	MaxRetries                         int    `json:"max_retries"`
@@ -4454,6 +4457,9 @@ type updateSettingsReq struct {
 	CodexForceWebsocket                *bool   `json:"codex_force_websocket"`
 	CodexWSKeepaliveEnabled            *bool   `json:"codex_ws_keepalive_enabled"`
 	CodexWSKeepaliveIntervalSec        *int    `json:"codex_ws_keepalive_interval_sec"`
+	CodexWSHideUpstreamErrors          *bool   `json:"codex_ws_hide_upstream_errors"`
+	CodexWSSilentRetryEnabled          *bool   `json:"codex_ws_silent_retry_enabled"`
+	CodexWSSilentMaxRetries            *int    `json:"codex_ws_silent_max_retries"`
 	SchedulerMode                      *string `json:"scheduler_mode"`
 	AffinityMode                       *string `json:"affinity_mode"`
 	MaxRetries                         *int    `json:"max_retries"`
@@ -5014,6 +5020,9 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexForceWebsocket:                h.store.CodexForceWebsocket(),
 		CodexWSKeepaliveEnabled:            h.store.CodexWSKeepaliveEnabled(),
 		CodexWSKeepaliveIntervalSec:        h.store.CodexWSKeepaliveIntervalSec(),
+		CodexWSHideUpstreamErrors:          h.store.CodexWSHideUpstreamErrors(),
+		CodexWSSilentRetryEnabled:          h.store.CodexWSSilentRetryEnabled(),
+		CodexWSSilentMaxRetries:            h.store.CodexWSSilentMaxRetries(),
 		SchedulerMode:                      h.store.GetSchedulerMode(),
 		AffinityMode:                       h.store.GetAffinityMode(),
 		MaxRetries:                         h.store.GetMaxRetries(),
@@ -5320,6 +5329,31 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: codex_ws_keepalive_interval_sec = %d", *req.CodexWSKeepaliveIntervalSec)
 	}
 
+	if req.CodexWSHideUpstreamErrors != nil {
+		h.store.SetCodexWSHideUpstreamErrors(*req.CodexWSHideUpstreamErrors)
+		runtimeCfg.CodexWSHideErrors = *req.CodexWSHideUpstreamErrors
+		log.Printf("设置已更新: codex_ws_hide_upstream_errors = %t", *req.CodexWSHideUpstreamErrors)
+	}
+
+	if req.CodexWSSilentRetryEnabled != nil {
+		h.store.SetCodexWSSilentRetryEnabled(*req.CodexWSSilentRetryEnabled)
+		runtimeCfg.CodexWSSilentRetry = *req.CodexWSSilentRetryEnabled
+		log.Printf("设置已更新: codex_ws_silent_retry_enabled = %t", *req.CodexWSSilentRetryEnabled)
+	}
+
+	if req.CodexWSSilentMaxRetries != nil {
+		v := *req.CodexWSSilentMaxRetries
+		if v < 0 {
+			v = 0
+		}
+		if v > 10 {
+			v = 10
+		}
+		h.store.SetCodexWSSilentMaxRetries(v)
+		runtimeCfg.CodexWSSilentRetries = v
+		log.Printf("设置已更新: codex_ws_silent_max_retries = %d", v)
+	}
+
 	if req.SchedulerMode != nil {
 		h.store.SetSchedulerMode(*req.SchedulerMode)
 		log.Printf("设置已更新: scheduler_mode = %s", *req.SchedulerMode)
@@ -5602,6 +5636,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexForceWebsocket:                h.store.CodexForceWebsocket(),
 		CodexWSKeepaliveEnabled:            h.store.CodexWSKeepaliveEnabled(),
 		CodexWSKeepaliveIntervalSec:        h.store.CodexWSKeepaliveIntervalSec(),
+		CodexWSHideUpstreamErrors:          h.store.CodexWSHideUpstreamErrors(),
+		CodexWSSilentRetryEnabled:          h.store.CodexWSSilentRetryEnabled(),
+		CodexWSSilentMaxRetries:            h.store.CodexWSSilentMaxRetries(),
 		SchedulerMode:                      h.store.GetSchedulerMode(),
 		AffinityMode:                       h.store.GetAffinityMode(),
 		MaxRetries:                         h.store.GetMaxRetries(),
@@ -5684,6 +5721,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexForceWebsocket:                h.store.CodexForceWebsocket(),
 		CodexWSKeepaliveEnabled:            h.store.CodexWSKeepaliveEnabled(),
 		CodexWSKeepaliveIntervalSec:        h.store.CodexWSKeepaliveIntervalSec(),
+		CodexWSHideUpstreamErrors:          h.store.CodexWSHideUpstreamErrors(),
+		CodexWSSilentRetryEnabled:          h.store.CodexWSSilentRetryEnabled(),
+		CodexWSSilentMaxRetries:            h.store.CodexWSSilentMaxRetries(),
 		SchedulerMode:                      h.store.GetSchedulerMode(),
 		AffinityMode:                       h.store.GetAffinityMode(),
 		MaxRetries:                         h.store.GetMaxRetries(),

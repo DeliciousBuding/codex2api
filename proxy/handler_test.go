@@ -354,6 +354,159 @@ func TestResponsesWebSocketRetriesFirstTokenTimeoutBeforeRelay(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSocketSilentRetryDisabledRelaysRetryableFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousExec := WebsocketExecuteFunc
+	previousSettings := CurrentRuntimeSettings()
+	t.Cleanup(func() {
+		WebsocketExecuteFunc = previousExec
+		ApplyRuntimeSettings(previousSettings)
+	})
+	nextSettings := previousSettings
+	nextSettings.CodexWSSilentRetry = false
+	nextSettings.CodexWSHideErrors = false
+	nextSettings.CodexWSSilentRetries = 2
+	ApplyRuntimeSettings(nextSettings)
+
+	attemptCh := make(chan int64, 4)
+	WebsocketExecuteFunc = func(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header) (*http.Response, error) {
+		attemptCh <- account.ID()
+		sse := `data: {"type":"response.failed","response":{"error":{"type":"usage_limit_reached","message":"raw quota exhausted"}}}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(sse)),
+		}, nil
+	}
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"})
+	store.AddAccount(&auth.Account{DBID: 2, AccessToken: "at-2", PlanType: "pro", AccountID: "acct-2"})
+	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
+
+	router := gin.New()
+	handler.RegisterRoutes(router)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		if resp != nil {
+			t.Fatalf("dial websocket failed: %v status=%d", err, resp.StatusCode)
+		}
+		t.Fatalf("dial websocket failed: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, first, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read relayed failure: %v", err)
+	}
+	if eventType := gjson.GetBytes(first, "type").String(); eventType != "response.failed" {
+		t.Fatalf("first event type = %q body=%s", eventType, first)
+	}
+	if !strings.Contains(string(first), "raw quota exhausted") {
+		t.Fatalf("failure should include raw upstream message when hiding disabled: %s", first)
+	}
+
+	select {
+	case <-attemptCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first attempt")
+	}
+	select {
+	case got := <-attemptCh:
+		t.Fatalf("unexpected retry on account %d when silent retry is disabled", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestResponsesWebSocketHidesUpstreamErrorAfterSilentRetriesExhausted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousExec := WebsocketExecuteFunc
+	previousSettings := CurrentRuntimeSettings()
+	t.Cleanup(func() {
+		WebsocketExecuteFunc = previousExec
+		ApplyRuntimeSettings(previousSettings)
+	})
+	nextSettings := previousSettings
+	nextSettings.CodexWSSilentRetry = true
+	nextSettings.CodexWSHideErrors = true
+	nextSettings.CodexWSSilentRetries = 1
+	ApplyRuntimeSettings(nextSettings)
+
+	attemptCh := make(chan int64, 4)
+	WebsocketExecuteFunc = func(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header) (*http.Response, error) {
+		attemptCh <- account.ID()
+		sse := `data: {"type":"response.failed","response":{"error":{"type":"usage_limit_reached","message":"raw quota secret"}}}` + "\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(sse)),
+		}, nil
+	}
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"})
+	store.AddAccount(&auth.Account{DBID: 2, AccessToken: "at-2", PlanType: "pro", AccountID: "acct-2"})
+	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
+
+	router := gin.New()
+	handler.RegisterRoutes(router)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		if resp != nil {
+			t.Fatalf("dial websocket failed: %v status=%d", err, resp.StatusCode)
+		}
+		t.Fatalf("dial websocket failed: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, first, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read friendly failure: %v", err)
+	}
+	if eventType := gjson.GetBytes(first, "type").String(); eventType != "error" {
+		t.Fatalf("first event type = %q body=%s", eventType, first)
+	}
+	if message := gjson.GetBytes(first, "error.message").String(); message != responsesWSFriendlyUpstreamErr {
+		t.Fatalf("friendly message = %q, want %q; body=%s", message, responsesWSFriendlyUpstreamErr, first)
+	}
+	if strings.Contains(string(first), "raw quota secret") {
+		t.Fatalf("friendly failure leaked raw upstream message: %s", first)
+	}
+
+	seenAttempts := make(map[int64]bool)
+	for i := 0; i < 2; i++ {
+		select {
+		case got := <-attemptCh:
+			seenAttempts[got] = true
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for attempt %d", i+1)
+		}
+	}
+	if len(seenAttempts) != 2 {
+		t.Fatalf("expected two distinct retry accounts, got %v", seenAttempts)
+	}
+}
+
 func assertNoAvailableAccountResponse(t *testing.T, body []byte) {
 	t.Helper()
 

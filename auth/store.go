@@ -1587,6 +1587,9 @@ type Store struct {
 	codexForceWebsocket         atomic.Bool  // 强制 Codex 上游走 WebSocket（复用连接池）
 	codexWSKeepaliveEnabled     atomic.Bool  // 启用上游 WS 空闲连接保活（仅 Ping）
 	codexWSKeepaliveIntervalSec atomic.Int64 // WS 保活 Ping 间隔（秒），默认 60
+	codexWSHideUpstreamErrors   atomic.Bool  // 隐藏上游 WS 原始错误，默认开启
+	codexWSSilentRetryEnabled   atomic.Bool  // 首包前上游 WS 错误静默换号重试，默认开启
+	codexWSSilentMaxRetries     atomic.Int64 // WS 静默换号最大重试次数，默认 2
 
 	// 智能刷新调度器
 	refreshScheduler atomic.Pointer[RefreshSchedulerIntegration]
@@ -1974,6 +1977,9 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 			ProxyURL:                           "",
 			MaxRateLimitRetries:                1,
 			SchedulerMode:                      "round_robin",
+			CodexWSHideUpstreamErrors:          true,
+			CodexWSSilentRetryEnabled:          true,
+			CodexWSSilentMaxRetries:            2,
 		}
 	}
 	s := &Store{
@@ -2034,6 +2040,9 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.codexForceWebsocket.Store(settings.CodexForceWebsocket)
 	s.codexWSKeepaliveEnabled.Store(settings.CodexWSKeepaliveEnabled)
 	s.codexWSKeepaliveIntervalSec.Store(normalizeWSKeepaliveInterval(settings.CodexWSKeepaliveIntervalSec))
+	s.codexWSHideUpstreamErrors.Store(settings.CodexWSHideUpstreamErrors)
+	s.codexWSSilentRetryEnabled.Store(settings.CodexWSSilentRetryEnabled)
+	s.codexWSSilentMaxRetries.Store(normalizeWSSilentMaxRetries(settings.CodexWSSilentMaxRetries))
 
 	// 加载代理池
 	if settings.ProxyPoolEnabled {
@@ -2135,6 +2144,17 @@ func normalizeWSKeepaliveInterval(sec int) int64 {
 	return int64(sec)
 }
 
+// normalizeWSSilentMaxRetries 把 WS 静默重试次数限制在 0-10。
+func normalizeWSSilentMaxRetries(retries int) int64 {
+	if retries < 0 {
+		return 0
+	}
+	if retries > 10 {
+		return 10
+	}
+	return int64(retries)
+}
+
 // SetCodexForceWebsocket 设置"强制 Codex 上游走 WebSocket"开关（运行时热更新）。
 func (s *Store) SetCodexForceWebsocket(enabled bool) {
 	if s == nil {
@@ -2185,6 +2205,54 @@ func (s *Store) CodexWSKeepaliveIntervalSec() int {
 		return 60
 	}
 	return int(v)
+}
+
+// SetCodexWSHideUpstreamErrors 设置是否向客户端隐藏上游 WS 原始错误。
+func (s *Store) SetCodexWSHideUpstreamErrors(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.codexWSHideUpstreamErrors.Store(enabled)
+}
+
+// CodexWSHideUpstreamErrors 返回是否向客户端隐藏上游 WS 原始错误。
+func (s *Store) CodexWSHideUpstreamErrors() bool {
+	if s == nil {
+		return true
+	}
+	return s.codexWSHideUpstreamErrors.Load()
+}
+
+// SetCodexWSSilentRetryEnabled 设置首包前 WS 上游错误是否静默换号重试。
+func (s *Store) SetCodexWSSilentRetryEnabled(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.codexWSSilentRetryEnabled.Store(enabled)
+}
+
+// CodexWSSilentRetryEnabled 返回首包前 WS 上游错误是否静默换号重试。
+func (s *Store) CodexWSSilentRetryEnabled() bool {
+	if s == nil {
+		return true
+	}
+	return s.codexWSSilentRetryEnabled.Load()
+}
+
+// SetCodexWSSilentMaxRetries 设置 WS 静默换号最大重试次数。
+func (s *Store) SetCodexWSSilentMaxRetries(retries int) {
+	if s == nil {
+		return
+	}
+	s.codexWSSilentMaxRetries.Store(normalizeWSSilentMaxRetries(retries))
+}
+
+// CodexWSSilentMaxRetries 返回 WS 静默换号最大重试次数。
+func (s *Store) CodexWSSilentMaxRetries() int {
+	if s == nil {
+		return 2
+	}
+	return int(s.codexWSSilentMaxRetries.Load())
 }
 
 // GetProxyURL 获取全局代理地址
