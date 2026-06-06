@@ -78,6 +78,9 @@ const normalizeReasoningEffortValue = (effort: string) => {
   return ['low', 'medium', 'high', 'xhigh'].includes(value) ? value : 'xhigh'
 }
 
+const normalizeBillingTierPolicyValue = (value?: string | null): 'actual' | 'requested' =>
+  value === 'requested' ? 'requested' : 'actual'
+
 const parseReasoningEffortModelEntries = (value: string): ReasoningEffortModelEntry[] => {
   try {
     const parsed = JSON.parse(value || '[]')
@@ -610,11 +613,15 @@ export default function Settings() {
     { label: t('settings.imageStorageS3'), value: 's3' },
   ]
   const normalizeLazySettingsForm = useCallback((settings: SystemSettings): SystemSettings => {
-    if (!settings.lazy_mode) {
-      return settings
+    const normalized = {
+      ...settings,
+      billing_tier_policy: normalizeBillingTierPolicyValue(settings.billing_tier_policy),
+    }
+    if (!normalized.lazy_mode) {
+      return normalized
     }
     return {
-      ...settings,
+      ...normalized,
       auto_clean_full_usage: false,
     }
   }, [])

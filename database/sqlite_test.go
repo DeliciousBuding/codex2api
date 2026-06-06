@@ -764,6 +764,44 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 	}
 }
 
+func TestSystemSettingsNormalizeBlankBillingTierPolicy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.conn.ExecContext(ctx, `INSERT INTO system_settings (id, billing_tier_policy) VALUES (1, '')`); err != nil {
+		t.Fatalf("插入空 billing_tier_policy 失败: %v", err)
+	}
+
+	settings, err := db.GetSystemSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSystemSettings 返回错误: %v", err)
+	}
+	if settings == nil {
+		t.Fatal("GetSystemSettings 返回 nil")
+	}
+	if settings.BillingTierPolicy != "actual" {
+		t.Fatalf("BillingTierPolicy = %q, want actual", settings.BillingTierPolicy)
+	}
+
+	settings.BillingTierPolicy = ""
+	if err := db.UpdateSystemSettings(ctx, settings); err != nil {
+		t.Fatalf("UpdateSystemSettings 返回错误: %v", err)
+	}
+	var stored string
+	if err := db.conn.QueryRowContext(ctx, `SELECT billing_tier_policy FROM system_settings WHERE id = 1`).Scan(&stored); err != nil {
+		t.Fatalf("读取 billing_tier_policy 返回错误: %v", err)
+	}
+	if stored != "actual" {
+		t.Fatalf("stored billing_tier_policy = %q, want actual", stored)
+	}
+}
+
 func TestDeleteAccountGroupDoesNotBroadenScopedAPIKey(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 
@@ -1238,6 +1276,97 @@ func TestUsageStatsIncludeCodex2APIBreakdowns(t *testing.T) {
 	}
 	if apiKeys[8].Requests != 1 || apiKeys[8].ErrorCount != 1 {
 		t.Fatalf("APIKeyStats[8] = %+v, want requests=1 errors=1", apiKeys[8])
+	}
+}
+
+func TestUsageStatsBreakdownsRespectExplicitRange(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	rangeStart := time.Now().Add(-2 * time.Hour)
+	rangeEnd := time.Now().Add(1 * time.Hour)
+	logs := []*UsageLogInput{
+		{
+			AccountID:          1,
+			Endpoint:           "/v1/responses",
+			InboundEndpoint:    "/v1/responses",
+			Model:              "range-model",
+			StatusCode:         200,
+			PromptTokens:       70,
+			CompletionTokens:   30,
+			InputTokens:        70,
+			OutputTokens:       30,
+			TotalTokens:        100,
+			Stream:             true,
+			BillingServiceTier: "fast",
+			APIKeyID:           10,
+			APIKeyName:         "Range Key",
+			APIKeyMasked:       "sk-...range",
+		},
+		{
+			AccountID:        2,
+			Endpoint:         "/v1/old",
+			InboundEndpoint:  "/v1/old",
+			Model:            "old-model",
+			StatusCode:       200,
+			PromptTokens:     40,
+			CompletionTokens: 10,
+			InputTokens:      40,
+			OutputTokens:     10,
+			TotalTokens:      50,
+			APIKeyID:         11,
+			APIKeyName:       "Old Key",
+			APIKeyMasked:     "sk-...old",
+		},
+	}
+	for _, usageLog := range logs {
+		if err := db.InsertUsageLog(ctx, usageLog); err != nil {
+			t.Fatalf("InsertUsageLog 返回错误: %v", err)
+		}
+	}
+	db.flushLogs()
+
+	oldCreatedAt := rangeStart.Add(-24 * time.Hour)
+	if _, err := db.conn.ExecContext(ctx, `UPDATE usage_logs SET created_at = $1 WHERE model = $2`, sqliteTimeParam(oldCreatedAt), "old-model"); err != nil {
+		t.Fatalf("更新旧日志时间失败: %v", err)
+	}
+
+	stats, err := db.GetUsageStats(ctx, rangeStart, rangeEnd)
+	if err != nil {
+		t.Fatalf("GetUsageStats 返回错误: %v", err)
+	}
+	if stats.TodayRequests != 1 || stats.TodayTokens != 100 || stats.TodayPrompt != 70 || stats.TodayCompletion != 30 {
+		t.Fatalf("range stats = requests %d tokens %d prompt %d completion %d, want 1/100/70/30",
+			stats.TodayRequests, stats.TodayTokens, stats.TodayPrompt, stats.TodayCompletion)
+	}
+	if stats.TotalRequests != 2 || stats.TotalTokens != 150 {
+		t.Fatalf("total stats = requests %d tokens %d, want cumulative 2/150", stats.TotalRequests, stats.TotalTokens)
+	}
+	if len(stats.ModelStats) != 1 || stats.ModelStats[0].Model != "range-model" || stats.ModelStats[0].Requests != 1 {
+		t.Fatalf("ModelStats = %+v, want only range-model", stats.ModelStats)
+	}
+	if stats.FeatureStats.StreamRequests != 1 || stats.FeatureStats.SyncRequests != 0 || stats.FeatureStats.FastRequests != 1 {
+		t.Fatalf("FeatureStats = %+v, want selected range only", stats.FeatureStats)
+	}
+	endpoints := make(map[string]UsageEndpointStat)
+	for _, item := range stats.EndpointStats {
+		endpoints[item.Endpoint] = item
+	}
+	if _, ok := endpoints["/v1/old"]; ok || endpoints["/v1/responses"].Requests != 1 {
+		t.Fatalf("EndpointStats = %+v, want selected range only", stats.EndpointStats)
+	}
+	apiKeys := make(map[int64]UsageAPIKeyStat)
+	for _, item := range stats.APIKeyStats {
+		apiKeys[item.APIKeyID] = item
+	}
+	if _, ok := apiKeys[11]; ok || apiKeys[10].Requests != 1 {
+		t.Fatalf("APIKeyStats = %+v, want selected range only", stats.APIKeyStats)
 	}
 }
 

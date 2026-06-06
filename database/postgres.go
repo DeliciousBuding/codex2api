@@ -1288,6 +1288,15 @@ type SystemSettings struct {
 	CodexWSSilentMaxRetries            int  // WS 静默换号最大重试次数，默认 2
 }
 
+func normalizeBillingTierPolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "requested":
+		return "requested"
+	default:
+		return "actual"
+	}
+}
+
 // GetSystemSettings 加载全局设置
 func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	s := &SystemSettings{}
@@ -1331,7 +1340,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 			       COALESCE(stream_flush_policy, 'immediate'),
 			       COALESCE(stream_flush_interval_ms, 20),
 			       COALESCE(first_token_timeout_seconds, 0),
-			       COALESCE(billing_tier_policy, 'actual'),
+			       COALESCE(NULLIF(TRIM(billing_tier_policy), ''), 'actual'),
 			       COALESCE(image_storage_config, '{}'),
 		       COALESCE(background_config, '{}'),
 		       COALESCE(show_full_usage_numbers, false),
@@ -1379,6 +1388,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	if strings.TrimSpace(s.ReasoningEffortModels) == "" {
 		s.ReasoningEffortModels = "[]"
 	}
+	s.BillingTierPolicy = normalizeBillingTierPolicy(s.BillingTierPolicy)
 	return s, err
 }
 
@@ -1388,6 +1398,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 	if reasoningEffortModels == "" {
 		reasoningEffortModels = "[]"
 	}
+	billingTierPolicy := normalizeBillingTierPolicy(s.BillingTierPolicy)
 	_, err := db.conn.ExecContext(ctx, `
 			INSERT INTO system_settings (
 				id, site_name, site_logo, max_concurrency, global_rpm, test_model, test_concurrency, proxy_url, pg_max_conns, redis_pool_size,
@@ -1488,7 +1499,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.PromptFilterSensitiveWords, s.PromptFilterCustomPatterns, s.PromptFilterDisabledPatterns,
 		s.ClientCompatMode, s.CodexMinCLIVersion, s.UsageLogMode, s.UsageLogBatchSize,
 		s.UsageLogFlushIntervalSeconds, s.StreamFlushPolicy, s.StreamFlushIntervalMS,
-		s.FirstTokenTimeoutSeconds, s.BillingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers, reasoningEffortModels,
+		s.FirstTokenTimeoutSeconds, billingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers, reasoningEffortModels,
 		s.CodexForceWebsocket, s.CodexWSKeepaliveEnabled, normalizeCodexWSKeepaliveInterval(s.CodexWSKeepaliveIntervalSec),
 		s.CodexWSHideUpstreamErrors, s.CodexWSSilentRetryEnabled, normalizeCodexWSSilentMaxRetries(s.CodexWSSilentMaxRetries))
 	return err
@@ -2166,6 +2177,8 @@ type UsageStats struct {
 	AvgUserBilled      float64             `json:"avg_user_billed_per_request"`
 	TodayRequests      int64               `json:"today_requests"`
 	TodayTokens        int64               `json:"today_tokens"`
+	TodayPrompt        int64               `json:"today_prompt_tokens"`
+	TodayCompletion    int64               `json:"today_completion_tokens"`
 	TodayCachedTokens  int64               `json:"today_cached_tokens"`
 	TodayCacheRate     float64             `json:"today_cache_rate"`
 	TodayAccountBilled float64             `json:"today_account_billed"`
@@ -2277,9 +2290,9 @@ func (db *DB) GetUsageStats(ctx context.Context, rangeStart, rangeEnd time.Time)
 
 	var todayErrors int64
 	var todayCacheHitRequests int64
-	var todayPrompt, todayCompletion, todayCached int64
+	var todayCached int64
 	err := db.conn.QueryRowContext(ctx, todayQuery, args...).Scan(
-		&stats.TodayRequests, &stats.TodayTokens, &todayPrompt, &todayCompletion, &todayCached,
+		&stats.TodayRequests, &stats.TodayTokens, &stats.TodayPrompt, &stats.TodayCompletion, &todayCached,
 		&stats.TodayAccountBilled, &stats.TodayUserBilled,
 		&stats.RPM, &stats.TPM,
 		&stats.AvgFirstTokenMs,
@@ -2348,21 +2361,37 @@ func (db *DB) GetUsageStats(ctx context.Context, rangeStart, rangeEnd time.Time)
 	if stats.TodayRequests > 0 {
 		stats.ErrorRate = float64(todayErrors) / float64(stats.TodayRequests) * 100
 	}
-	stats.ModelStats, err = db.getUsageModelStats(ctx, 10)
+	stats.ModelStats, err = db.getUsageModelStats(ctx, 10, rangeStart, rangeEnd)
 	if err != nil {
 		return nil, err
 	}
-	if err := db.populateUsageBreakdownStats(ctx, stats); err != nil {
+	if err := db.populateUsageBreakdownStats(ctx, stats, rangeStart, rangeEnd); err != nil {
 		return nil, err
 	}
 
 	return stats, nil
 }
 
-func (db *DB) getUsageModelStats(ctx context.Context, limit int) ([]UsageModelStat, error) {
+func (db *DB) usageStatsTimeWhere(column string, rangeStart, rangeEnd time.Time) (string, []interface{}) {
+	if strings.TrimSpace(column) == "" {
+		column = "created_at"
+	}
+	where := fmt.Sprintf("%s >= $1", column)
+	args := []interface{}{db.timeArg(rangeStart)}
+	if !rangeEnd.IsZero() {
+		where += fmt.Sprintf(" AND %s < $2", column)
+		args = append(args, db.timeArg(rangeEnd))
+	}
+	return where, args
+}
+
+func (db *DB) getUsageModelStats(ctx context.Context, limit int, rangeStart, rangeEnd time.Time) ([]UsageModelStat, error) {
 	if limit <= 0 {
 		limit = 10
 	}
+	timeWhere, args := db.usageStatsTimeWhere("created_at", rangeStart, rangeEnd)
+	limitPlaceholder := fmt.Sprintf("$%d", len(args)+1)
+	args = append(args, limit)
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT
 			COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown') AS model_name,
@@ -2375,11 +2404,11 @@ func (db *DB) getUsageModelStats(ctx context.Context, limit int) ([]UsageModelSt
 			COALESCE(SUM(user_billed), 0) AS user_billed,
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count
 		FROM usage_logs
-		WHERE status_code <> 499
+		WHERE `+timeWhere+` AND status_code <> 499
 		GROUP BY 1
 		ORDER BY user_billed DESC, requests DESC, model_name ASC
-		LIMIT $1
-	`, limit)
+		LIMIT `+limitPlaceholder+`
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2412,10 +2441,11 @@ func (db *DB) getUsageModelStats(ctx context.Context, limit int) ([]UsageModelSt
 	return stats, nil
 }
 
-func (db *DB) populateUsageBreakdownStats(ctx context.Context, stats *UsageStats) error {
+func (db *DB) populateUsageBreakdownStats(ctx context.Context, stats *UsageStats, rangeStart, rangeEnd time.Time) error {
 	if stats == nil {
 		return nil
 	}
+	timeWhere, args := db.usageStatsTimeWhere("created_at", rangeStart, rangeEnd)
 	if err := db.conn.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(SUM(CASE WHEN stream THEN 1 ELSE 0 END), 0) AS stream_requests,
@@ -2427,8 +2457,8 @@ func (db *DB) populateUsageBreakdownStats(ctx context.Context, stats *UsageStats
 			COALESCE(SUM(CASE WHEN is_retry_attempt OR attempt_index > 0 THEN 1 ELSE 0 END), 0) AS retry_requests,
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_requests
 		FROM usage_logs
-		WHERE status_code <> 499
-	`).Scan(
+		WHERE `+timeWhere+` AND status_code <> 499
+	`, args...).Scan(
 		&stats.FeatureStats.StreamRequests,
 		&stats.FeatureStats.SyncRequests,
 		&stats.FeatureStats.FastRequests,
@@ -2441,11 +2471,11 @@ func (db *DB) populateUsageBreakdownStats(ctx context.Context, stats *UsageStats
 		return err
 	}
 
-	endpoints, err := db.getUsageEndpointStats(ctx, 8)
+	endpoints, err := db.getUsageEndpointStats(ctx, 8, rangeStart, rangeEnd)
 	if err != nil {
 		return err
 	}
-	apiKeys, err := db.getUsageAPIKeyStats(ctx, 8)
+	apiKeys, err := db.getUsageAPIKeyStats(ctx, 8, rangeStart, rangeEnd)
 	if err != nil {
 		return err
 	}
@@ -2454,10 +2484,13 @@ func (db *DB) populateUsageBreakdownStats(ctx context.Context, stats *UsageStats
 	return nil
 }
 
-func (db *DB) getUsageEndpointStats(ctx context.Context, limit int) ([]UsageEndpointStat, error) {
+func (db *DB) getUsageEndpointStats(ctx context.Context, limit int, rangeStart, rangeEnd time.Time) ([]UsageEndpointStat, error) {
 	if limit <= 0 {
 		limit = 8
 	}
+	timeWhere, args := db.usageStatsTimeWhere("created_at", rangeStart, rangeEnd)
+	limitPlaceholder := fmt.Sprintf("$%d", len(args)+1)
+	args = append(args, limit)
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT
 			COALESCE(NULLIF(inbound_endpoint, ''), NULLIF(endpoint, ''), 'unknown') AS endpoint_name,
@@ -2466,11 +2499,11 @@ func (db *DB) getUsageEndpointStats(ctx context.Context, limit int) ([]UsageEndp
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
 			COALESCE(SUM(user_billed), 0) AS user_billed
 		FROM usage_logs
-		WHERE status_code <> 499
+		WHERE `+timeWhere+` AND status_code <> 499
 		GROUP BY 1
 		ORDER BY requests DESC, endpoint_name ASC
-		LIMIT $1
-	`, limit)
+		LIMIT `+limitPlaceholder+`
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2493,10 +2526,13 @@ func (db *DB) getUsageEndpointStats(ctx context.Context, limit int) ([]UsageEndp
 	return items, nil
 }
 
-func (db *DB) getUsageAPIKeyStats(ctx context.Context, limit int) ([]UsageAPIKeyStat, error) {
+func (db *DB) getUsageAPIKeyStats(ctx context.Context, limit int, rangeStart, rangeEnd time.Time) ([]UsageAPIKeyStat, error) {
 	if limit <= 0 {
 		limit = 8
 	}
+	timeWhere, args := db.usageStatsTimeWhere("created_at", rangeStart, rangeEnd)
+	limitPlaceholder := fmt.Sprintf("$%d", len(args)+1)
+	args = append(args, limit)
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT
 			COALESCE(api_key_id, 0) AS api_key_id,
@@ -2506,11 +2542,11 @@ func (db *DB) getUsageAPIKeyStats(ctx context.Context, limit int) ([]UsageAPIKey
 			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
 			COALESCE(SUM(user_billed), 0) AS user_billed
 		FROM usage_logs
-		WHERE status_code <> 499
+		WHERE `+timeWhere+` AND status_code <> 499
 		GROUP BY 1, 2
 		ORDER BY requests DESC, api_key_label ASC
-		LIMIT $1
-	`, limit)
+		LIMIT `+limitPlaceholder+`
+	`, args...)
 	if err != nil {
 		return nil, err
 	}

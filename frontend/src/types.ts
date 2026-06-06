@@ -737,6 +737,8 @@ export interface UsageStats {
   today_requests: number
   today_tokens: number
   today_input_tokens?: number
+  today_prompt_tokens?: number
+  today_completion_tokens?: number
   today_cached_tokens?: number
   today_cache_rate?: number
   today_account_billed: number

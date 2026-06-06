@@ -75,10 +75,11 @@ function getStatusBadgeClassName(statusCode: number): string {
   return 'border-transparent bg-slate-500/14 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300'
 }
 
-const TIME_RANGE_OPTIONS: TimeRangeKey[] = ['1h', '6h', '24h', '7d', '30d']
+type UsagePresetRangeKey = 'today' | TimeRangeKey
+const USAGE_TIME_RANGE_OPTIONS: UsagePresetRangeKey[] = ['today', '1h', '6h', '24h', '7d', '30d']
 
 // 本页面局部的"自定义"区间标记。不污染全局 TimeRangeKey 类型 (Dashboard 等仍只识别预设档)。
-type UsageTimeRangeKey = TimeRangeKey | 'custom'
+type UsageTimeRangeKey = UsagePresetRangeKey | 'custom'
 interface CustomRange {
   start: string // RFC3339 with offset
   end: string
@@ -104,12 +105,22 @@ function dateToLocalRFC3339(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${pad(Math.floor(absOffset / 60))}:${pad(absOffset % 60)}`
 }
 
+function getTodayRangeISO(): { start: string; end: string } {
+  const now = new Date()
+  const start = new Date(now)
+  start.setHours(0, 0, 0, 0)
+  return { start: dateToLocalRFC3339(start), end: dateToLocalRFC3339(now) }
+}
+
 function resolveRangeISO(
   range: UsageTimeRangeKey,
   custom: CustomRange | null,
 ): { start: string; end: string } {
   if (range === 'custom' && custom) {
     return { start: custom.start, end: custom.end }
+  }
+  if (range === 'today') {
+    return getTodayRangeISO()
   }
   return getTimeRangeISO((range === 'custom' ? '24h' : range) as TimeRangeKey)
 }
@@ -934,7 +945,7 @@ export default function Usage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = usePersistedPageSize('usage_logs', 20, DEFAULT_PAGE_SIZE_OPTIONS)
   const [clearing, setClearing] = useState(false)
-  const [timeRange, setTimeRange] = useState<UsageTimeRangeKey>('1h')
+  const [timeRange, setTimeRange] = useState<UsageTimeRangeKey>('today')
   const [customRange, setCustomRange] = useState<CustomRange | null>(null)
   const [showCustomPopover, setShowCustomPopover] = useState(false)
   const customChipRef = useRef<HTMLButtonElement>(null)
@@ -1075,14 +1086,16 @@ export default function Usage() {
     }
   }, [page, totalPages])
 
-  const totalRequests = stats?.total_requests ?? 0
-  const totalTokens = stats?.total_tokens ?? 0
-  const totalPromptTokens = stats?.total_prompt_tokens ?? 0
-  const totalCompletionTokens = stats?.total_completion_tokens ?? 0
-  const totalAccountBilled = stats?.total_account_billed ?? 0
-  const totalUserBilled = stats?.total_user_billed ?? 0
-  const todayRequests = stats?.today_requests ?? 0
-  const todayUserBilled = stats?.today_user_billed ?? 0
+  const cumulativeRequests = stats?.total_requests ?? 0
+  const cumulativeTokens = stats?.total_tokens ?? 0
+  const cumulativeAccountBilled = stats?.total_account_billed ?? 0
+  const cumulativeUserBilled = stats?.total_user_billed ?? 0
+  const rangeRequests = stats?.today_requests ?? 0
+  const rangeTokens = stats?.today_tokens ?? 0
+  const rangePromptTokens = stats?.today_prompt_tokens ?? 0
+  const rangeCompletionTokens = stats?.today_completion_tokens ?? 0
+  const rangeAccountBilled = stats?.today_account_billed ?? 0
+  const rangeUserBilled = stats?.today_user_billed ?? 0
   const modelStats = stats?.model_stats ?? []
   const featureStats = stats?.feature_stats
   const endpointStats = stats?.endpoint_stats ?? []
@@ -1091,20 +1104,22 @@ export default function Usage() {
   const tpm = stats?.tpm ?? 0
   const errorRate = stats?.error_rate ?? 0
   const avgDurationMs = stats?.avg_duration_ms ?? 0
-  const successRequests = totalRequests - Math.round(totalRequests * errorRate / 100)
+  const successRequests = rangeRequests - Math.round(rangeRequests * errorRate / 100)
   const showAPIKeyFilter = !apiKeyLoadFailed && apiKeys.length > 0
   const hasActiveFilters = Boolean(searchInput || filterModel || filterEndpoint || filterApiKeyId || filterStream || filterFast)
   const apiKeyOptions = [
     { label: t('usage.allApiKeys'), value: '' },
     ...apiKeys.map((apiKey) => ({ label: formatAPIKeyOptionLabel(apiKey), value: String(apiKey.id) })),
   ]
-  // 顶部 6 张卡片里的 today_* 字段联动顶部时间范围,标签也跟着改 —— 与下方请求记录的范围一致。
-  // 后端在 GetUsageStats 收到 start/end 后,today_* 字段语义即"该区间统计"。
+  // 顶部主卡片展示当前区间; total_* 保留为清空日志基线叠加后的累计值。
   const rangeLabel = timeRange === 'custom'
     ? t('usage.customRange')
+    : timeRange === 'today'
+      ? t('usage.today')
     : t(`dashboard.timeRange${timeRange.toUpperCase()}`)
-  const rangeRequestsLabel = t('usage.rangeRequests', { range: rangeLabel })
-  const rangeCostLabel = t('usage.rangeCost', { range: rangeLabel })
+  const rangeRequestsLabel = t('usage.rangeRequestsCard', { range: rangeLabel })
+  const rangeTokensLabel = t('usage.rangeTokensCard', { range: rangeLabel })
+  const rangeCostLabel = t('usage.rangeCostCard', { range: rangeLabel })
 
   return (
     <StateShell
@@ -1139,17 +1154,17 @@ export default function Usage() {
           <Card className="min-w-0 py-0">
             <CardContent className={usageStatCardContentClass}>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold uppercase text-muted-foreground">{t('usage.totalRequestsCard')}</span>
+                <span className="text-[11px] font-bold uppercase text-muted-foreground">{rangeRequestsLabel}</span>
                 <div className="flex size-9 items-center justify-center rounded-lg bg-primary/12 text-primary">
                   <Activity className="size-4" />
                 </div>
               </div>
               <div className={usageStatValueClass}>
-                {formatTokens(totalRequests, showFullUsageNumbers)}
+                {formatTokens(rangeRequests, showFullUsageNumbers)}
               </div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground leading-snug">
                 <span className="text-[hsl(var(--success))]">● {t('usage.success')}: {formatTokens(successRequests, showFullUsageNumbers)}</span>
-                <span>● {rangeRequestsLabel}: {formatTokens(todayRequests, showFullUsageNumbers)}</span>
+                <span>● {t('usage.cumulative')}: {formatTokens(cumulativeRequests, showFullUsageNumbers)}</span>
               </div>
             </CardContent>
           </Card>
@@ -1157,17 +1172,18 @@ export default function Usage() {
           <Card className="min-w-0 py-0">
             <CardContent className={usageStatCardContentClass}>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold uppercase text-muted-foreground">{t('usage.totalTokensCard')}</span>
+                <span className="text-[11px] font-bold uppercase text-muted-foreground">{rangeTokensLabel}</span>
                 <div className="flex size-9 items-center justify-center rounded-lg bg-[hsl(var(--info-bg))] text-[hsl(var(--info))]">
                   <Box className="size-4" />
                 </div>
               </div>
               <div className={usageStatValueClass}>
-                {formatTokens(totalTokens, showFullUsageNumbers)}
+                {formatTokens(rangeTokens, showFullUsageNumbers)}
               </div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground leading-snug">
-                <span>{t('usage.inputTokens')}: {formatTokens(totalPromptTokens, showFullUsageNumbers)}</span>
-                <span>{t('usage.outputTokens')}: {formatTokens(totalCompletionTokens, showFullUsageNumbers)}</span>
+                <span>{t('usage.inputTokens')}: {formatTokens(rangePromptTokens, showFullUsageNumbers)}</span>
+                <span>{t('usage.outputTokens')}: {formatTokens(rangeCompletionTokens, showFullUsageNumbers)}</span>
+                <span>{t('usage.cumulative')}: {formatTokens(cumulativeTokens, showFullUsageNumbers)}</span>
               </div>
             </CardContent>
           </Card>
@@ -1175,17 +1191,18 @@ export default function Usage() {
           <Card className="min-w-0 py-0">
             <CardContent className={usageStatCardContentClass}>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold uppercase text-muted-foreground">{t('usage.totalCostCard')}</span>
+                <span className="text-[11px] font-bold uppercase text-muted-foreground">{rangeCostLabel}</span>
                 <div className="flex size-9 items-center justify-center rounded-lg bg-emerald-500/12 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300">
                   <CircleDollarSign className="size-4" />
                 </div>
               </div>
               <div className={`${usageStatValueClass} text-emerald-600 dark:text-emerald-400`}>
-                {formatCostCardValue(totalUserBilled)}
+                {formatCostCardValue(rangeUserBilled)}
               </div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground leading-snug">
-                <span>{rangeCostLabel}: {formatCostCardValue(todayUserBilled)}</span>
-                <span>{t('usage.accountCost')}: {formatCostCardValue(totalAccountBilled)}</span>
+                <span>{t('usage.accountCost')}: {formatCostCardValue(rangeAccountBilled)}</span>
+                <span>{t('usage.cumulative')}: {formatCostCardValue(cumulativeUserBilled)}</span>
+                <span>{t('usage.cumulativeAccountCost')}: {formatCostCardValue(cumulativeAccountBilled)}</span>
               </div>
             </CardContent>
           </Card>
@@ -1240,12 +1257,12 @@ export default function Usage() {
           <>
             <div className="grid grid-cols-[minmax(0,0.5fr)_minmax(360px,0.5fr)] gap-3 max-lg:grid-cols-1">
               <ModelStatsPanel stats={modelStats} showFullUsageNumbers={showFullUsageNumbers} />
-              <FeatureStatsPanel stats={featureStats} totalRequests={totalRequests} showFullUsageNumbers={showFullUsageNumbers} />
+              <FeatureStatsPanel stats={featureStats} totalRequests={rangeRequests} showFullUsageNumbers={showFullUsageNumbers} />
             </div>
 
             <div className="grid grid-cols-2 gap-3 max-lg:grid-cols-1">
-              <EndpointStatsPanel stats={endpointStats} totalRequests={totalRequests} showFullUsageNumbers={showFullUsageNumbers} />
-              <APIKeyStatsPanel stats={apiKeyStats} totalRequests={totalRequests} showFullUsageNumbers={showFullUsageNumbers} />
+              <EndpointStatsPanel stats={endpointStats} totalRequests={rangeRequests} showFullUsageNumbers={showFullUsageNumbers} />
+              <APIKeyStatsPanel stats={apiKeyStats} totalRequests={rangeRequests} showFullUsageNumbers={showFullUsageNumbers} />
             </div>
           </>
         )}
@@ -1257,7 +1274,7 @@ export default function Usage() {
               <div className="flex shrink-0 items-center gap-3">
                 <h3 className="whitespace-nowrap text-base font-semibold text-foreground">{t('usage.requestLogs')}</h3>
                 <div className="inline-flex shrink-0 rounded-lg border border-border bg-muted/50 p-0.5">
-                  {TIME_RANGE_OPTIONS.map((key) => (
+                  {USAGE_TIME_RANGE_OPTIONS.map((key) => (
                     <button
                       key={key}
                       type="button"
@@ -1272,7 +1289,7 @@ export default function Usage() {
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
-                      {t(`dashboard.timeRange${key.toUpperCase()}`)}
+                      {key === 'today' ? t('usage.today') : t(`dashboard.timeRange${key.toUpperCase()}`)}
                     </button>
                   ))}
                   <button

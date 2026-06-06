@@ -854,8 +854,8 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context, rangeStart, rangeEnd time
 
 		stats.TodayRequests++
 		stats.TodayTokens += totalTokens
-		stats.TotalPrompt += promptTokens
-		stats.TotalCompletion += completionTokens
+		stats.TodayPrompt += promptTokens
+		stats.TodayCompletion += completionTokens
 		stats.TotalCachedTokens += cachedTokens
 		stats.TodayCachedTokens += cachedTokens
 		stats.TodayAccountBilled += accountBilled
@@ -938,11 +938,11 @@ func (db *DB) getUsageStatsSQLite(ctx context.Context, rangeStart, rangeEnd time
 		stats.AvgAccountBilled = stats.TotalAccountBilled / float64(stats.TotalRequests)
 		stats.AvgUserBilled = stats.TotalUserBilled / float64(stats.TotalRequests)
 	}
-	stats.ModelStats, err = db.getUsageModelStats(ctx, 10)
+	stats.ModelStats, err = db.getUsageModelStats(ctx, 10, rangeStart, rangeEnd)
 	if err != nil {
 		return nil, err
 	}
-	if err := db.populateUsageBreakdownStats(ctx, stats); err != nil {
+	if err := db.populateUsageBreakdownStats(ctx, stats, rangeStart, rangeEnd); err != nil {
 		return nil, err
 	}
 
