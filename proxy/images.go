@@ -526,6 +526,26 @@ func responsesBodyHasImageGenerationTool(body []byte) bool {
 	return strings.EqualFold(strings.TrimSpace(choice.Get("type").String()), "image_generation")
 }
 
+func responsesBodyRequestsImageGeneration(body []byte) bool {
+	if isImageOnlyModel(gjson.GetBytes(body, "model").String()) {
+		return true
+	}
+	choice := gjson.GetBytes(body, "tool_choice")
+	if choice.Type == gjson.String && strings.EqualFold(strings.TrimSpace(choice.String()), "image_generation") {
+		return true
+	}
+	if choice.Exists() && strings.EqualFold(strings.TrimSpace(choice.Get("type").String()), "image_generation") {
+		return true
+	}
+	for _, key := range responsesImageGenerationOptionFields {
+		value := gjson.GetBytes(body, key)
+		if value.Exists() && value.Type != gjson.Null {
+			return true
+		}
+	}
+	return false
+}
+
 func validateImagesModel(model string) error {
 	if !isImageOnlyModel(model) {
 		return fmt.Errorf("images endpoint requires an image model, got %q", strings.TrimSpace(model))

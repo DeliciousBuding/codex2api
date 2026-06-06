@@ -72,13 +72,21 @@ func (h *Handler) withModelCooldownFilter(model string, filter auth.AccountFilte
 }
 
 func (h *Handler) shouldUseWebsocketForHTTP() bool {
-	if h == nil || h.cfg == nil {
+	if h == nil {
 		return false
 	}
 	// 运行时 DB 级开关 codex_force_websocket 优先：开启则强制走 WS
 	// （与 ExecuteRequest 的 wantWebsocket 判定保持一致，也用于 usage 日志的 WS 标记）。
 	if CurrentRuntimeSettings().CodexForceWebsocket {
 		return true
+	}
+	// 管理后台的热更新值同样作为强制开关来源，避免运行时配置尚未同步时
+	// UI 显示已开启但请求热路径仍按静态 env=http 判定。
+	if h.store != nil && h.store.CodexForceWebsocket() {
+		return true
+	}
+	if h.cfg == nil {
+		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(h.cfg.CodexUpstreamTransport)) {
 	case "ws":
@@ -1376,7 +1384,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)
 		useWebsocket := h.shouldUseWebsocketForHTTP()
-		if useWebsocket && responsesBodyHasImageGenerationTool(codexBody) {
+		if useWebsocket && responsesBodyRequestsImageGeneration(rawBody) {
 			useWebsocket = false
 		}
 
@@ -2648,7 +2656,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)
 		useWebsocket := h.shouldUseWebsocketForHTTP()
-		if useWebsocket && responsesBodyHasImageGenerationTool(codexBody) {
+		if useWebsocket && responsesBodyRequestsImageGeneration(codexBody) {
 			useWebsocket = false
 		}
 
