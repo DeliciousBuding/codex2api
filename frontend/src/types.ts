@@ -576,6 +576,7 @@ export interface SystemSettings {
   usage_log_flush_interval_seconds: number
   stream_flush_policy: 'immediate' | 'coalesce' | string
   stream_flush_interval_ms: number
+  first_token_mode: 'strict' | 'loose' | string
   first_token_timeout_seconds: number
   billing_tier_policy: 'actual' | 'requested' | string
   show_full_usage_numbers: boolean

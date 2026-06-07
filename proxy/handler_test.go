@@ -258,6 +258,84 @@ func TestResponsesWebSocketForwardsResponsesEvents(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSocketFlushesSkeletonBeforeContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousExec := WebsocketExecuteFunc
+	previousSettings := CurrentRuntimeSettings()
+	t.Cleanup(func() {
+		WebsocketExecuteFunc = previousExec
+		ApplyRuntimeSettings(previousSettings)
+	})
+	// 配置首字超时使 ttftGuard != nil，启用首包前缓冲路径；取足够大的值避免误触发。
+	nextSettings := previousSettings
+	nextSettings.FirstTokenTimeoutSec = 60
+	ApplyRuntimeSettings(nextSettings)
+
+	release := make(chan struct{})
+	WebsocketExecuteFunc = func(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header) (*http.Response, error) {
+		pr, pw := io.Pipe()
+		go func() {
+			// 骨架帧先到：created（生命周期，缓冲）+ output_item.added（结构帧，触发 flush）。
+			_, _ = pw.Write([]byte(`data: {"type":"response.created","response":{}}` + "\n\n"))
+			_, _ = pw.Write([]byte(`data: {"type":"response.output_item.added","item":{"type":"reasoning"}}` + "\n\n"))
+			// 在内容到来前阻塞：issue #207 修复前，客户端会一直卡到首个内容才收到任何帧。
+			<-release
+			_, _ = pw.Write([]byte(`data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n"))
+			_, _ = pw.Write([]byte(`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"))
+			_ = pw.Close()
+		}()
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: pr}, nil
+	}
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"})
+	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
+
+	router := gin.New()
+	handler.RegisterRoutes(router)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket failed: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hi"}`)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	// 内容尚未发送（mock 仍阻塞在 <-release），客户端此时就应已收到骨架帧。
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, first, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected skeleton frame before content, got error: %v", err)
+	}
+	if et := gjson.GetBytes(first, "type").String(); et != "response.created" {
+		t.Fatalf("first relayed event = %q, want response.created", et)
+	}
+	_, second, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read second skeleton frame: %v", err)
+	}
+	if et := gjson.GetBytes(second, "type").String(); et != "response.output_item.added" {
+		t.Fatalf("second relayed event = %q, want response.output_item.added", et)
+	}
+
+	// 放行内容，确认其余事件照常透传。
+	close(release)
+	_, third, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read content delta: %v", err)
+	}
+	if et := gjson.GetBytes(third, "type").String(); et != "response.output_text.delta" {
+		t.Fatalf("third relayed event = %q, want response.output_text.delta", et)
+	}
+}
+
 func TestResponsesWebSocketRetriesFirstTokenTimeoutBeforeRelay(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -674,6 +752,16 @@ func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("responses compact endpoint with suffix noise", func(t *testing.T) {
+		input := &database.UsageLogInput{InboundEndpoint: " /v1/responses/compact/?trace=1 "}
+
+		populateCompactUsageMetaFromRequest(nil, input)
+
+		if !input.Compact {
+			t.Fatal("Compact = false, want true for normalized /v1/responses/compact endpoint")
+		}
+	})
+
 	t.Run("compaction input item", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
@@ -690,6 +778,31 @@ func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 
 		if !input.Compact {
 			t.Fatal("Compact = false, want true for compaction input item")
+		}
+	})
+
+	t.Run("nested compaction input item", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Set("raw_body", []byte(`{
+			"model":"gpt-5.4",
+			"input":[
+				{
+					"type":"message",
+					"role":"developer",
+					"content":[
+						{"type":"input_text","text":"keep this context"},
+						{"type":"compaction","summary":"previous context was compacted"}
+					]
+				}
+			]
+		}`))
+		input := &database.UsageLogInput{Endpoint: "/v1/responses"}
+
+		populateCompactUsageMetaFromRequest(ctx, input)
+
+		if !input.Compact {
+			t.Fatal("Compact = false, want true for nested compaction input item")
 		}
 	})
 
@@ -1270,7 +1383,7 @@ func TestApply429CooldownPremiumMarks5hRateLimitFromWindow(t *testing.T) {
 	if pct5h != 100 {
 		t.Fatalf("usage_percent_5h = %v, want 100", pct5h)
 	}
-	if got := resetAt.Sub(time.Now()); got < 14*time.Minute || got > 16*time.Minute {
+	if got := time.Until(resetAt); got < 14*time.Minute || got > 16*time.Minute {
 		t.Fatalf("resetAt delta = %v, want about 15m", got)
 	}
 }
@@ -1483,7 +1596,7 @@ func TestApply429CooldownUnknown429UsesModelCooldown(t *testing.T) {
 	if decision.Scope != rateLimitScopeModel {
 		t.Fatalf("decision.Scope = %q, want model", decision.Scope)
 	}
-	if got := decision.ResetAt.Sub(time.Now()); got < 4*time.Minute || got > 6*time.Minute {
+	if got := time.Until(decision.ResetAt); got < 4*time.Minute || got > 6*time.Minute {
 		t.Fatalf("resetAt delta = %v, want about 5m", got)
 	}
 	if !account.IsModelRateLimited("gpt-5.4") {

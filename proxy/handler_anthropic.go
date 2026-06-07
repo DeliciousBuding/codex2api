@@ -334,11 +334,11 @@ func (h *Handler) Messages(c *gin.Context) {
 				eventType := parsed.Get("type").String()
 
 				// TTFT 跟踪
-				isFirstToken := isFirstTokenResult(parsed)
+				ttftGuard.MarkProgress(eventType)
+				isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 				if !ttftRecorded && isFirstToken {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
-					ttftGuard.MarkFirstToken()
 				}
 
 				// 累计 delta 字符数
@@ -367,7 +367,7 @@ func (h *Handler) Messages(c *gin.Context) {
 						payload.WriteString(anthropicEventToSSE(evt))
 					}
 					payloadString := payload.String()
-					shouldDefer := !ttftRecorded && !gotTerminal && !isFirstToken
+					shouldDefer := !ttftRecorded && !gotTerminal && isPreContentLifecycleEvent(eventType)
 					if shouldDefer {
 						pendingFirstTokenEvents.WriteString(payloadString)
 						if pendingFirstTokenEvents.Len() <= 1024*1024 {
@@ -417,10 +417,10 @@ func (h *Handler) Messages(c *gin.Context) {
 				eventType := parsed.Get("type").String()
 				accumulator.apply(translator.translateEvent(data))
 
-				if !ttftRecorded && isFirstTokenResult(parsed) {
+				ttftGuard.MarkProgress(eventType)
+				if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
-					ttftGuard.MarkFirstToken()
 				}
 				if eventType == "response.output_text.delta" || eventType == "response.function_call_arguments.delta" {
 					deltaCharCount += len(parsed.Get("delta").String())

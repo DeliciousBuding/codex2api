@@ -478,11 +478,11 @@ func (h *Handler) streamResponsesWSUpstream(
 	readErr = ReadSSEStream(resp.Body, func(data []byte) bool {
 		parsed := gjson.ParseBytes(data)
 		eventType := parsed.Get("type").String()
-		isFirstToken := isFirstTokenResult(parsed)
+		ttftGuard.MarkProgress(eventType)
+		isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 		if !ttftRecorded && isFirstToken {
 			firstTokenMs = int(time.Since(start).Milliseconds())
 			ttftRecorded = true
-			ttftGuard.MarkFirstToken()
 		}
 		if eventType == "response.output_text.delta" {
 			deltaCharCount += len(parsed.Get("delta").String())
@@ -503,7 +503,7 @@ func (h *Handler) streamResponsesWSUpstream(
 			gotTerminal = true
 		}
 		if !clientGone {
-			shouldDefer := ttftGuard != nil && !ttftRecorded && !gotTerminal && !isFirstToken
+			shouldDefer := !ttftRecorded && !gotTerminal && isPreContentLifecycleEvent(eventType)
 			if shouldDefer {
 				pendingFirstTokenMessages = append(pendingFirstTokenMessages, append([]byte(nil), data...))
 				pendingFirstTokenBytes += len(data)

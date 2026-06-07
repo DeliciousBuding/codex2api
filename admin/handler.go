@@ -4412,6 +4412,7 @@ type settingsResponse struct {
 	UsageLogFlushIntervalSeconds       int    `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                  string `json:"stream_flush_policy"`
 	StreamFlushIntervalMS              int    `json:"stream_flush_interval_ms"`
+	FirstTokenMode                     string `json:"first_token_mode"`
 	FirstTokenTimeoutSeconds           int    `json:"first_token_timeout_seconds"`
 	BillingTierPolicy                  string `json:"billing_tier_policy"`
 	ShowFullUsageNumbers               bool   `json:"show_full_usage_numbers"`
@@ -4486,6 +4487,7 @@ type updateSettingsReq struct {
 	UsageLogFlushIntervalSeconds       *int    `json:"usage_log_flush_interval_seconds"`
 	StreamFlushPolicy                  *string `json:"stream_flush_policy"`
 	StreamFlushIntervalMS              *int    `json:"stream_flush_interval_ms"`
+	FirstTokenMode                     *string `json:"first_token_mode"`
 	FirstTokenTimeoutSeconds           *int    `json:"first_token_timeout_seconds"`
 	BillingTierPolicy                  *string `json:"billing_tier_policy"`
 	ShowFullUsageNumbers               *bool   `json:"show_full_usage_numbers"`
@@ -5053,6 +5055,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		UsageLogFlushIntervalSeconds:       h.db.GetUsageLogFlushIntervalSeconds(),
 		StreamFlushPolicy:                  runtimeCfg.StreamFlushPolicy,
 		StreamFlushIntervalMS:              runtimeCfg.StreamFlushIntervalMS,
+		FirstTokenMode:                     runtimeCfg.FirstTokenMode,
 		FirstTokenTimeoutSeconds:           runtimeCfg.FirstTokenTimeoutSec,
 		BillingTierPolicy:                  runtimeCfg.BillingTierPolicy,
 		ShowFullUsageNumbers:               showFullUsageNumbers,
@@ -5433,6 +5436,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		runtimeCfg.StreamFlushIntervalMS = *req.StreamFlushIntervalMS
 		log.Printf("设置已更新: stream_flush_interval_ms = %d", runtimeCfg.StreamFlushIntervalMS)
 	}
+	if req.FirstTokenMode != nil {
+		runtimeCfg.FirstTokenMode = proxy.NormalizeFirstTokenMode(*req.FirstTokenMode)
+		log.Printf("设置已更新: first_token_mode = %s", runtimeCfg.FirstTokenMode)
+	}
 	if req.FirstTokenTimeoutSeconds != nil {
 		runtimeCfg.FirstTokenTimeoutSec = *req.FirstTokenTimeoutSeconds
 		log.Printf("设置已更新: first_token_timeout_seconds = %d", runtimeCfg.FirstTokenTimeoutSec)
@@ -5665,6 +5672,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		UsageLogFlushIntervalSeconds:       usageLogFlushIntervalSeconds,
 		StreamFlushPolicy:                  runtimeCfg.StreamFlushPolicy,
 		StreamFlushIntervalMS:              runtimeCfg.StreamFlushIntervalMS,
+		FirstTokenMode:                     runtimeCfg.FirstTokenMode,
 		FirstTokenTimeoutSeconds:           runtimeCfg.FirstTokenTimeoutSec,
 		BillingTierPolicy:                  runtimeCfg.BillingTierPolicy,
 		ShowFullUsageNumbers:               showFullUsageNumbers,
@@ -5755,6 +5763,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		UsageLogFlushIntervalSeconds:       usageLogFlushIntervalSeconds,
 		StreamFlushPolicy:                  runtimeCfg.StreamFlushPolicy,
 		StreamFlushIntervalMS:              runtimeCfg.StreamFlushIntervalMS,
+		FirstTokenMode:                     runtimeCfg.FirstTokenMode,
 		FirstTokenTimeoutSeconds:           runtimeCfg.FirstTokenTimeoutSec,
 		ShowFullUsageNumbers:               showFullUsageNumbers,
 		ImageStorageBackend:                imgCfg.Backend,

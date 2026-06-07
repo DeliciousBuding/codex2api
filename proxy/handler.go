@@ -558,7 +558,12 @@ func populateCompactUsageMetaFromRequest(c *gin.Context, input *database.UsageLo
 }
 
 func isCompactUsageEndpoint(endpoint string) bool {
-	return strings.TrimSpace(endpoint) == "/v1/responses/compact"
+	endpoint = strings.TrimSpace(endpoint)
+	if cut := strings.IndexAny(endpoint, "?#"); cut >= 0 {
+		endpoint = endpoint[:cut]
+	}
+	endpoint = strings.TrimRight(endpoint, "/")
+	return endpoint == "/v1/responses/compact"
 }
 
 func rawRequestBodyFromContext(c *gin.Context) ([]byte, bool) {
@@ -587,15 +592,28 @@ func rawRequestBodyFromContext(c *gin.Context) ([]byte, bool) {
 
 func requestBodyHasCompactionInput(body []byte) bool {
 	input := gjson.GetBytes(body, "input")
-	if !input.IsArray() {
+	return gjsonResultHasCompactionInput(input)
+}
+
+func gjsonResultHasCompactionInput(result gjson.Result) bool {
+	if !result.Exists() {
 		return false
 	}
-	for _, item := range input.Array() {
-		if strings.EqualFold(strings.TrimSpace(item.Get("type").String()), "compaction") {
-			return true
-		}
+	if strings.EqualFold(strings.TrimSpace(result.Get("type").String()), "compaction") {
+		return true
 	}
-	return false
+	if !result.IsArray() && !result.IsObject() {
+		return false
+	}
+	found := false
+	result.ForEach(func(_, value gjson.Result) bool {
+		if gjsonResultHasCompactionInput(value) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // extractReasoningEffort 从请求体提取推理强度
@@ -1569,11 +1587,11 @@ func (h *Handler) Responses(c *gin.Context) {
 				readErr = ReadSSEStream(resp.Body, func(data []byte) bool {
 					parsed := gjson.ParseBytes(data)
 					eventType := parsed.Get("type").String()
-					isFirstToken := isFirstTokenResult(parsed)
+					ttftGuard.MarkProgress(eventType)
+					isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 					if !ttftRecorded && isFirstToken {
 						firstTokenMs = int(time.Since(start).Milliseconds())
 						ttftRecorded = true
-						ttftGuard.MarkFirstToken()
 					}
 					if eventType == "response.output_text.delta" {
 						deltaCharCount += len(parsed.Get("delta").String())
@@ -1594,7 +1612,7 @@ func (h *Handler) Responses(c *gin.Context) {
 					}
 					if !clientGone {
 						payload := fmt.Sprintf("data: %s\n\n", data)
-						shouldDefer := !ttftRecorded && !gotTerminal && !isFirstToken
+						shouldDefer := !ttftRecorded && !gotTerminal && isPreContentLifecycleEvent(eventType)
 						if shouldDefer {
 							pendingFirstTokenEvents.WriteString(payload)
 							if pendingFirstTokenEvents.Len() <= 1024*1024 {
@@ -1906,11 +1924,11 @@ func (h *Handler) Responses(c *gin.Context) {
 				eventType := parsed.Get("type").String()
 
 				// TTFT: 记录第一个实际内容事件的时间
-				isFirstToken := isFirstTokenResult(parsed)
+				ttftGuard.MarkProgress(eventType)
+				isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 				if !ttftRecorded && isFirstToken {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
-					ttftGuard.MarkFirstToken()
 				}
 
 				// 累计 delta 字符数
@@ -1938,7 +1956,7 @@ func (h *Handler) Responses(c *gin.Context) {
 
 				if !clientGone {
 					payload := fmt.Sprintf("data: %s\n\n", data)
-					shouldDefer := !ttftRecorded && !gotTerminal && !isFirstToken
+					shouldDefer := !ttftRecorded && !gotTerminal && isPreContentLifecycleEvent(eventType)
 					if shouldDefer {
 						pendingFirstTokenEvents.WriteString(payload)
 						if pendingFirstTokenEvents.Len() <= 1024*1024 {
@@ -1978,10 +1996,10 @@ func (h *Handler) Responses(c *gin.Context) {
 				if imageOutput, ok := extractResponseImageGenerationOutput(data, seenImageOutputs); ok {
 					imageOutputs = append(imageOutputs, imageOutput)
 				}
-				if !ttftRecorded && isFirstTokenResult(parsed) {
+				ttftGuard.MarkProgress(eventType)
+				if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
-					ttftGuard.MarkFirstToken()
 				}
 				// 累计 delta 字符数
 				if eventType == "response.output_text.delta" {
@@ -2832,11 +2850,11 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 
 				parsed := gjson.ParseBytes(data)
 				eventType := parsed.Get("type").String()
-				isFirstToken := isFirstTokenResult(parsed)
+				ttftGuard.MarkProgress(eventType)
+				isFirstToken := isFirstTokenResultForMode(parsed, currentFirstTokenMode())
 				if !ttftRecorded && isFirstToken {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
-					ttftGuard.MarkFirstToken()
 				}
 				// 累计 delta 字符数（文本 + function call 参数）
 				if eventType == "response.output_text.delta" || eventType == "response.function_call_arguments.delta" {
@@ -2856,7 +2874,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 
 				if !clientGone && chunk != nil {
 					payload := fmt.Sprintf("data: %s\n\n", chunk)
-					shouldDefer := !ttftRecorded && !gotTerminal && !isFirstToken
+					shouldDefer := !ttftRecorded && !gotTerminal && isPreContentLifecycleEvent(eventType)
 					if shouldDefer {
 						pendingFirstTokenChunks.WriteString(payload)
 						if pendingFirstTokenChunks.Len() <= 1024*1024 {
@@ -2911,10 +2929,10 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			readErr = ReadSSEStream(resp.Body, func(data []byte) bool {
 				parsed := gjson.ParseBytes(data)
 				eventType := parsed.Get("type").String()
-				if !ttftRecorded && isFirstTokenResult(parsed) {
+				ttftGuard.MarkProgress(eventType)
+				if !ttftRecorded && isFirstTokenResultForMode(parsed, currentFirstTokenMode()) {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
-					ttftGuard.MarkFirstToken()
 				}
 				switch eventType {
 				case "response.output_text.delta":

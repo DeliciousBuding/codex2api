@@ -1461,7 +1461,7 @@ export default function Usage() {
                       {visibleColumns.token && <TableHead className={usageTableHeadClass}>{t('usage.tableToken')}</TableHead>}
                       {visibleColumns.cost && <TableHead className={usageTableHeadClass}>{t('usage.tableCost')}</TableHead>}
                       {visibleColumns.cached && <TableHead className={usageTableHeadClass}>{t('usage.tableCached')}</TableHead>}
-                      {visibleColumns.firstToken && <TableHead className={usageTableHeadClass}>{t('usage.tableFirstToken')}</TableHead>}
+                      {visibleColumns.firstToken && <TableHead className={usageTableHeadClass}><span title={t('usage.tableFirstTokenHint')} className="cursor-help underline decoration-dotted underline-offset-2">{t('usage.tableFirstToken')}</span></TableHead>}
                       {visibleColumns.duration && <TableHead className={usageTableHeadClass}>{t('usage.tableDuration')}</TableHead>}
                       {visibleColumns.time && <TableHead className={usageTableHeadClass}>{t('usage.tableTime')}</TableHead>}
                     </TableRow>
@@ -1509,16 +1509,6 @@ export default function Usage() {
                             {isImageUsageLog(log) && (
                               <ImageUsageBadge log={log} />
                             )}
-                            {log.compact && (
-                              <Badge
-                                variant="outline"
-                                className="text-[11px] font-semibold gap-0.5 border-transparent bg-teal-500/12 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"
-                                title={t('usage.compactRequestTooltip')}
-                              >
-                                <Box className="size-3" />
-                                {t('usage.compactRequest')}
-                              </Badge>
-                            )}
                             {isFastTier(log.billing_service_tier || log.service_tier) && (
                               <Badge
                                 variant="outline"
@@ -1550,17 +1540,29 @@ export default function Usage() {
                           </div>
                         </TableCell>}
                         {visibleColumns.type && <TableCell>
-                          <Badge
-                            variant="outline"
-                            className={usageTableBadgeClass}
-                            style={{
-                              background: log.stream ? 'rgba(99, 102, 241, 0.12)' : 'rgba(107, 114, 128, 0.12)',
-                              color: log.stream ? '#6366f1' : '#6b7280',
-                              borderColor: 'transparent',
-                            }}
-                          >
-                            {log.stream ? 'stream' : 'sync'}
-                          </Badge>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Badge
+                              variant="outline"
+                              className={usageTableBadgeClass}
+                              style={{
+                                background: log.stream ? 'rgba(99, 102, 241, 0.12)' : 'rgba(107, 114, 128, 0.12)',
+                                color: log.stream ? '#6366f1' : '#6b7280',
+                                borderColor: 'transparent',
+                              }}
+                            >
+                              {log.stream ? 'stream' : 'sync'}
+                            </Badge>
+                            {log.compact && (
+                              <Badge
+                                variant="outline"
+                                className="text-[11px] font-semibold gap-0.5 border-transparent bg-teal-500/12 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"
+                                title={t('usage.compactRequestTooltip')}
+                              >
+                                <Box className="size-3" />
+                                {t('usage.compactRequest')}
+                              </Badge>
+                            )}
+                          </div>
                         </TableCell>}
                         {visibleColumns.token && <TableCell>
                           {log.status_code < 400 && (log.input_tokens > 0 || log.output_tokens > 0) ? (

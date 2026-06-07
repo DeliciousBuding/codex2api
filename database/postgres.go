@@ -727,6 +727,7 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS usage_log_flush_interval_seconds INT DEFAULT 5;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS stream_flush_policy VARCHAR(20) DEFAULT 'immediate';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS stream_flush_interval_ms INT DEFAULT 20;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_mode VARCHAR(20) DEFAULT 'strict';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS first_token_timeout_seconds INT DEFAULT 0;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS billing_tier_policy VARCHAR(20) DEFAULT 'actual';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS image_storage_config TEXT DEFAULT '{}';
@@ -1276,6 +1277,7 @@ type SystemSettings struct {
 	UsageLogFlushIntervalSeconds       int
 	StreamFlushPolicy                  string
 	StreamFlushIntervalMS              int
+	FirstTokenMode                     string
 	FirstTokenTimeoutSeconds           int
 	BillingTierPolicy                  string
 	ImageStorageConfig                 string // JSON: {"backend":"s3","endpoint":"...","region":"...","bucket":"...","access_key":"...","secret_key":"...","prefix":"...","force_path_style":false}
@@ -1294,6 +1296,15 @@ func normalizeBillingTierPolicy(policy string) string {
 		return "requested"
 	default:
 		return "actual"
+	}
+}
+
+func normalizeFirstTokenMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "loose":
+		return "loose"
+	default:
+		return "strict"
 	}
 }
 
@@ -1339,6 +1350,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(usage_log_flush_interval_seconds, 5),
 			       COALESCE(stream_flush_policy, 'immediate'),
 			       COALESCE(stream_flush_interval_ms, 20),
+			       COALESCE(NULLIF(TRIM(first_token_mode), ''), 'strict'),
 			       COALESCE(first_token_timeout_seconds, 0),
 			       COALESCE(NULLIF(TRIM(billing_tier_policy), ''), 'actual'),
 			       COALESCE(image_storage_config, '{}'),
@@ -1367,6 +1379,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.PromptFilterCustomPatterns, &s.PromptFilterDisabledPatterns,
 		&s.ClientCompatMode, &s.CodexMinCLIVersion, &s.UsageLogMode, &s.UsageLogBatchSize,
 		&s.UsageLogFlushIntervalSeconds, &s.StreamFlushPolicy, &s.StreamFlushIntervalMS,
+		&s.FirstTokenMode,
 		&s.FirstTokenTimeoutSeconds,
 		&s.BillingTierPolicy,
 		&s.ImageStorageConfig,
@@ -1388,6 +1401,7 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	if strings.TrimSpace(s.ReasoningEffortModels) == "" {
 		s.ReasoningEffortModels = "[]"
 	}
+	s.FirstTokenMode = normalizeFirstTokenMode(s.FirstTokenMode)
 	s.BillingTierPolicy = normalizeBillingTierPolicy(s.BillingTierPolicy)
 	return s, err
 }
@@ -1398,6 +1412,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 	if reasoningEffortModels == "" {
 		reasoningEffortModels = "[]"
 	}
+	firstTokenMode := normalizeFirstTokenMode(s.FirstTokenMode)
 	billingTierPolicy := normalizeBillingTierPolicy(s.BillingTierPolicy)
 	_, err := db.conn.ExecContext(ctx, `
 			INSERT INTO system_settings (
@@ -1412,6 +1427,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				client_compat_mode, codex_min_cli_version, usage_log_mode, usage_log_batch_size,
 					usage_log_flush_interval_seconds, stream_flush_policy, stream_flush_interval_ms,
 					first_token_timeout_seconds,
+					first_token_mode,
 					billing_tier_policy,
 					image_storage_config,
 				scheduler_mode,
@@ -1426,7 +1442,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_ws_silent_retry_enabled,
 					codex_ws_silent_max_retries
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -1475,6 +1491,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					stream_flush_policy = EXCLUDED.stream_flush_policy,
 					stream_flush_interval_ms = EXCLUDED.stream_flush_interval_ms,
 					first_token_timeout_seconds = EXCLUDED.first_token_timeout_seconds,
+					first_token_mode = EXCLUDED.first_token_mode,
 					billing_tier_policy = EXCLUDED.billing_tier_policy,
 					image_storage_config = EXCLUDED.image_storage_config,
 				scheduler_mode = EXCLUDED.scheduler_mode,
@@ -1499,7 +1516,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.PromptFilterSensitiveWords, s.PromptFilterCustomPatterns, s.PromptFilterDisabledPatterns,
 		s.ClientCompatMode, s.CodexMinCLIVersion, s.UsageLogMode, s.UsageLogBatchSize,
 		s.UsageLogFlushIntervalSeconds, s.StreamFlushPolicy, s.StreamFlushIntervalMS,
-		s.FirstTokenTimeoutSeconds, billingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers, reasoningEffortModels,
+		s.FirstTokenTimeoutSeconds, firstTokenMode, billingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers, reasoningEffortModels,
 		s.CodexForceWebsocket, s.CodexWSKeepaliveEnabled, normalizeCodexWSKeepaliveInterval(s.CodexWSKeepaliveIntervalSec),
 		s.CodexWSHideUpstreamErrors, s.CodexWSSilentRetryEnabled, normalizeCodexWSSilentMaxRetries(s.CodexWSSilentMaxRetries))
 	return err

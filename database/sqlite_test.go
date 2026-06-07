@@ -717,6 +717,7 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 		UsageLogFlushIntervalSeconds:     5,
 		StreamFlushPolicy:                "immediate",
 		StreamFlushIntervalMS:            20,
+		FirstTokenMode:                   "loose",
 		FirstTokenTimeoutSeconds:         17,
 		BillingTierPolicy:                "requested",
 		ImageStorageConfig:               "{}",
@@ -740,6 +741,9 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 	}
 	if settings.FirstTokenTimeoutSeconds != 17 {
 		t.Fatalf("FirstTokenTimeoutSeconds = %d, want 17", settings.FirstTokenTimeoutSeconds)
+	}
+	if settings.FirstTokenMode != "loose" {
+		t.Fatalf("FirstTokenMode = %q, want loose", settings.FirstTokenMode)
 	}
 	if !settings.ShowFullUsageNumbers {
 		t.Fatal("ShowFullUsageNumbers = false, want true")

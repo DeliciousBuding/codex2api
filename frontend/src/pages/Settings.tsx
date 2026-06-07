@@ -85,6 +85,9 @@ const normalizeReasoningEffortValue = (effort: string) => {
 const normalizeBillingTierPolicyValue = (value?: string | null): 'actual' | 'requested' =>
   value === 'requested' ? 'requested' : 'actual'
 
+const normalizeFirstTokenModeValue = (value?: string | null): 'strict' | 'loose' =>
+  value === 'loose' ? 'loose' : 'strict'
+
 const getSettingsPatchValues = (settings: SystemSettings, keys: Array<keyof SystemSettings>): Partial<SystemSettings> => {
   const patch: Record<string, unknown> = {}
   for (const key of keys) {
@@ -620,6 +623,10 @@ export default function Settings() {
     { label: t('settings.streamFlushImmediate'), value: 'immediate' },
     { label: t('settings.streamFlushCoalesce'), value: 'coalesce' },
   ]
+  const firstTokenModeOptions = [
+    { label: t('settings.firstTokenModeStrict'), value: 'strict' },
+    { label: t('settings.firstTokenModeLoose'), value: 'loose' },
+  ]
   const imageStorageBackendOptions = [
     { label: t('settings.imageStorageLocal'), value: 'local' },
     { label: t('settings.imageStorageS3'), value: 's3' },
@@ -628,6 +635,7 @@ export default function Settings() {
     const normalized = {
       ...settings,
       billing_tier_policy: normalizeBillingTierPolicyValue(settings.billing_tier_policy),
+      first_token_mode: normalizeFirstTokenModeValue(settings.first_token_mode),
     }
     if (!normalized.lazy_mode) {
       return normalized
@@ -702,6 +710,7 @@ export default function Settings() {
     usage_log_flush_interval_seconds: 5,
     stream_flush_policy: 'immediate',
     stream_flush_interval_ms: 20,
+    first_token_mode: 'strict',
     first_token_timeout_seconds: 0,
     billing_tier_policy: 'actual',
     show_full_usage_numbers: false,
@@ -1425,6 +1434,13 @@ export default function Settings() {
                   max={1000}
                   value={settingsForm.stream_flush_interval_ms}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => setSettingsForm(f => ({ ...f, stream_flush_interval_ms: parseInt(e.target.value) || 20 }))}
+                />
+              </SettingField>
+              <SettingField label={t('settings.firstTokenMode')} description={t('settings.firstTokenModeDesc')}>
+                <Select
+                  value={settingsForm.first_token_mode}
+                  onValueChange={(value) => autoSaveStringField('first_token_mode', value)}
+                  options={firstTokenModeOptions}
                 />
               </SettingField>
               <SettingField label={t('settings.firstTokenTimeout')} description={t('settings.firstTokenTimeoutDesc')}>
