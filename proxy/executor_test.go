@@ -63,6 +63,13 @@ func TestClassifyStreamOutcome(t *testing.T) {
 			wantPenalize: true,
 		},
 		{
+			name:         "websocket message too big",
+			readErr:      errors.New("websocket read error: websocket: close 1009 (message too big)"),
+			wantStatus:   logStatusUpstreamStreamBreak,
+			wantKind:     upstreamErrorKindMessageTooBig,
+			wantPenalize: true,
+		},
+		{
 			name:         "upstream early eof",
 			wantStatus:   logStatusUpstreamStreamBreak,
 			wantKind:     "transport",
@@ -83,6 +90,28 @@ func TestClassifyStreamOutcome(t *testing.T) {
 				t.Fatalf("penalize mismatch: got %v want %v", outcome.penalize, tc.wantPenalize)
 			}
 		})
+	}
+}
+
+func TestShouldFallbackWebsocketMessageTooBigToHTTP(t *testing.T) {
+	outcome := streamOutcome{
+		logStatusCode:  logStatusUpstreamStreamBreak,
+		failureKind:    upstreamErrorKindMessageTooBig,
+		failureMessage: "上游流读取失败: websocket read error: websocket: close 1009 (message too big)",
+		penalize:       true,
+	}
+
+	if !shouldFallbackWebsocketMessageTooBigToHTTP(outcome, true, false, nil, nil) {
+		t.Fatal("expected websocket message-too-big before first downstream bytes to fall back to HTTP")
+	}
+	if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, false, false, nil, nil) {
+		t.Fatal("HTTP upstream should not fall back again")
+	}
+	if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, true, true, nil, nil) {
+		t.Fatal("should not fall back after downstream body has been written")
+	}
+	if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, true, false, context.Canceled, nil) {
+		t.Fatal("should not fall back after downstream context is canceled")
 	}
 }
 

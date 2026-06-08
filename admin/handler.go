@@ -2247,6 +2247,62 @@ func parseSub2APIJSONImportTokens(data []byte) []importToken {
 	return tokens
 }
 
+func importTokenCredentialIdentity(t importToken) string {
+	switch {
+	case t.refreshToken != "":
+		return "rt:" + t.refreshToken
+	case t.sessionToken != "":
+		return "st:" + t.sessionToken
+	case t.accessToken != "":
+		return "at:" + t.accessToken
+	default:
+		return ""
+	}
+}
+
+func conflictingImportChatGPTIDs(tokens []importToken) map[string]bool {
+	identitiesByID := make(map[string]map[string]struct{})
+	for _, t := range tokens {
+		id := strings.TrimSpace(t.chatgptAccountID)
+		if id == "" {
+			continue
+		}
+		identity := importTokenCredentialIdentity(t)
+		if identity == "" {
+			continue
+		}
+		identities := identitiesByID[id]
+		if identities == nil {
+			identities = make(map[string]struct{}, 1)
+			identitiesByID[id] = identities
+		}
+		identities[identity] = struct{}{}
+	}
+
+	conflicts := make(map[string]bool)
+	for id, identities := range identitiesByID {
+		if len(identities) > 1 {
+			conflicts[id] = true
+		}
+	}
+	return conflicts
+}
+
+func reliableImportChatGPTID(t importToken, conflicts map[string]bool) string {
+	id := strings.TrimSpace(t.chatgptAccountID)
+	if id == "" || conflicts[id] {
+		return ""
+	}
+	return id
+}
+
+func importStoredAccountID(t importToken, conflicts map[string]bool) string {
+	if strings.TrimSpace(t.accountID) != "" {
+		return strings.TrimSpace(t.accountID)
+	}
+	return reliableImportChatGPTID(t, conflicts)
+}
+
 // ImportAccounts 批量导入账号（支持 TXT / JSON）
 func (h *Handler) ImportAccounts(c *gin.Context) {
 	format := c.DefaultPostForm("format", "txt")
@@ -2484,22 +2540,25 @@ func sendSSEJSON(c *gin.Context, event any) {
 // importAccountsCommon 公共的去重、并发插入、SSE 进度推送逻辑（支持 RT 和 AT-only 混合导入）
 func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, proxyURL string) {
 	// 文件内去重：
-	// 1) 当条目带有 chatgpt_account_id 时，以它作为唯一键 —— 这是 ChatGPT 端真正的账号标识，
-	//    可以避免因导出工具误把同一 RT 复制给多个不同账号而被错误合并。
+	// 1) 当 chatgpt_account_id 在本批次内与凭据一一对应时，以它作为唯一键。
+	//    如果同一个 chatgpt_account_id 对应多个不同 RT / ST / AT，说明导出工具把非账号唯一字段写进了这里，
+	//    此时把它视为不可靠并回退到 RT / ST / AT 去重。
 	// 2) 没有 chatgpt_account_id 时，退回到 RT / ST / AT 顺序去重（兼容旧导出格式）。
 	// 3) 同一份文件内若出现"同一个 RT 对应多个不同 chatgpt_account_id"，
 	//    会被全部保留为独立账号；数据库层面 refresh_token 没有 UNIQUE 约束，因此安全。
+	conflictingChatGPTIDs := conflictingImportChatGPTIDs(tokens)
 	seenChatGPTID := make(map[string]bool)
 	seenRT := make(map[string]bool)
 	seenST := make(map[string]bool)
 	seenAT := make(map[string]bool)
 	var unique []importToken
 	for _, t := range tokens {
-		if t.chatgptAccountID != "" {
-			if seenChatGPTID[t.chatgptAccountID] {
+		reliableChatGPTID := reliableImportChatGPTID(t, conflictingChatGPTIDs)
+		if reliableChatGPTID != "" {
+			if seenChatGPTID[reliableChatGPTID] {
 				continue
 			}
-			seenChatGPTID[t.chatgptAccountID] = true
+			seenChatGPTID[reliableChatGPTID] = true
 			if t.refreshToken != "" {
 				seenRT[t.refreshToken] = true
 			}
@@ -2574,7 +2633,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 	// 当导入条目带 chatgpt_account_id 时，按它查数据库已有账号 —— 这是 ChatGPT 端真实的账号唯一标识。
 	hasChatGPTID := false
 	for _, t := range unique {
-		if t.chatgptAccountID != "" {
+		if reliableImportChatGPTID(t, conflictingChatGPTIDs) != "" {
 			hasChatGPTID = true
 			break
 		}
@@ -2591,9 +2650,10 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 	var newTokens []importToken
 	duplicateCount := 0
 	for _, t := range unique {
+		reliableChatGPTID := reliableImportChatGPTID(t, conflictingChatGPTIDs)
 		// 优先按 chatgpt_account_id 判定数据库内是否已存在该账号；
 		// 命中则跳过，避免同一账号被重复导入。
-		if t.chatgptAccountID != "" && existingChatGPTIDs[t.chatgptAccountID] {
+		if reliableChatGPTID != "" && existingChatGPTIDs[reliableChatGPTID] {
 			duplicateCount++
 			continue
 		}
@@ -2601,11 +2661,11 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 		case t.refreshToken != "":
 			// 已经按 chatgpt_account_id 排除过重复账号；此处仅当条目没有 chatgpt_account_id 时才回退到 RT 去重，
 			// 否则当多个不同账号共享同一 RT（部分导出工具的常见格式）时会被错误判定为重复。
-			if t.chatgptAccountID == "" && existingRTs[t.refreshToken] {
+			if reliableChatGPTID == "" && existingRTs[t.refreshToken] {
 				duplicateCount++
-			} else if t.chatgptAccountID == "" && t.sessionToken != "" && existingSTs[t.sessionToken] {
+			} else if reliableChatGPTID == "" && t.sessionToken != "" && existingSTs[t.sessionToken] {
 				duplicateCount++
-			} else if t.chatgptAccountID == "" && t.accessToken != "" && existingATs[t.accessToken] {
+			} else if reliableChatGPTID == "" && t.accessToken != "" && existingATs[t.accessToken] {
 				duplicateCount++
 			} else {
 				newTokens = append(newTokens, t)
@@ -2706,7 +2766,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 					sessionToken:        tok.sessionToken,
 					accessToken:         tok.accessToken,
 					idToken:             tok.idToken,
-					accountID:           firstNonEmpty(tok.accountID, tok.chatgptAccountID),
+					accountID:           importStoredAccountID(tok, conflictingChatGPTIDs),
 					email:               tok.email,
 					planType:            tok.planType,
 					expiresAtRaw:        tok.expiresAt,
@@ -2742,7 +2802,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 						sessionToken:        tok.sessionToken,
 						accessToken:         tok.accessToken,
 						idToken:             tok.idToken,
-						accountID:           tok.accountID,
+						accountID:           importStoredAccountID(tok, conflictingChatGPTIDs),
 						email:               tok.email,
 						planType:            tok.planType,
 						expiresAtRaw:        tok.expiresAt,
@@ -2772,7 +2832,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 					sessionToken:        tok.sessionToken,
 					accessToken:         tok.accessToken,
 					idToken:             tok.idToken,
-					accountID:           tok.accountID,
+					accountID:           importStoredAccountID(tok, conflictingChatGPTIDs),
 					email:               tok.email,
 					planType:            tok.planType,
 					expiresAtRaw:        tok.expiresAt,
@@ -6482,7 +6542,12 @@ func (h *Handler) TestProxy(c *gin.Context) {
 		ID   int64  `json:"id"`
 		Lang string `json:"lang"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.URL == "" {
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请提供代理 URL")
+		return
+	}
+	proxyURL := strings.TrimSpace(req.URL)
+	if proxyURL == "" {
 		writeError(c, http.StatusBadRequest, "请提供代理 URL")
 		return
 	}
@@ -6491,7 +6556,7 @@ func (h *Handler) TestProxy(c *gin.Context) {
 	transport := &http.Transport{}
 	baseDialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport.DialContext = baseDialer.DialContext
-	if err := auth.ConfigureTransportProxy(transport, req.URL, baseDialer); err != nil {
+	if err := auth.ConfigureTransportProxy(transport, proxyURL, baseDialer); err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "error": fmt.Sprintf("代理 URL 格式错误: %v", err)})
 		return
 	}

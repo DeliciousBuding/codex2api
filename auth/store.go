@@ -1057,6 +1057,9 @@ func (a *Account) RuntimeStatus() string {
 			return "cooldown"
 		}
 		if a.hasDispatchCredentialLocked() {
+			if a.quotaAutoPausedLocked(now) {
+				return "quota_paused"
+			}
 			return "active" // 冷却过期，已恢复
 		}
 		if a.RefreshToken != "" {
@@ -1064,6 +1067,9 @@ func (a *Account) RuntimeStatus() string {
 		}
 		return "error"
 	default:
+		if a.hasDispatchCredentialLocked() && a.quotaAutoPausedLocked(now) {
+			return "quota_paused"
+		}
 		if a.hasDispatchCredentialLocked() {
 			return "active"
 		}

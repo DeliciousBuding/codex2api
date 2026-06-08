@@ -638,11 +638,38 @@ func extractServiceTier(body []byte) string {
 	return gjson.GetBytes(body, "serviceTier").String()
 }
 
+const upstreamErrorKindMessageTooBig = "message_too_big"
+
+func isWebsocketMessageTooBigError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "message too big") || strings.Contains(msg, "close 1009")
+}
+
+func isWebsocketMessageTooBigOutcome(outcome streamOutcome) bool {
+	return outcome.failureKind == upstreamErrorKindMessageTooBig
+}
+
+func shouldFallbackWebsocketMessageTooBigToHTTP(outcome streamOutcome, useWebsocket bool, wroteAnyBody bool, ctxErr, writeErr error) bool {
+	if !useWebsocket || !isWebsocketMessageTooBigOutcome(outcome) {
+		return false
+	}
+	if wroteAnyBody || ctxErr != nil || writeErr != nil {
+		return false
+	}
+	return outcome.penalize
+}
+
 func classifyTransportFailure(err error) string {
 	if err == nil {
 		return ""
 	}
 
+	if isWebsocketMessageTooBigError(err) {
+		return upstreamErrorKindMessageTooBig
+	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") {
 		return "timeout"
@@ -1376,6 +1403,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	var lastStatusCode int
 	var lastBody []byte
 	retryExclusions := newRetryAccountExclusions()
+	forceHTTPAfterWSMessageTooBig := false
 	invalidEncryptedContentRetried := false
 
 	// 上游 ctx 生命周期：每次 attempt 开始前用新的 drainable ctx 替换，
@@ -1401,7 +1429,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)
-		useWebsocket := h.shouldUseWebsocketForHTTP()
+		useWebsocket := h.shouldUseWebsocketForHTTP() && !forceHTTPAfterWSMessageTooBig
 		if useWebsocket && responsesBodyRequestsImageGeneration(rawBody) {
 			useWebsocket = false
 		}
@@ -1772,6 +1800,13 @@ func (h *Handler) Responses(c *gin.Context) {
 				reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
 			}
 			kind := classifyTransportFailure(reqErr)
+			if useWebsocket && kind == upstreamErrorKindMessageTooBig {
+				log.Printf("上游 WebSocket 请求帧过大，自动降级 HTTP 重试 (attempt %d, account %d, /v1/responses): %v", attempt+1, account.ID(), reqErr)
+				forceHTTPAfterWSMessageTooBig = true
+				h.store.Release(account)
+				h.store.UnbindSessionAffinity(affinityKey, account.ID())
+				continue
+			}
 			retryable := IsRetryableError(reqErr) || kind != ""
 			shouldRetry := false
 			if retryable {
@@ -1875,6 +1910,8 @@ func (h *Handler) Responses(c *gin.Context) {
 			h.sendFinalUpstreamError(c, resp.StatusCode, errBody)
 			return
 		}
+
+		SyncCodexUsageState(h.store, account, resp)
 
 		// 成功！透传响应并跟踪 TTFT / usage
 		account.Mu().RLock()
@@ -2051,10 +2088,17 @@ func (h *Handler) Responses(c *gin.Context) {
 				outcome.failureKind = upstreamErrorKind(outcome.logStatusCode, responseFailedErrorBody(terminalFailurePayload), responseFailedDecision)
 			}
 		}
+		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, wroteAnyBody, c.Request.Context().Err(), writeErr) {
+			log.Printf("上游 WebSocket 消息过大，首包前自动降级 HTTP 重试 (attempt %d, account %d, /v1/responses): %s", attempt+1, account.ID(), outcome.failureMessage)
+			forceHTTPAfterWSMessageTooBig = true
+			resp.Body.Close()
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
+			continue
+		}
 		if shouldTransparentRetryStream(outcome, attempt, maxRetries, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %d/%d, account %d, /v1/responses): %s", attempt+1, maxRetries+1, account.ID(), outcome.failureMessage)
 			recyclePooledClient(account, proxyURL)
-			SyncCodexUsageState(h.store, account, resp)
 			if isFirstTokenTimeoutOutcome(outcome) {
 				retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 			} else {
@@ -2134,7 +2178,6 @@ func (h *Handler) Responses(c *gin.Context) {
 		h.logUsageForRequest(c, logInput)
 
 		resp.Body.Close()
-		SyncCodexUsageState(h.store, account, resp)
 		if outcome.penalize {
 			recyclePooledClient(account, proxyURL)
 			h.store.ReportRequestFailure(account, outcome.failureKind, time.Duration(totalDuration)*time.Millisecond)
@@ -2649,6 +2692,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	var lastStatusCode int
 	var lastBody []byte
 	retryExclusions := newRetryAccountExclusions()
+	forceHTTPAfterWSMessageTooBig := false
 
 	// 上游 ctx 生命周期：每次 attempt 开始前用新的 drainable ctx 替换，
 	// defer 兜底确保函数退出时上游被释放。
@@ -2673,7 +2717,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)
-		useWebsocket := h.shouldUseWebsocketForHTTP()
+		useWebsocket := h.shouldUseWebsocketForHTTP() && !forceHTTPAfterWSMessageTooBig
 		if useWebsocket && responsesBodyRequestsImageGeneration(codexBody) {
 			useWebsocket = false
 		}
@@ -2717,6 +2761,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
 			}
 			kind := classifyTransportFailure(reqErr)
+			if useWebsocket && kind == upstreamErrorKindMessageTooBig {
+				log.Printf("上游 WebSocket 请求帧过大，自动降级 HTTP 重试 (attempt %d, account %d, /v1/chat/completions): %v", attempt+1, account.ID(), reqErr)
+				forceHTTPAfterWSMessageTooBig = true
+				h.store.Release(account)
+				h.store.UnbindSessionAffinity(affinityKey, account.ID())
+				continue
+			}
 			retryable := IsRetryableError(reqErr) || kind != ""
 			shouldRetry := false
 			if retryable {
@@ -2799,6 +2850,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			h.sendFinalUpstreamError(c, resp.StatusCode, errBody)
 			return
 		}
+
+		SyncCodexUsageState(h.store, account, resp)
 
 		// 成功！翻译响应 + TTFT 跟踪
 		account.Mu().RLock()
@@ -2978,10 +3031,17 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				outcome.failureKind = upstreamErrorKind(outcome.logStatusCode, responseFailedErrorBody(terminalFailurePayload), responseFailedDecision)
 			}
 		}
+		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, wroteAnyBody, c.Request.Context().Err(), writeErr) {
+			log.Printf("上游 WebSocket 消息过大，首包前自动降级 HTTP 重试 (attempt %d, account %d, /v1/chat/completions): %s", attempt+1, account.ID(), outcome.failureMessage)
+			forceHTTPAfterWSMessageTooBig = true
+			resp.Body.Close()
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
+			continue
+		}
 		if shouldTransparentRetryStream(outcome, attempt, maxRetries, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 			log.Printf("上游流在首包前断开，重置连接并重试 (attempt %d/%d, account %d, /v1/chat/completions): %s", attempt+1, maxRetries+1, account.ID(), outcome.failureMessage)
 			recyclePooledClient(account, proxyURL)
-			SyncCodexUsageState(h.store, account, resp)
 			if isFirstTokenTimeoutOutcome(outcome) {
 				retryExclusions.MarkSoftFirstTokenTimeout(account.ID())
 			} else {
@@ -3060,7 +3120,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		h.logUsageForRequest(c, logInput)
 
 		resp.Body.Close()
-		SyncCodexUsageState(h.store, account, resp)
 		if outcome.penalize {
 			recyclePooledClient(account, proxyURL)
 			h.store.ReportRequestFailure(account, outcome.failureKind, time.Duration(totalDuration)*time.Millisecond)

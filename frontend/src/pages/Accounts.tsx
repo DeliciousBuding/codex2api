@@ -450,7 +450,7 @@ async function postAdminSSE(path: string, body?: unknown): Promise<Response> {
 }
 
 export default function Accounts() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const pageSizeOptions = DEFAULT_PAGE_SIZE_OPTIONS;
   const [showAdd, setShowAdd] = useState(false);
   const [page, setPage] = useState(1);
@@ -534,6 +534,7 @@ export default function Accounts() {
     number[]
   >([]);
   const [editProxyUrl, setEditProxyUrl] = useState("");
+  const [testingProxyKey, setTestingProxyKey] = useState<string | null>(null);
   const [editOpenAIForm, setEditOpenAIForm] =
     useState<UpdateOpenAIResponsesAccountRequest>({
       name: "",
@@ -652,6 +653,96 @@ export default function Accounts() {
   const lazyModeRef = useRef<boolean | null>(null);
   const { toast, showToast } = useToast();
   const { confirm, confirmDialog } = useConfirmDialog();
+  const ipApiLang = i18n.language?.startsWith("zh") ? "zh-CN" : "en";
+
+  const handleTestProxyUrl = async (rawUrl: string, testKey: string) => {
+    const url = rawUrl.trim();
+    if (!url) {
+      showToast(t("accounts.proxyUrlRequired"), "error");
+      return;
+    }
+    if (testingProxyKey !== null) return;
+
+    setTestingProxyKey(testKey);
+    try {
+      const result = await api.testProxy(url, undefined, ipApiLang);
+      if (!result.success) {
+        showToast(
+          t("accounts.proxyTestFailed", {
+            error: result.error || t("accounts.proxyTestUnknownError"),
+          }),
+          "error",
+        );
+        return;
+      }
+
+      const location =
+        result.location ||
+        [result.country, result.region, result.city].filter(Boolean).join(" ");
+      showToast(
+        t("accounts.proxyTestSuccess", {
+          ip: result.ip || "-",
+          location: location || "-",
+          latency: result.latency_ms ?? 0,
+        }),
+      );
+    } catch (error) {
+      showToast(
+        t("accounts.proxyTestFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
+    } finally {
+      setTestingProxyKey((current) => (current === testKey ? null : current));
+    }
+  };
+
+  const renderProxyInput = ({
+    value,
+    onChange,
+    testKey,
+    label = t("accounts.proxyUrl"),
+    placeholder = t("accounts.proxyUrlPlaceholder"),
+    disabled = false,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    testKey: string;
+    label?: string;
+    placeholder?: string;
+    disabled?: boolean;
+  }) => {
+    const isTesting = testingProxyKey === testKey;
+    const testDisabled = disabled || !value.trim() || testingProxyKey !== null;
+
+    return (
+      <div>
+        <label className="block mb-2 text-sm font-semibold text-muted-foreground">
+          {label}
+        </label>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Input
+            className="min-w-0 flex-1"
+            placeholder={placeholder}
+            value={value}
+            disabled={disabled}
+            onChange={(event: ChangeEvent<HTMLInputElement>) =>
+              onChange(event.target.value)
+            }
+          />
+          <Button
+            type="button"
+            variant="outline"
+            className="shrink-0 justify-center gap-1.5 sm:min-w-[108px]"
+            disabled={testDisabled}
+            onClick={() => void handleTestProxyUrl(value, testKey)}
+          >
+            <Zap className={`size-3.5 ${isTesting ? "animate-pulse" : ""}`} />
+            {isTesting ? t("accounts.testingProxy") : t("accounts.testProxy")}
+          </Button>
+        </div>
+      </div>
+    );
+  };
 
   useEffect(() => {
     return () => {
@@ -2284,7 +2375,7 @@ export default function Accounts() {
           failed: result?.failed ?? 0,
         }),
       );
-      void reloadSilently();
+      await reloadSilently();
     } catch (error) {
       showToast(
         t("accounts.batchTestFailed", { error: getErrorMessage(error) }),
@@ -4043,21 +4134,15 @@ export default function Accounts() {
                     rows={6}
                   />
                 </div>
-                <div>
-                  <label className="block mb-2 text-sm font-semibold text-muted-foreground">
-                    {t("accounts.proxyUrl")}
-                  </label>
-                  <Input
-                    placeholder={t("accounts.proxyUrlPlaceholder")}
-                    value={addForm.proxy_url}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                      setAddForm((form) => ({
-                        ...form,
-                        proxy_url: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
+                {renderProxyInput({
+                  value: addForm.proxy_url,
+                  testKey: "add-refresh-token",
+                  onChange: (value) =>
+                    setAddForm((form) => ({
+                      ...form,
+                      proxy_url: value,
+                    })),
+                })}
               </div>
             ) : addMethod === "st" ? (
               <div className="space-y-4">
@@ -4078,21 +4163,15 @@ export default function Accounts() {
                     rows={6}
                   />
                 </div>
-                <div>
-                  <label className="block mb-2 text-sm font-semibold text-muted-foreground">
-                    {t("accounts.proxyUrl")}
-                  </label>
-                  <Input
-                    placeholder={t("accounts.proxyUrlPlaceholder")}
-                    value={addForm.proxy_url}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                      setAddForm((form) => ({
-                        ...form,
-                        proxy_url: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
+                {renderProxyInput({
+                  value: addForm.proxy_url,
+                  testKey: "add-session-token",
+                  onChange: (value) =>
+                    setAddForm((form) => ({
+                      ...form,
+                      proxy_url: value,
+                    })),
+                })}
               </div>
             ) : addMethod === "at" ? (
               <div className="space-y-4">
@@ -4116,21 +4195,15 @@ export default function Accounts() {
                     rows={6}
                   />
                 </div>
-                <div>
-                  <label className="block mb-2 text-sm font-semibold text-muted-foreground">
-                    {t("accounts.proxyUrl")}
-                  </label>
-                  <Input
-                    placeholder={t("accounts.proxyUrlPlaceholder")}
-                    value={atForm.proxy_url}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                      setAtForm((form) => ({
-                        ...form,
-                        proxy_url: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
+                {renderProxyInput({
+                  value: atForm.proxy_url,
+                  testKey: "add-access-token",
+                  onChange: (value) =>
+                    setAtForm((form) => ({
+                      ...form,
+                      proxy_url: value,
+                    })),
+                })}
               </div>
             ) : addMethod === "openai" ? (
               <div className="space-y-4">
@@ -4250,21 +4323,15 @@ export default function Accounts() {
                     })}
                   </p>
                 </div>
-                <div>
-                  <label className="block mb-2 text-sm font-semibold text-muted-foreground">
-                    {t("accounts.proxyUrl")}
-                  </label>
-                  <Input
-                    placeholder={t("accounts.proxyUrlPlaceholder")}
-                    value={openAIForm.proxy_url}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                      setOpenAIForm((form) => ({
-                        ...form,
-                        proxy_url: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
+                {renderProxyInput({
+                  value: openAIForm.proxy_url,
+                  testKey: "add-openai-responses",
+                  onChange: (value) =>
+                    setOpenAIForm((form) => ({
+                      ...form,
+                      proxy_url: value,
+                    })),
+                })}
               </div>
             ) : (
               <div className="space-y-5">
@@ -4288,18 +4355,13 @@ export default function Accounts() {
                         }
                       />
                     </div>
-                    <div>
-                      <label className="block mb-2 text-sm font-semibold text-muted-foreground">
-                        {t("accounts.oauthProxyUrl")}
-                      </label>
-                      <Input
-                        placeholder={t("accounts.oauthProxyUrlPlaceholder")}
-                        value={oauthProxyUrl}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                          setOauthProxyUrl(e.target.value)
-                        }
-                      />
-                    </div>
+                    {renderProxyInput({
+                      value: oauthProxyUrl,
+                      testKey: "oauth-generate",
+                      label: t("accounts.oauthProxyUrl"),
+                      placeholder: t("accounts.oauthProxyUrlPlaceholder"),
+                      onChange: setOauthProxyUrl,
+                    })}
                   </>
                 ) : (
                   <>
@@ -4875,21 +4937,15 @@ export default function Accounts() {
                         })}
                       </p>
                     </div>
-                    <div>
-                      <label className="block mb-2 text-sm font-semibold text-muted-foreground">
-                        {t("accounts.proxyUrl")}
-                      </label>
-                      <Input
-                        placeholder={t("accounts.proxyUrlPlaceholder")}
-                        value={editOpenAIForm.proxy_url}
-                        onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                          setEditOpenAIForm((form) => ({
-                            ...form,
-                            proxy_url: event.target.value,
-                          }))
-                        }
-                      />
-                    </div>
+                    {renderProxyInput({
+                      value: editOpenAIForm.proxy_url,
+                      testKey: "edit-openai-responses",
+                      onChange: (value) =>
+                        setEditOpenAIForm((form) => ({
+                          ...form,
+                          proxy_url: value,
+                        })),
+                    })}
                   </div>
                 ) : (
                   <>
@@ -5105,18 +5161,11 @@ export default function Accounts() {
                     </div>
 
                     <div className="rounded-xl border border-border p-4">
-                      <div className="text-sm font-semibold text-foreground">
-                        {t("accounts.proxyUrl")}
-                      </div>
-                      <div className="mt-3">
-                        <Input
-                          placeholder={t("accounts.proxyUrlPlaceholder")}
-                          value={editProxyUrl}
-                          onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                            setEditProxyUrl(event.target.value)
-                          }
-                        />
-                      </div>
+                      {renderProxyInput({
+                        value: editProxyUrl,
+                        testKey: "edit-account-proxy",
+                        onChange: setEditProxyUrl,
+                      })}
                     </div>
 
                     <div className="grid gap-4 md:grid-cols-2">
@@ -6061,6 +6110,24 @@ function isActiveUsageWindowExhausted(
   return isUsageWindowExhausted(value) && (!resetAt || isFutureTime(resetAt));
 }
 
+function isActiveAutoPauseWindowReached(
+  value?: number | null,
+  threshold?: number | null,
+  disabled?: boolean,
+  resetAt?: string,
+): boolean {
+  if (disabled || typeof threshold !== "number" || threshold <= 0) {
+    return false;
+  }
+  if (typeof value !== "number") {
+    return false;
+  }
+  if (resetAt && !isFutureTime(resetAt)) {
+    return false;
+  }
+  return value / 100 >= threshold;
+}
+
 function isPremiumUsagePlan(planType?: string): boolean {
   return ["plus", "pro", "team", "teamplus"].includes(
     normalizePlanType(planType),
@@ -6081,6 +6148,7 @@ function getAccountRateLimitWindow(
   const explicitlyRateLimited =
     status === "rate_limited" ||
     status === "usage_exhausted" ||
+    status === "quota_paused" ||
     status === "rate_limited_5h" ||
     status === "rate_limited_7d" ||
     reason === "rate_limited" ||
@@ -6093,6 +6161,18 @@ function getAccountRateLimitWindow(
   const has5hLimit =
     isPremiumUsagePlan(account.plan_type) &&
     isActiveUsageWindowExhausted(account.usage_percent_5h, account.reset_5h_at);
+  const has5hAutoPause = isActiveAutoPauseWindowReached(
+    account.usage_percent_5h,
+    account.auto_pause_5h_threshold,
+    account.auto_pause_5h_disabled,
+    account.reset_5h_at,
+  );
+  const has7dAutoPause = isActiveAutoPauseWindowReached(
+    account.usage_percent_7d,
+    account.auto_pause_7d_threshold,
+    account.auto_pause_7d_disabled,
+    account.reset_7d_at,
+  );
 
   // Prefer the longer 7d window when both windows are exhausted so each account
   // belongs to exactly one bucket and 5h + 7d stays equal to total limited.
@@ -6100,7 +6180,8 @@ function getAccountRateLimitWindow(
     status === "usage_exhausted" ||
     status === "rate_limited_7d" ||
     reason === "rate_limited_7d" ||
-    has7dLimit
+    has7dLimit ||
+    has7dAutoPause
   ) {
     return "7d";
   }
@@ -6108,7 +6189,8 @@ function getAccountRateLimitWindow(
   if (
     status === "rate_limited_5h" ||
     reason === "rate_limited_5h" ||
-    has5hLimit
+    has5hLimit ||
+    has5hAutoPause
   ) {
     return "5h";
   }
@@ -7639,13 +7721,22 @@ function TestConnectionModal({
   );
 }
 
-// 格式化重置时间为具体时间
-function formatResetAt(resetAt: string | undefined): string | null {
+interface ResetTimeLabel {
+  label: string;
+  title: string;
+}
+
+// 格式化重置时间为具体时间，列表显示到秒，tooltip 保留完整日期。
+function formatResetAt(resetAt: string | undefined): ResetTimeLabel | null {
   if (!resetAt) return null;
   const d = new Date(resetAt);
-  if (d.getTime() <= Date.now()) return null;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (Number.isNaN(d.getTime()) || d.getTime() <= Date.now()) return null;
+  const full = formatBeijingTime(resetAt, "");
+  if (!full) return null;
+  return {
+    label: full.slice(5),
+    title: full,
+  };
 }
 
 function formatCompactUsageNumber(value?: number): string {
@@ -7681,7 +7772,7 @@ function UsageBar({
   resetAt?: string;
   detail?: AccountRow["usage_5h_detail"];
 }) {
-  const resetText = formatResetAt(resetAt);
+  const resetTime = formatResetAt(resetAt);
   const { t } = useTranslation();
   const detailText = hasUsageWindowDetail(detail)
     ? `${formatCompactUsageNumber(detail?.requests)} ${t("accounts.usageReqUnit")} / ${formatCompactUsageNumber(detail?.tokens)} ${t("accounts.usageTokUnit")}`
@@ -7707,9 +7798,12 @@ function UsageBar({
           {detailText}
         </div>
       )}
-      {resetText && (
-        <div className="text-[11px] font-medium text-muted-foreground mt-0.5 pl-[26px]">
-          ⏱ {resetText}
+      {resetTime && (
+        <div
+          className="text-[11px] font-medium text-muted-foreground mt-0.5 pl-[26px]"
+          title={resetTime.title}
+        >
+          ⏱ {resetTime.label}
         </div>
       )}
     </div>
@@ -7862,6 +7956,15 @@ function getAccountStatusCountdownUntil(
   ) {
     return account.cooldown_until;
   }
+  if (status === "quota_paused") {
+    const window = getAccountRateLimitWindow(account);
+    if (window === "7d") {
+      return account.reset_7d_at;
+    }
+    if (window === "5h") {
+      return account.reset_5h_at;
+    }
+  }
   if (status === "usage_exhausted") {
     return account.reset_7d_at;
   }
@@ -7877,6 +7980,7 @@ function AccountStatusCountdown({ account }: { account: AccountRow }) {
 // 冷却倒计时组件
 function CooldownTimer({ until }: { until: string }) {
   const [remaining, setRemaining] = useState("");
+  const title = formatBeijingTime(until);
 
   useEffect(() => {
     const target = new Date(until).getTime();
@@ -7908,7 +8012,10 @@ function CooldownTimer({ until }: { until: string }) {
 
   if (!remaining) return null;
   return (
-    <span className="inline-flex h-6 min-w-[112px] shrink-0 items-center justify-center gap-1.5 rounded-full bg-amber-50 px-2 text-[11px] font-mono leading-none tabular-nums text-amber-700 ring-1 ring-inset ring-amber-200/70 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-400/20">
+    <span
+      className="inline-flex h-6 min-w-[112px] shrink-0 items-center justify-center gap-1.5 rounded-full bg-amber-50 px-2 text-[11px] font-mono leading-none tabular-nums text-amber-700 ring-1 ring-inset ring-amber-200/70 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-400/20"
+      title={title}
+    >
       <Hourglass className="size-3 shrink-0" aria-hidden="true" />
       {remaining}
     </span>

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,18 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
 )
+
+type errReadCloser struct {
+	err error
+}
+
+func (r errReadCloser) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+func (r errReadCloser) Close() error {
+	return nil
+}
 
 func TestSupportedModelsIncludeLatestRequestedModels(t *testing.T) {
 	for _, model := range []string{"gpt-5.5", "gpt-5.3-codex-spark", "gpt-5.2", "gpt-image-2", "gpt-image-2-2k", "gpt-image-2-4k"} {
@@ -429,6 +442,154 @@ func TestResponsesWebSocketRetriesFirstTokenTimeoutBeforeRelay(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("timed out waiting for attempt account %d", want)
 		}
+	}
+}
+
+func TestResponsesWebSocketFallsBackToHTTPWhenUpstreamMessageTooBig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousExec := WebsocketExecuteFunc
+	previousResin := resinCfg.Load()
+	t.Cleanup(func() {
+		WebsocketExecuteFunc = previousExec
+		resinCfg.Store(previousResin)
+	})
+
+	wsCalls := 0
+	WebsocketExecuteFunc = func(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header) (*http.Response, error) {
+		wsCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       errReadCloser{err: errors.New("websocket read error: websocket: close 1009 (message too big)")},
+		}, nil
+	}
+
+	httpCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls++
+		if !strings.HasSuffix(r.URL.Path, "/backend-api/codex/responses") {
+			t.Fatalf("upstream path = %q, want Resin path ending /backend-api/codex/responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			`data: {"type":"response.output_text.delta","delta":"http-fallback"}` + "\n\n" +
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"service_tier":"default"}}` + "\n\n",
+		))
+	}))
+	defer upstream.Close()
+	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"})
+	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
+
+	router := gin.New()
+	handler.RegisterRoutes(router)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		if resp != nil {
+			t.Fatalf("dial websocket failed: %v status=%d", err, resp.StatusCode)
+		}
+		t.Fatalf("dial websocket failed: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, first, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read fallback event: %v", err)
+	}
+	if delta := gjson.GetBytes(first, "delta").String(); delta != "http-fallback" {
+		t.Fatalf("fallback delta = %q, want http-fallback; body=%s", delta, first)
+	}
+	_, second, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read terminal event: %v", err)
+	}
+	if eventType := gjson.GetBytes(second, "type").String(); eventType != "response.completed" {
+		t.Fatalf("terminal event type = %q body=%s", eventType, second)
+	}
+	if wsCalls != 1 {
+		t.Fatalf("websocket upstream calls = %d, want 1", wsCalls)
+	}
+	if httpCalls != 1 {
+		t.Fatalf("HTTP upstream calls = %d, want 1", httpCalls)
+	}
+}
+
+func TestResponsesHTTPIngressFallsBackToHTTPWhenForcedWebsocketMessageTooBig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousExec := WebsocketExecuteFunc
+	previousSettings := CurrentRuntimeSettings()
+	previousResin := resinCfg.Load()
+	t.Cleanup(func() {
+		WebsocketExecuteFunc = previousExec
+		ApplyRuntimeSettings(previousSettings)
+		resinCfg.Store(previousResin)
+	})
+	nextSettings := previousSettings
+	nextSettings.CodexForceWebsocket = true
+	ApplyRuntimeSettings(nextSettings)
+
+	wsCalls := 0
+	WebsocketExecuteFunc = func(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header) (*http.Response, error) {
+		wsCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       errReadCloser{err: errors.New("websocket read error: websocket: close 1009 (message too big)")},
+		}, nil
+	}
+
+	httpCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls++
+		if !strings.HasSuffix(r.URL.Path, "/backend-api/codex/responses") {
+			t.Fatalf("upstream path = %q, want Resin path ending /backend-api/codex/responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			`data: {"type":"response.output_text.delta","delta":"http-fallback"}` + "\n\n" +
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"service_tier":"default"}}` + "\n\n",
+		))
+	}))
+	defer upstream.Close()
+	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	store.AddAccount(&auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"})
+	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
+
+	body := []byte(`{"model":"gpt-5.4","input":"hello","stream":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = req
+
+	handler.Responses(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "http-fallback") {
+		t.Fatalf("response should come from HTTP fallback, body=%s", recorder.Body.String())
+	}
+	if wsCalls != 1 {
+		t.Fatalf("websocket upstream calls = %d, want 1", wsCalls)
+	}
+	if httpCalls != 1 {
+		t.Fatalf("HTTP upstream calls = %d, want 1", httpCalls)
 	}
 }
 

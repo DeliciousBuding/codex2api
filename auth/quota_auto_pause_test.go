@@ -25,8 +25,8 @@ func TestQuotaAutoPause5hThresholdFencesAccount(t *testing.T) {
 	if acc.IsAvailable() {
 		t.Fatal("IsAvailable() = true, want false after 5h auto-pause threshold is reached")
 	}
-	if got := acc.RuntimeStatus(); got != "active" {
-		t.Fatalf("RuntimeStatus() = %q, want active because auto-pause is scheduling-only", got)
+	if got := acc.RuntimeStatus(); got != "quota_paused" {
+		t.Fatalf("RuntimeStatus() = %q, want quota_paused after auto-pause threshold is reached", got)
 	}
 	_, _, _, _, available := acc.fastSchedulerSnapshot(4, time.Now())
 	if available {
@@ -49,6 +49,9 @@ func TestQuotaAutoPauseIgnoresBelowThresholdAndDisabledWindow(t *testing.T) {
 	acc.AutoPause5hDisabled = true
 	if !acc.IsAvailable() {
 		t.Fatal("IsAvailable() = false, want true when 5h auto-pause is disabled")
+	}
+	if got := acc.RuntimeStatus(); got != "active" {
+		t.Fatalf("RuntimeStatus() = %q, want active when 5h auto-pause is disabled", got)
 	}
 }
 

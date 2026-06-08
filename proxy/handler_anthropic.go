@@ -138,6 +138,7 @@ func (h *Handler) Messages(c *gin.Context) {
 	var lastStatusCode int
 	var lastBody []byte
 	retryExclusions := newRetryAccountExclusions()
+	forceHTTPAfterWSMessageTooBig := false
 
 	var lastUpstreamCancel context.CancelFunc
 	defer func() {
@@ -160,7 +161,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)
-		useWebsocket := h.shouldUseWebsocketForHTTP()
+		useWebsocket := h.shouldUseWebsocketForHTTP() && !forceHTTPAfterWSMessageTooBig
 
 		apiKey := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 		apiKey = strings.TrimSpace(apiKey)
@@ -200,6 +201,13 @@ func (h *Handler) Messages(c *gin.Context) {
 				reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
 			}
 			kind := classifyTransportFailure(reqErr)
+			if useWebsocket && kind == upstreamErrorKindMessageTooBig {
+				log.Printf("上游 WebSocket 请求帧过大，自动降级 HTTP 重试 (attempt %d, account %d, /v1/messages): %v", attempt+1, account.ID(), reqErr)
+				forceHTTPAfterWSMessageTooBig = true
+				h.store.Release(account)
+				h.store.UnbindSessionAffinity(affinityKey, account.ID())
+				continue
+			}
 			retryable := IsRetryableError(reqErr) || kind != ""
 			shouldRetry := false
 			if retryable {
@@ -308,6 +316,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		var writeErr error
 		wroteAnyBody := false
 		var terminalFailurePayload []byte
+		var anthropicResp *anthropicResponse
 
 		if isStream {
 			// 流式响应：逐事件翻译为 Anthropic SSE
@@ -443,10 +452,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			})
 
 			if lastCompletedData != nil {
-				anthropicResp := accumulator.build(lastCompletedData)
-				c.JSON(http.StatusOK, anthropicResp)
-			} else {
-				sendAnthropicError(c, http.StatusBadGateway, "api_error", "No complete response received from upstream")
+				anthropicResp = accumulator.build(lastCompletedData)
 			}
 		}
 
@@ -466,6 +472,15 @@ func (h *Handler) Messages(c *gin.Context) {
 				outcome.failureKind = upstreamErrorKind(outcome.logStatusCode, responseFailedErrorBody(terminalFailurePayload), responseFailedDecision)
 			}
 		}
+		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, wroteAnyBody, c.Request.Context().Err(), writeErr) {
+			log.Printf("上游 WebSocket 消息过大，首包前自动降级 HTTP 重试 (attempt %d, account %d, /v1/messages): %s",
+				attempt+1, account.ID(), outcome.failureMessage)
+			forceHTTPAfterWSMessageTooBig = true
+			resp.Body.Close()
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
+			continue
+		}
 		if shouldTransparentRetryStream(outcome, attempt, maxRetries, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 			log.Printf("上游流在首包前断开，重试 (attempt %d/%d, account %d, /v1/messages): %s",
 				attempt+1, maxRetries+1, account.ID(), outcome.failureMessage)
@@ -482,6 +497,14 @@ func (h *Handler) Messages(c *gin.Context) {
 			h.store.Release(account)
 			h.store.UnbindSessionAffinity(affinityKey, account.ID())
 			continue
+		}
+
+		if !isStream {
+			if anthropicResp != nil {
+				c.JSON(http.StatusOK, anthropicResp)
+			} else {
+				sendAnthropicError(c, http.StatusBadGateway, "api_error", "No complete response received from upstream")
+			}
 		}
 
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)

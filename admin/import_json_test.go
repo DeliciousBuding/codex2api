@@ -152,6 +152,29 @@ func TestParseImportJSONTokensSupportsSub2APINumericExpiresAt(t *testing.T) {
 	}
 }
 
+func TestConflictingImportChatGPTIDs(t *testing.T) {
+	tokens := []importToken{
+		{chatgptAccountID: "shared", refreshToken: "rt-1"},
+		{chatgptAccountID: "shared", refreshToken: "rt-2"},
+		{chatgptAccountID: "stable", refreshToken: "rt-3"},
+		{chatgptAccountID: "stable", refreshToken: "rt-3"},
+	}
+
+	conflicts := conflictingImportChatGPTIDs(tokens)
+	if !conflicts["shared"] {
+		t.Fatal("shared chatgpt_account_id should be marked conflicting")
+	}
+	if conflicts["stable"] {
+		t.Fatal("stable chatgpt_account_id should not be marked conflicting")
+	}
+	if got := reliableImportChatGPTID(tokens[0], conflicts); got != "" {
+		t.Fatalf("reliableImportChatGPTID(shared) = %q, want empty", got)
+	}
+	if got := reliableImportChatGPTID(tokens[2], conflicts); got != "stable" {
+		t.Fatalf("reliableImportChatGPTID(stable) = %q, want stable", got)
+	}
+}
+
 func TestParseCredentialExpiresAtSupportsUnixSeconds(t *testing.T) {
 	got := parseCredentialExpiresAt("1779071020").UTC()
 	want := time.Unix(1779071020, 0).UTC()
@@ -362,6 +385,42 @@ func TestImportAccountsJSONRejectsInvalidJSONFile(t *testing.T) {
 	}
 	if got := payload["error"]; got != "文件 broken.json 不是有效的 JSON 格式" {
 		t.Fatalf("error = %q, want %q", got, "文件 broken.json 不是有效的 JSON 格式")
+	}
+}
+
+func TestImportAccountsCommonDoesNotCollapseConflictingChatGPTAccountID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	handler := &Handler{
+		db:    db,
+		store: store,
+		probeUsage: func(context.Context, *auth.Account) error {
+			return nil
+		},
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/import", nil)
+
+	handler.importAccountsCommon(ctx, []importToken{
+		{name: "sub2api-1", refreshToken: "rt-shared-id-1", accessToken: "at-shared-id-1", chatgptAccountID: "same-exported-id"},
+		{name: "sub2api-2", refreshToken: "rt-shared-id-2", accessToken: "at-shared-id-2", chatgptAccountID: "same-exported-id"},
+	}, "")
+
+	rows, err := db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("active rows = %d, want 2", len(rows))
+	}
+	for _, row := range rows {
+		if got := row.GetCredential("account_id"); got != "" {
+			t.Fatalf("account_id = %q, want empty for conflicting chatgpt_account_id", got)
+		}
 	}
 }
 
