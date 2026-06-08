@@ -1,12 +1,17 @@
 package proxy
 
 import (
+	"context"
 	"encoding/base64"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
@@ -330,5 +335,72 @@ func TestCollectImagesResponseUsesUpstreamFailureMessage(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "server_error") || !strings.Contains(got, "req-123") {
 		t.Fatalf("error = %q, want upstream code and request id", got)
+	}
+}
+
+func TestStartImageStreamKeepaliveStopsWhenWriterFails(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	writes := 0
+	wrote := make(chan struct{}, 1)
+	stop := startImageStreamKeepalive(ctx, time.Millisecond, func() bool {
+		mu.Lock()
+		writes++
+		mu.Unlock()
+		select {
+		case wrote <- struct{}{}:
+		default:
+		}
+		return false
+	})
+	defer stop()
+
+	select {
+	case <-wrote:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("keepalive did not write")
+	}
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	finalWrites := writes
+	mu.Unlock()
+	if finalWrites != 1 {
+		t.Fatalf("keepalive kept writing after writer failure: got %d writes, want 1", finalWrites)
+	}
+}
+
+func TestStreamImagesResponseSendsConnectedComment(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := `data: {"type":"response.completed","response":{"created_at":1710000000,"usage":{"input_tokens":5,"output_tokens":9},"tool_usage":{"image_gen":{"images":1,"input_tokens":34,"output_tokens":1756}},"tools":[{"type":"image_generation","model":"gpt-image-2","output_format":"png","quality":"high","size":"1024x1024"}],"output":[{"type":"image_generation_call","result":"` + tinyPNGBase64 + `","revised_prompt":"draw a cat","output_format":"png"}]}}` + "\n\n"
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest("POST", "/v1/images/generations", nil)
+	handler := &Handler{}
+
+	usage, imageCount, _, imageLogInfo, err := handler.streamImagesResponse(c, strings.NewReader(upstream), "b64_json", "image_generation", "gpt-image-2", time.Now())
+
+	if err != nil {
+		t.Fatalf("streamImagesResponse returned error: %v", err)
+	}
+	if imageCount != 1 {
+		t.Fatalf("imageCount = %d, want 1", imageCount)
+	}
+	if usage == nil || usage.InputTokens != 34 || usage.OutputTokens != 1756 {
+		t.Fatalf("usage = %#v, want image usage input=34 output=1756", usage)
+	}
+	if imageLogInfo.Count != 1 || imageLogInfo.Width != 1 || imageLogInfo.Height != 1 {
+		t.Fatalf("imageLogInfo = %#v, want one 1x1 image", imageLogInfo)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+	body := recorder.Body.String()
+	if !strings.HasPrefix(body, imageStreamConnectedComment) {
+		t.Fatalf("stream body should start with connected comment, got %q", body)
+	}
+	if !strings.Contains(body, "event: image_generation.completed\n") {
+		t.Fatalf("stream body missing completed event: %q", body)
 	}
 }

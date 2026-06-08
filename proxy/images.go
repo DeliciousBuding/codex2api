@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codex2api/auth"
@@ -50,7 +52,12 @@ const (
 
 	// MaxImageEditInputCount caps the number of input images for edit requests.
 	MaxImageEditInputCount = 10
+
+	imageStreamConnectedComment = ": connected\n\n"
+	imageStreamKeepaliveComment = ": keepalive\n\n"
 )
+
+var imageStreamKeepaliveInterval = 15 * time.Second
 
 type imageCallResult struct {
 	Result        string
@@ -1322,6 +1329,51 @@ func (h *Handler) streamImagesResponse(c *gin.Context, body io.Reader, responseF
 		readErr        error
 	)
 	streamWriter := newStreamFlushWriter(c.Writer, flusher)
+	var (
+		writeMu   sync.Mutex
+		closeOnce sync.Once
+	)
+	closeUpstream := func() {
+		if closer, ok := body.(io.Closer); ok {
+			closeOnce.Do(func() {
+				_ = closer.Close()
+			})
+		}
+	}
+	getReadErr := func() error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return readErr
+	}
+	setReadErr := func(err error) {
+		if err == nil {
+			return
+		}
+		writeMu.Lock()
+		if readErr == nil {
+			readErr = err
+		}
+		writeMu.Unlock()
+	}
+	writeRaw := func(data string, forceFlush bool) error {
+		var err error
+		writeMu.Lock()
+		if readErr == nil {
+			if err = streamWriter.WriteString(data); err == nil && forceFlush {
+				err = streamWriter.Flush()
+			}
+			if err != nil && readErr == nil {
+				readErr = err
+			}
+		} else {
+			err = readErr
+		}
+		writeMu.Unlock()
+		if err != nil {
+			closeUpstream()
+		}
+		return err
+	}
 	writeEvent := func(eventName string, payload []byte) {
 		var builder strings.Builder
 		if strings.TrimSpace(eventName) != "" {
@@ -1332,13 +1384,18 @@ func (h *Handler) streamImagesResponse(c *gin.Context, body io.Reader, responseF
 		builder.WriteString("data: ")
 		builder.Write(payload)
 		builder.WriteString("\n\n")
-		if err := streamWriter.WriteString(builder.String()); err != nil && readErr == nil {
-			readErr = err
-		}
+		_ = writeRaw(builder.String(), true)
 	}
+	if err := writeRaw(imageStreamConnectedComment, true); err != nil {
+		return nil, 0, 0, imageUsageLogInfo{}, err
+	}
+	stopKeepalive := startImageStreamKeepalive(c.Request.Context(), imageStreamKeepaliveInterval, func() bool {
+		return writeRaw(imageStreamKeepaliveComment, true) == nil
+	})
+	defer stopKeepalive()
 
 	err := ReadSSEStream(body, func(data []byte) bool {
-		if readErr != nil {
+		if getReadErr() != nil {
 			return false
 		}
 		if firstTokenMs == 0 {
@@ -1371,8 +1428,8 @@ func (h *Handler) streamImagesResponse(c *gin.Context, body io.Reader, responseF
 		case "response.completed":
 			results, completedAt, usageRaw, firstMeta, completedUsage, err := extractImagesFromResponsesCompleted(data, fallbackModel)
 			if err != nil {
-				readErr = err
 				writeEvent("error", buildImagesStreamErrorPayload(err.Error()))
+				setReadErr(err)
 				return false
 			}
 			if completedUsage != nil {
@@ -1386,8 +1443,9 @@ func (h *Handler) streamImagesResponse(c *gin.Context, body io.Reader, responseF
 				results = pendingResults
 			}
 			if len(results) == 0 {
-				readErr = fmt.Errorf("upstream did not return image output")
-				writeEvent("error", buildImagesStreamErrorPayload(readErr.Error()))
+				err := fmt.Errorf("upstream did not return image output")
+				writeEvent("error", buildImagesStreamErrorPayload(err.Error()))
+				setReadErr(err)
 				return false
 			}
 			eventName := streamPrefix + ".completed"
@@ -1399,23 +1457,29 @@ func (h *Handler) streamImagesResponse(c *gin.Context, body io.Reader, responseF
 			}
 			return false
 		case "error":
-			readErr = imageGenerationFailureError(data)
-			writeEvent("error", buildImagesStreamErrorPayload(readErr.Error()))
+			err := imageGenerationFailureError(data)
+			writeEvent("error", buildImagesStreamErrorPayload(err.Error()))
+			setReadErr(err)
 			return false
 		case "response.failed":
-			readErr = imageGenerationFailureError(data)
-			writeEvent("error", buildImagesStreamErrorPayload(readErr.Error()))
+			err := imageGenerationFailureError(data)
+			writeEvent("error", buildImagesStreamErrorPayload(err.Error()))
+			setReadErr(err)
 			return false
 		}
 		return true
 	})
+	stopKeepalive()
 	if err != nil {
+		if streamErr := getReadErr(); streamErr != nil {
+			return usage, imageCount, firstTokenMs, imageLogInfo, streamErr
+		}
 		return usage, imageCount, firstTokenMs, imageLogInfo, err
 	}
-	if readErr == nil {
-		readErr = streamWriter.Flush()
+	if getReadErr() == nil {
+		_ = writeRaw("", true)
 	}
-	if imageCount == 0 && len(pendingResults) > 0 && readErr == nil {
+	if imageCount == 0 && len(pendingResults) > 0 && getReadErr() == nil {
 		eventName := streamPrefix + ".completed"
 		for _, image := range pendingResults {
 			mergeImageMeta(&image, streamMeta)
@@ -1424,11 +1488,44 @@ func (h *Handler) streamImagesResponse(c *gin.Context, body io.Reader, responseF
 			imageCount++
 		}
 	}
-	if imageCount == 0 && readErr == nil {
-		readErr = fmt.Errorf("stream disconnected before image generation completed")
-		writeEvent("error", buildImagesStreamErrorPayload(readErr.Error()))
+	if imageCount == 0 && getReadErr() == nil {
+		err := fmt.Errorf("stream disconnected before image generation completed")
+		writeEvent("error", buildImagesStreamErrorPayload(err.Error()))
+		setReadErr(err)
 	}
-	return usage, imageCount, firstTokenMs, imageLogInfo, readErr
+	return usage, imageCount, firstTokenMs, imageLogInfo, getReadErr()
+}
+
+func startImageStreamKeepalive(ctx context.Context, interval time.Duration, writeKeepalive func() bool) func() {
+	if interval <= 0 || writeKeepalive == nil {
+		return func() {}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	done := make(chan struct{})
+	var stopOnce sync.Once
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if !writeKeepalive() {
+					return
+				}
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		stopOnce.Do(func() {
+			close(done)
+		})
+	}
 }
 
 func imageGenerationFailureError(payload []byte) error {
