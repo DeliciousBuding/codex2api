@@ -852,6 +852,7 @@ export interface APIKeyTokenStat {
 export interface UsageLog {
   id: number
   account_id: number
+  client_ip: string
   endpoint: string
   model: string
   effective_model: string

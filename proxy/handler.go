@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -538,8 +539,26 @@ func populateAPIKeyMetaFromContext(c *gin.Context, input *database.UsageLogInput
 
 func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInput) {
 	populateAPIKeyMetaFromContext(c, input)
+	populateClientIPFromRequest(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
 	h.logUsage(input)
+}
+
+func populateClientIPFromRequest(c *gin.Context, input *database.UsageLogInput) {
+	if c == nil || input == nil || strings.TrimSpace(input.ClientIP) != "" {
+		return
+	}
+	clientIP := strings.TrimSpace(c.ClientIP())
+	if clientIP == "" && c.Request != nil {
+		clientIP = strings.TrimSpace(c.Request.RemoteAddr)
+		if host, _, err := net.SplitHostPort(clientIP); err == nil {
+			clientIP = host
+		}
+	}
+	if len(clientIP) > 64 {
+		clientIP = clientIP[:64]
+	}
+	input.ClientIP = clientIP
 }
 
 func populateCompactUsageMetaFromRequest(c *gin.Context, input *database.UsageLogInput) {

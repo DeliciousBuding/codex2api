@@ -981,6 +981,28 @@ func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 	})
 }
 
+func TestPopulateClientIPFromRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.RemoteAddr = "203.0.113.42:53124"
+	ctx.Request = req
+	input := &database.UsageLogInput{}
+
+	populateClientIPFromRequest(ctx, input)
+
+	if input.ClientIP != "203.0.113.42" {
+		t.Fatalf("ClientIP = %q, want 203.0.113.42", input.ClientIP)
+	}
+
+	input.ClientIP = "198.51.100.9"
+	populateClientIPFromRequest(ctx, input)
+	if input.ClientIP != "198.51.100.9" {
+		t.Fatalf("existing ClientIP was overwritten: %q", input.ClientIP)
+	}
+}
+
 func TestResponsesEndpointsAllowGPT55MaxOutputTokens128K(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

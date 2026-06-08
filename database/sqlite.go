@@ -106,6 +106,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS usage_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			account_id INTEGER DEFAULT 0,
+			client_ip TEXT DEFAULT '',
 			endpoint TEXT DEFAULT '',
 			model TEXT DEFAULT '',
 			prompt_tokens INTEGER DEFAULT 0,
@@ -359,6 +360,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"usage_logs", "api_key_id", "INTEGER DEFAULT 0"},
 		{"usage_logs", "api_key_name", "TEXT DEFAULT ''"},
 		{"usage_logs", "api_key_masked", "TEXT DEFAULT ''"},
+		{"usage_logs", "client_ip", "TEXT DEFAULT ''"},
 		{"usage_logs", "image_count", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_width", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_height", "INTEGER DEFAULT 0"},
