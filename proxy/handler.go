@@ -118,6 +118,7 @@ type usageLimitDetails struct {
 type CodexUsageSyncResult struct {
 	UsagePct7d           float64
 	HasUsage7d           bool
+	Usage7dRateLimited   bool
 	UsagePct5h           float64
 	Reset5hAt            time.Time
 	HasUsage5h           bool
@@ -3649,6 +3650,9 @@ func SyncCodexUsageState(store *auth.Store, account *auth.Account, resp *http.Re
 	if store != nil {
 		if result.HasUsage7d {
 			store.PersistUsageSnapshot(account, result.UsagePct7d)
+			if result.UsagePct7d >= 100 {
+				result.Usage7dRateLimited = store.MarkUsage7dRateLimited(account)
+			}
 		} else if result.Used5hHeaders {
 			store.PersistUsageSnapshot5hOnly(account)
 			result.Persisted5hOnly = true

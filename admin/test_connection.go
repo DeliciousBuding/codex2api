@@ -253,22 +253,21 @@ func formatUsageLimitedTestError(state proxy.CodexUsageSyncResult) (string, bool
 	return "", false
 }
 
-func applyUsageLimitedTestState(store *auth.Store, account *auth.Account, state proxy.CodexUsageSyncResult) {
+func applyUsageLimitedAccountState(store *auth.Store, account *auth.Account, state proxy.CodexUsageSyncResult) bool {
 	if store == nil || account == nil {
-		return
+		return false
+	}
+	if state.Premium5hRateLimited || state.Usage7dRateLimited {
+		return true
 	}
 	if state.HasUsage7d && state.UsagePct7d >= 100 {
-		if account.IsBanned() {
-			return
-		}
-		duration := 7 * 24 * time.Hour
-		if resetAt := account.GetReset7dAt(); !resetAt.IsZero() {
-			if untilReset := time.Until(resetAt); untilReset > 0 {
-				duration = untilReset
-			}
-		}
-		store.MarkCooldown(account, duration, "rate_limited")
+		return store.MarkUsage7dRateLimited(account)
 	}
+	return false
+}
+
+func applyUsageLimitedTestState(store *auth.Store, account *auth.Account, state proxy.CodexUsageSyncResult) {
+	applyUsageLimitedAccountState(store, account, state)
 }
 
 // sendTestEvent 发送 SSE 事件

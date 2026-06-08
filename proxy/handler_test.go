@@ -1795,6 +1795,49 @@ func TestSyncCodexUsageStateTriggersPremium5hLimitWith5hHeadersOnly(t *testing.T
 	}
 }
 
+func TestSyncCodexUsageStateMarks7dUsageLimited(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+	db, err := database.New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("database.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	id, err := db.InsertAccountWithCredentials(ctx, "limited-7d", map[string]interface{}{
+		"plan_type": "team",
+	}, "")
+	if err != nil {
+		t.Fatalf("InsertAccountWithCredentials returned error: %v", err)
+	}
+
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{DBID: id, AccessToken: "at", PlanType: "team", Status: auth.StatusReady, HealthTier: auth.HealthTierHealthy}
+	resp := &http.Response{Header: make(http.Header)}
+	resp.Header.Set("x-codex-primary-used-percent", "20")
+	resp.Header.Set("x-codex-primary-window-minutes", "300")
+	resp.Header.Set("x-codex-primary-reset-after-seconds", "1200")
+	resp.Header.Set("x-codex-secondary-used-percent", "100")
+	resp.Header.Set("x-codex-secondary-window-minutes", "10080")
+	resp.Header.Set("x-codex-secondary-reset-after-seconds", "3600")
+
+	result := SyncCodexUsageState(store, account, resp)
+
+	if !result.Usage7dRateLimited {
+		t.Fatalf("Usage7dRateLimited = false, result=%+v", result)
+	}
+	if got := account.RuntimeStatus(); got != "rate_limited" {
+		t.Fatalf("RuntimeStatus() = %q, want rate_limited", got)
+	}
+	row, err := db.GetAccountByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetAccountByID returned error: %v", err)
+	}
+	if row.CooldownReason != "rate_limited" || !row.CooldownUntil.Valid {
+		t.Fatalf("persisted cooldown = (%q, %v), want active rate_limited", row.CooldownReason, row.CooldownUntil)
+	}
+}
+
 func TestAuthMiddlewareSetsAPIKeyContext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

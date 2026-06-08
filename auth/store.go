@@ -1101,6 +1101,32 @@ func (a *Account) GetUsagePercent7d() (float64, bool) {
 	return a.UsagePercent7d, a.UsagePercent7dValid
 }
 
+// MarkUsage7dRateLimited marks an account as rate-limited when its active 7d
+// usage window is exhausted. A future reset time is preferred; missing reset
+// metadata falls back to a full 7d cooldown, while stale reset times are ignored.
+func (s *Store) MarkUsage7dRateLimited(acc *Account) bool {
+	if s == nil || acc == nil || acc.IsBanned() {
+		return false
+	}
+
+	pct, ok := acc.GetUsagePercent7d()
+	if !ok || pct < 100 {
+		return false
+	}
+
+	duration := 7 * 24 * time.Hour
+	if resetAt := acc.GetReset7dAt(); !resetAt.IsZero() {
+		untilReset := time.Until(resetAt)
+		if untilReset <= 0 {
+			return false
+		}
+		duration = untilReset
+	}
+
+	s.MarkCooldown(acc, duration, "rate_limited")
+	return true
+}
+
 // usagePercentForScheduling 返回调度排序用的用量百分比（7d 窗口有效则返回，否则 0）。
 func (a *Account) usagePercentForScheduling() float64 {
 	a.mu.RLock()

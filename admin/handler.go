@@ -166,6 +166,15 @@ func (h *Handler) triggerImportedAccountUsageProbe(accountID int64, source strin
 	go h.probeImportedAccountUsage(context.Background(), accountID, source)
 }
 
+func (h *Handler) applyImportedAccountUsageState(account *auth.Account, source string) {
+	if h == nil || h.store == nil || account == nil {
+		return
+	}
+	if h.store.MarkUsage7dRateLimited(account) {
+		log.Printf("导入账号 %d 已按 7d 用量耗尽标记限流 (%s)", account.DBID, source)
+	}
+}
+
 func (h *Handler) refreshImportedAccountAndProbe(accountID int64, source string) {
 	refreshCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	err := h.refreshAccountByID(refreshCtx, accountID)
@@ -2783,6 +2792,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 					credCancel()
 				}
 				h.store.AddAccount(newAcc)
+				h.applyImportedAccountUsageState(newAcc, "import_at")
 				if newAcc.GetAccessToken() != "" {
 					h.triggerImportedAccountUsageProbe(id, "import_at")
 				}
@@ -2851,6 +2861,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				}
 				newAcc := accountFromCredentialSeed(id, proxyURL, seed)
 				h.store.AddAccount(newAcc)
+				h.applyImportedAccountUsageState(newAcc, "import")
 
 				if newAcc.GetAccessToken() != "" {
 					h.triggerImportedAccountUsageProbe(id, "import")

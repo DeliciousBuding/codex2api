@@ -458,6 +458,54 @@ func TestImportAccountsCommonTriggersUsageProbeForImportedAccountWithAccessToken
 	}
 }
 
+func TestImportAccountsCommonMarksImported7dUsageAsRateLimited(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	handler := &Handler{
+		db:    db,
+		store: store,
+		probeUsage: func(context.Context, *auth.Account) error {
+			return nil
+		},
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/accounts/import", nil)
+
+	resetAt := time.Now().Add(6 * time.Hour).UTC().Truncate(time.Second)
+	handler.importAccountsCommon(ctx, []importToken{{
+		refreshToken:       "rt-import-limited",
+		accessToken:        "at-import-limited",
+		planType:           "team",
+		codex7DUsedPercent: "100",
+		codex7DResetAt:     resetAt.Format(time.RFC3339),
+	}}, "")
+
+	accounts := store.Accounts()
+	if len(accounts) != 1 {
+		t.Fatalf("store accounts = %d, want 1", len(accounts))
+	}
+	account := accounts[0]
+	if got := account.RuntimeStatus(); got != "rate_limited" {
+		t.Fatalf("RuntimeStatus() = %q, want rate_limited", got)
+	}
+	reason, until := account.GetCooldownSnapshot()
+	if reason != "rate_limited" || !until.After(time.Now()) {
+		t.Fatalf("cooldown = (%q, %s), want active rate_limited", reason, until)
+	}
+
+	row, err := db.GetAccountByID(context.Background(), account.DBID)
+	if err != nil {
+		t.Fatalf("GetAccountByID: %v", err)
+	}
+	if row.CooldownReason != "rate_limited" || !row.CooldownUntil.Valid {
+		t.Fatalf("persisted cooldown = (%q, %v), want active rate_limited", row.CooldownReason, row.CooldownUntil)
+	}
+}
+
 func TestImportAccountsCommonRefreshesAndProbesRTOnlyImport(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
