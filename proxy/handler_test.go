@@ -900,6 +900,135 @@ func TestResponsesCompactUsesOpenAIResponsesAPIAccount(t *testing.T) {
 	}
 }
 
+// newOpenAIResponsesSSEUpstream 模拟仅支持 OpenAI Responses API 的中转上游，
+// 返回一段最小可用的 Responses SSE 流（issue #181 回归用）。
+func newOpenAIResponsesSSEUpstream(seenPath *string, seenAuth *string, seenBody *[]byte) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seenPath = r.URL.Path
+		*seenAuth = r.Header.Get("Authorization")
+		*seenBody, _ = io.ReadAll(r.Body)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		events := []string{
+			`{"type":"response.created","response":{"id":"resp_relay_test"}}`,
+			`{"type":"response.output_item.added","item":{"type":"message"}}`,
+			`{"type":"response.output_text.delta","delta":"OK"}`,
+			`{"type":"response.output_text.done"}`,
+			`{"type":"response.completed","response":{"id":"resp_relay_test","status":"completed","usage":{"input_tokens":10,"output_tokens":2}}}`,
+		}
+		for _, event := range events {
+			_, _ = io.WriteString(w, "data: "+event+"\n\n")
+		}
+	}))
+}
+
+func newOpenAIResponsesRelayStore(upstreamURL string) *auth.Store {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{
+		MaxConcurrency:      2,
+		MaxRetries:          0,
+		MaxRateLimitRetries: 0,
+	})
+	store.AddAccount(&auth.Account{
+		DBID:         1,
+		UpstreamType: auth.UpstreamOpenAIResponses,
+		BaseURL:      upstreamURL,
+		APIKey:       "sk-direct",
+		Models:       []string{"gpt-4.1-direct"},
+		PlanType:     "api",
+	})
+	return store
+}
+
+func TestMessagesUsesOpenAIResponsesAPIAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var seenPath, seenAuth string
+	var seenBody []byte
+	upstream := newOpenAIResponsesSSEUpstream(&seenPath, &seenAuth, &seenBody)
+	defer upstream.Close()
+
+	handler := NewHandler(newOpenAIResponsesRelayStore(upstream.URL), nil, nil, nil)
+
+	body := []byte(`{
+		"model":"gpt-4.1-direct",
+		"max_tokens":128,
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = req
+
+	handler.Messages(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if seenPath != "/v1/responses" {
+		t.Fatalf("upstream path = %q, want /v1/responses", seenPath)
+	}
+	if seenAuth != "Bearer sk-direct" {
+		t.Fatalf("Authorization = %q, want Bearer sk-direct", seenAuth)
+	}
+	if model := gjson.GetBytes(seenBody, "model").String(); model != "gpt-4.1-direct" {
+		t.Fatalf("upstream model = %q, want gpt-4.1-direct; body=%s", model, seenBody)
+	}
+	if !gjson.GetBytes(seenBody, "stream").Bool() {
+		t.Fatalf("upstream body should request stream: %s", seenBody)
+	}
+	respBody := recorder.Body.Bytes()
+	if text := gjson.GetBytes(respBody, "content.0.text").String(); text != "OK" {
+		t.Fatalf("content text = %q, want OK; body=%s", text, respBody)
+	}
+	if got := gjson.GetBytes(respBody, "usage.input_tokens").Int(); got != 10 {
+		t.Fatalf("usage.input_tokens = %d, want 10; body=%s", got, respBody)
+	}
+}
+
+func TestChatCompletionsUsesOpenAIResponsesAPIAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var seenPath, seenAuth string
+	var seenBody []byte
+	upstream := newOpenAIResponsesSSEUpstream(&seenPath, &seenAuth, &seenBody)
+	defer upstream.Close()
+
+	handler := NewHandler(newOpenAIResponsesRelayStore(upstream.URL), nil, nil, nil)
+
+	body := []byte(`{
+		"model":"gpt-4.1-direct",
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = req
+
+	handler.ChatCompletions(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if seenPath != "/v1/responses" {
+		t.Fatalf("upstream path = %q, want /v1/responses", seenPath)
+	}
+	if seenAuth != "Bearer sk-direct" {
+		t.Fatalf("Authorization = %q, want Bearer sk-direct", seenAuth)
+	}
+	if model := gjson.GetBytes(seenBody, "model").String(); model != "gpt-4.1-direct" {
+		t.Fatalf("upstream model = %q, want gpt-4.1-direct; body=%s", model, seenBody)
+	}
+	respBody := recorder.Body.Bytes()
+	if content := gjson.GetBytes(respBody, "choices.0.message.content").String(); content != "OK" {
+		t.Fatalf("message content = %q, want OK; body=%s", content, respBody)
+	}
+	if got := gjson.GetBytes(respBody, "usage.prompt_tokens").Int(); got != 10 {
+		t.Fatalf("usage.prompt_tokens = %d, want 10; body=%s", got, respBody)
+	}
+}
+
 func TestPopulateCompactUsageMetaFromRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

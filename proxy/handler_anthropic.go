@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
 	"github.com/codex2api/security"
 	"github.com/gin-gonic/gin"
@@ -119,7 +120,10 @@ func (h *Handler) Messages(c *gin.Context) {
 	if h.enforceAPIKeyLimitsAndReply(c, effectiveModel) {
 		return
 	}
-	accountFilter := accountFilterForModel(effectiveModel)
+	// /v1/messages 同时允许官方 Codex OAuth 账号与中转（OpenAI Responses API）账号：
+	// 翻译后的请求体本身就是 Responses 形态，中转账号直接以 HTTP 转发，
+	// 使仅接入中转的用户也能使用 Claude Code（issue #181）。
+	accountFilter := accountFilterForResponsesModel(effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
 
 	// 提取 reasoning effort（从翻译后的 codex body 中）
@@ -161,7 +165,13 @@ func (h *Handler) Messages(c *gin.Context) {
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)
-		useWebsocket := h.shouldUseWebsocketForHTTP() && !forceHTTPAfterWSMessageTooBig
+		isRelayAccount := account.IsOpenAIResponsesAPI()
+		useWebsocket := h.shouldUseWebsocketForHTTP() && !forceHTTPAfterWSMessageTooBig && !isRelayAccount
+		upstreamEndpoint := "/v1/responses"
+		if isRelayAccount {
+			relayBaseURL, _ := account.OpenAIResponsesCredentials()
+			upstreamEndpoint = auth.OpenAIResponsesEndpoint(relayBaseURL, "/v1/responses")
+		}
 
 		apiKey := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 		apiKey = strings.TrimSpace(apiKey)
@@ -191,7 +201,13 @@ func (h *Handler) Messages(c *gin.Context) {
 		upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
 		lastUpstreamCancel = upstreamCancel
 		ttftGuard := newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
-		resp, reqErr := ExecuteRequest(upstreamCtx, account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
+		var resp *http.Response
+		var reqErr error
+		if isRelayAccount {
+			resp, reqErr = ExecuteOpenAIResponsesRequest(upstreamCtx, account, codexBody, proxyURL, downstreamHeaders)
+		} else {
+			resp, reqErr = ExecuteRequest(upstreamCtx, account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
+		}
 		durationMs := int(time.Since(start).Milliseconds())
 
 		if reqErr != nil {
@@ -269,7 +285,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				DurationMs:           durationMs,
 				ReasoningEffort:      reasoningEffort,
 				InboundEndpoint:      "/v1/messages",
-				UpstreamEndpoint:     "/v1/responses",
+				UpstreamEndpoint:     upstreamEndpoint,
 				Stream:               isStream,
 				ViaWebsocket:         useWebsocket,
 				ServiceTier:          usageTiers.ServiceTier,
@@ -539,7 +555,7 @@ func (h *Handler) Messages(c *gin.Context) {
 			FirstTokenMs:         firstTokenMs,
 			ReasoningEffort:      reasoningEffort,
 			InboundEndpoint:      "/v1/messages",
-			UpstreamEndpoint:     "/v1/responses",
+			UpstreamEndpoint:     upstreamEndpoint,
 			Stream:               isStream,
 			ViaWebsocket:         useWebsocket,
 			ServiceTier:          usageTiers.ServiceTier,

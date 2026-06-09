@@ -2696,7 +2696,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	if h.enforceAPIKeyLimitsAndReply(c, effectiveModel) {
 		return
 	}
-	accountFilter := accountFilterForModel(effectiveModel)
+	// /v1/chat/completions 同时允许官方 Codex OAuth 账号与中转（OpenAI Responses API）账号：
+	// 翻译后的请求体本身就是 Responses 形态，中转账号直接以 HTTP 转发（issue #181）。
+	accountFilter := accountFilterForResponsesModel(effectiveModel, modelIDInList(effectiveModel, SupportedModelIDs(c.Request.Context(), h.db)))
 	accountFilter = h.withModelCooldownFilter(effectiveModel, accountFilter)
 
 	sessionID := ResolveSessionID(c.Request.Header, codexBody)
@@ -2737,9 +2739,15 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		start := time.Now()
 		proxyURL := h.resolveProxyForAttempt(account, stickyProxyURL)
 		h.store.BindSessionAffinity(affinityKey, account, proxyURL)
-		useWebsocket := h.shouldUseWebsocketForHTTP() && !forceHTTPAfterWSMessageTooBig
+		isRelayAccount := account.IsOpenAIResponsesAPI()
+		useWebsocket := h.shouldUseWebsocketForHTTP() && !forceHTTPAfterWSMessageTooBig && !isRelayAccount
 		if useWebsocket && responsesBodyRequestsImageGeneration(codexBody) {
 			useWebsocket = false
+		}
+		upstreamEndpoint := "/v1/responses"
+		if isRelayAccount {
+			relayBaseURL, _ := account.OpenAIResponsesCredentials()
+			upstreamEndpoint = auth.OpenAIResponsesEndpoint(relayBaseURL, "/v1/responses")
 		}
 
 		// 提取 API Key 用于设备指纹稳定化
@@ -2771,7 +2779,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
 		lastUpstreamCancel = upstreamCancel
 		ttftGuard := newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
-		resp, reqErr := ExecuteRequest(upstreamCtx, account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
+		var resp *http.Response
+		var reqErr error
+		if isRelayAccount {
+			resp, reqErr = ExecuteOpenAIResponsesRequest(upstreamCtx, account, codexBody, proxyURL, downstreamHeaders)
+		} else {
+			resp, reqErr = ExecuteRequest(upstreamCtx, account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
+		}
 		durationMs := int(time.Since(start).Milliseconds())
 
 		if reqErr != nil {
@@ -2848,7 +2862,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				DurationMs:           durationMs,
 				ReasoningEffort:      reasoningEffort,
 				InboundEndpoint:      "/v1/chat/completions",
-				UpstreamEndpoint:     "/v1/responses",
+				UpstreamEndpoint:     upstreamEndpoint,
 				Stream:               isStream,
 				ViaWebsocket:         useWebsocket,
 				ServiceTier:          usageTiers.ServiceTier,
@@ -3116,7 +3130,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			FirstTokenMs:         firstTokenMs,
 			ReasoningEffort:      reasoningEffort,
 			InboundEndpoint:      "/v1/chat/completions",
-			UpstreamEndpoint:     "/v1/responses",
+			UpstreamEndpoint:     upstreamEndpoint,
 			Stream:               isStream,
 			ViaWebsocket:         useWebsocket,
 			ServiceTier:          usageTiers.ServiceTier,
