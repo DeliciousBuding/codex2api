@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.3.0 - 2026-06-10
+
+### Features
+
+- **Account recycle bin.** Soft-deleted accounts now land in a recycle bin instead of vanishing. Accounts can be restored to the runtime pool without a restart, test-connected before restoring (429/usage-limit results are recorded as rate-limited rather than failed), batch-tested with an optional auto-restore-on-pass toggle, filtered by plan type and searched with pagination, and permanently purged behind a typed confirmation enforced on the API as well.
+- **Client IP in usage logs.** Usage records now capture the requesting client IP and display it in the usage views.
+
+### Fixes
+
+- **Relay accounts on `/v1/messages` and `/v1/chat/completions` (#181).** Both endpoints now schedule OpenAI Responses (relay API-key) accounts and forward over HTTP like `/v1/responses`, instead of returning 503 "No available accounts" once Codex OAuth accounts were rate-limited on relay-only deployments.
+- **Image generation no longer routed over WebSocket (#220).** Requests carrying an `image_generation` tool (including the auto-injected one) are forced onto HTTP, and requests that do go over WS get the auto-injected image tool, its `tool_choice`, and bridge instructions stripped, so image generation can no longer stall WS streams on large base64 payloads.
+- **Image SSE keep-alive.** Image generation SSE streams now stay alive through long upstream pauses, preventing idle disconnects mid-generation.
+- **Account rate-limit state sync.** Rate-limit state observed by usage probes and WHAM checks is synced back to runtime account state so scheduling and status displays stay consistent.
+- **Account status summary counts.** Admin account status summary counters now align with the account list filters.
+
+### Security
+
+- **Code-scanning hardening.** Local image storage rejects keys containing path separators on write and `..` traversal segments on read/delete (legacy relative refs keep working); remote-migration and sub2api import URLs must be complete http/https URLs with a host; SVG logo minification strips comments to a fixed point so `<!--` cannot survive sanitization.
+
 ## v2.2.9 - 2026-06-09
 
 ### Features
