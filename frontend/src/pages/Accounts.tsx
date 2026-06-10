@@ -92,6 +92,7 @@ import AccountUsageModal from "../components/AccountUsageModal";
 import Sub2APIImportModal from "../components/Sub2APIImportModal";
 import AccountQuotaDistributionChart from "../components/AccountQuotaDistributionChart";
 import AccountRateLimitRecoveryChart from "../components/AccountRateLimitRecoveryChart";
+import AccountGroupMultiSelect from "../components/AccountGroupMultiSelect";
 import ChipInput from "../components/ChipInput";
 
 const ACCOUNT_BATCH_CONCURRENCY = 6;
@@ -3470,7 +3471,11 @@ export default function Accounts() {
                 ) : null}
 
                 {shouldRenderDesktopTable ? (
-                  <div className="data-table-shell hidden lg:block">
+                  <div
+                    className={`data-table-shell hidden lg:block ${
+                      sortedAccounts.length <= pageSize ? "account-table-shell-fit-content" : ""
+                    }`}
+                  >
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -5235,43 +5240,19 @@ export default function Accounts() {
                             {t("accounts.groupManage")}
                           </Button>
                         </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {allGroups.length === 0 ? (
-                            <span className="text-sm text-muted-foreground">
-                              {t("accounts.groupsNone")}
-                            </span>
-                          ) : (
-                            allGroups.map((group) => {
-                              const active = editGroupIds.includes(group.id);
-                              const color = normalizeGroupColor(group.color);
-                              return (
-                                <button
-                                  key={group.id}
-                                  type="button"
-                                  onClick={() =>
-                                    setEditGroupIds((current) =>
-                                      active
-                                        ? current.filter(
-                                            (id) => id !== group.id,
-                                          )
-                                        : [...current, group.id],
-                                    )
-                                  }
-                                  className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors"
-                                  style={{
-                                    borderColor: active ? color : `${color}55`,
-                                    backgroundColor: active
-                                      ? color
-                                      : `${color}14`,
-                                    color: active ? "#ffffff" : color,
-                                  }}
-                                >
-                                  <span className="size-1.5 rounded-full bg-current" />
-                                  {group.name}
-                                </button>
-                              );
-                            })
-                          )}
+                        <div className="mt-3">
+                          <AccountGroupMultiSelect
+                            groups={allGroups}
+                            value={editGroupIds}
+                            onChange={setEditGroupIds}
+                            allLabel={t("accounts.groupsUnbound")}
+                            selectedLabel={t("accounts.groupsSelected", {
+                              count: editGroupIds.length,
+                            })}
+                            placeholder={t("accounts.groupsPlaceholder")}
+                            emptyLabel={t("accounts.groupsNone")}
+                            emptyHint={t("accounts.groupsSelectHint")}
+                          />
                         </div>
                       </div>
                     </div>
@@ -5355,39 +5336,19 @@ export default function Accounts() {
                 <div className="text-sm font-semibold text-foreground">
                   {t("accounts.groupsLabel")}
                 </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {allGroups.length === 0 ? (
-                    <span className="text-sm text-muted-foreground">
-                      {t("accounts.groupsNone")}
-                    </span>
-                  ) : (
-                    allGroups.map((group) => {
-                      const active = batchGroupIds.includes(group.id);
-                      const color = normalizeGroupColor(group.color);
-                      return (
-                        <button
-                          key={group.id}
-                          type="button"
-                          onClick={() =>
-                            setBatchGroupIds((current) =>
-                              active
-                                ? current.filter((id) => id !== group.id)
-                                : [...current, group.id],
-                            )
-                          }
-                          className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors"
-                          style={{
-                            borderColor: active ? color : `${color}55`,
-                            backgroundColor: active ? color : `${color}14`,
-                            color: active ? "#ffffff" : color,
-                          }}
-                        >
-                          <span className="size-1.5 rounded-full bg-current" />
-                          {group.name}
-                        </button>
-                      );
-                    })
-                  )}
+                <div className="mt-3">
+                  <AccountGroupMultiSelect
+                    groups={allGroups}
+                    value={batchGroupIds}
+                    onChange={setBatchGroupIds}
+                    allLabel={t("accounts.groupsUnbound")}
+                    selectedLabel={t("accounts.groupsSelected", {
+                      count: batchGroupIds.length,
+                    })}
+                    placeholder={t("accounts.groupsPlaceholder")}
+                    emptyLabel={t("accounts.groupsNone")}
+                    emptyHint={t("accounts.groupsSelectHint")}
+                  />
                 </div>
               </div>
             </div>
