@@ -17,6 +17,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -6434,8 +6435,13 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "url 和 admin_key 是必填字段")
 		return
 	}
+	parsedURL, err := url.Parse(strings.TrimSpace(req.URL))
+	if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		writeError(c, http.StatusBadRequest, "url 必须是完整的 http/https 地址")
+		return
+	}
 
-	remoteURL := strings.TrimRight(req.URL, "/")
+	remoteURL := strings.TrimRight(parsedURL.String(), "/")
 	exportURL := remoteURL + "/api/admin/accounts/export?filter=healthy&remote=true"
 
 	fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 60*time.Second)

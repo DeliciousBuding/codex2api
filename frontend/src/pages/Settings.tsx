@@ -502,8 +502,13 @@ function textToBase64(value: string) {
 }
 
 function minifySVG(value: string) {
-  return value
-    .replace(/<!--[\s\S]*?-->/g, '')
+  // 循环剥离注释直到不动点：单次替换可能因相邻片段重新拼出 "<!--" 而残留
+  let out = value
+  for (let prev = ''; prev !== out; ) {
+    prev = out
+    out = out.replace(/<!--[\s\S]*?-->/g, '').replace(/<!--/g, '')
+  }
+  return out
     .replace(/>\s+</g, '><')
     .replace(/\s{2,}/g, ' ')
     .trim()

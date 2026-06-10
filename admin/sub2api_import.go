@@ -419,7 +419,7 @@ func normalizeSub2APICreds(rawBaseURL, rawAPIKey string) (string, string, string
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		return "", "", "base_url 必须以 http:// 或 https:// 开头"
 	}
-	if _, err := url.Parse(baseURL); err != nil {
+	if parsed, err := url.Parse(baseURL); err != nil || parsed.Host == "" {
 		return "", "", "base_url 不是合法的 URL"
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
