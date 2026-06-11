@@ -624,8 +624,21 @@ func hasStructuredResponsesFormat(body map[string]any) bool {
 	return false
 }
 
+// responsesModelRejectsHostedImageTool 判断模型是否不支持 hosted image_generation
+// 工具。gpt-5.3-codex-spark 是 ChatGPT 账号下的纯文本 Codex 模型，上游会直接拒绝
+// 带 hosted 图片工具的请求（issue #230）。
+func responsesModelRejectsHostedImageTool(body map[string]any) bool {
+	model := strings.TrimSpace(firstNonEmptyAnyString(body["model"]))
+	return strings.EqualFold(model, proOnlySparkModel)
+}
+
 func shouldAutoInjectResponsesImageGenerationTool(body map[string]any) bool {
 	if len(body) == 0 || hasResponsesImageGenerationTool(body) {
+		return false
+	}
+	// 不为拒绝 hosted 图片工具的模型自动注入默认图片工具及桥接 instructions；
+	// 用户显式自带的图片工具仍由上面 hasResponsesImageGenerationTool 分支保留。
+	if responsesModelRejectsHostedImageTool(body) {
 		return false
 	}
 	if hasResponsesImageGenerationToolChoice(body) {

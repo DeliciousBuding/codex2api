@@ -944,6 +944,33 @@ func TestPrepareResponsesBody_ToolChoiceImageGenerationAutoInjectsTool(t *testin
 	}
 }
 
+func TestPrepareResponsesBody_SparkModelSkipsDefaultImageGenerationTool(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.3-codex-spark","input":"hi"}`)
+
+	got, _ := PrepareResponsesBody(raw)
+
+	if gjson.GetBytes(got, "tools").Exists() {
+		t.Fatalf("did not expect default image_generation tool for spark model, got %s", string(got))
+	}
+	if instructions := gjson.GetBytes(got, "instructions").String(); strings.Contains(instructions, codexImageGenerationBridgeMarker) {
+		t.Fatalf("did not expect image generation bridge instructions for spark model, got %q", instructions)
+	}
+}
+
+func TestPrepareResponsesBody_SparkModelKeepsExplicitImageGenerationTool(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.3-codex-spark",
+		"input":"draw a poster",
+		"tools":[{"type":"image_generation"}]
+	}`)
+
+	got, _ := PrepareResponsesBody(raw)
+
+	if toolType := gjson.GetBytes(got, "tools.0.type").String(); toolType != "image_generation" {
+		t.Fatalf("explicit image_generation tool should be kept for spark model, got %s", string(got))
+	}
+}
+
 func TestPrepareResponsesBody_NormalizesNestedReasoningEffortAliases(t *testing.T) {
 	raw := []byte(`{
 		"model":"gpt-5.4",
