@@ -614,6 +614,24 @@ func rawRequestBodyFromContext(c *gin.Context) ([]byte, bool) {
 	}
 }
 
+func readRawRequestBody(c *gin.Context) ([]byte, error) {
+	if body, ok := rawRequestBodyFromContext(c); ok {
+		return body, nil
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return nil, err
+	}
+	setRawRequestBody(c, body)
+	return body, nil
+}
+
+func setRawRequestBody(c *gin.Context, body []byte) {
+	if c != nil {
+		c.Set("raw_body", body)
+	}
+}
+
 func requestBodyHasCompactionInput(body []byte) bool {
 	input := gjson.GetBytes(body, "input")
 	return gjsonResultHasCompactionInput(input)
@@ -1339,7 +1357,7 @@ func firstGJSONInt(body []byte, paths ...string) int64 {
 // Responses 处理 /v1/responses 请求（原生透传，增强输入验证）
 func (h *Handler) Responses(c *gin.Context) {
 	// 1. 读取请求体
-	rawBody, err := io.ReadAll(c.Request.Body)
+	rawBody, err := readRawRequestBody(c)
 	if err != nil {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
@@ -1347,7 +1365,7 @@ func (h *Handler) Responses(c *gin.Context) {
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())
 	rawBody, requestModel, mappedModel, mappingApplied := h.applyConfiguredModelMappingToBody(rawBody, supportedModels)
-	c.Set("raw_body", rawBody)
+	setRawRequestBody(c, rawBody)
 
 	// Validate request
 	validator := api.NewValidator(rawBody)
@@ -2233,7 +2251,7 @@ func (h *Handler) Responses(c *gin.Context) {
 // ResponsesCompact 处理 /v1/responses/compact 请求（非流式压缩接口，透传到上游 /responses/compact）
 func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// 1. 读取请求体
-	rawBody, err := io.ReadAll(c.Request.Body)
+	rawBody, err := readRawRequestBody(c)
 	if err != nil {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
@@ -2241,7 +2259,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())
 	rawBody, requestModel, mappedModel, mappingApplied := h.applyConfiguredModelMappingToBody(rawBody, supportedModels)
-	c.Set("raw_body", rawBody)
+	setRawRequestBody(c, rawBody)
 
 	// Validate request
 	validator := api.NewValidator(rawBody)
@@ -2647,7 +2665,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 
 func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 1. 读取请求体
-	rawBody, err := io.ReadAll(c.Request.Body)
+	rawBody, err := readRawRequestBody(c)
 	if err != nil {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
