@@ -1735,6 +1735,18 @@ func TestInvalidEncryptedContentErrorDetection(t *testing.T) {
 	if isInvalidEncryptedContentError(http.StatusInternalServerError, body) {
 		t.Fatalf("non-400 response should not trigger encrypted content fallback")
 	}
+
+	missingBody := []byte(`{
+		"error":{
+			"message":"Missing required parameter: 'input[8].encrypted_content'.",
+			"type":"invalid_request_error",
+			"param":"input[8].encrypted_content",
+			"code":"missing_required_parameter"
+		}
+	}`)
+	if !isInvalidEncryptedContentError(http.StatusBadRequest, missingBody) {
+		t.Fatalf("missing encrypted_content error should trigger encrypted content fallback")
+	}
 }
 
 func TestStripInvalidEncryptedContentFromResponsesBody(t *testing.T) {
@@ -1767,6 +1779,65 @@ func TestStripInvalidEncryptedContentFromResponsesBody(t *testing.T) {
 }
 
 // ==================== Function Calling 测试 ====================
+
+func TestStripInvalidEncryptedContentFromResponsesBodyDropsBareReasoning(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"type":"message","role":"user","content":"hello"},
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"stale"}]},
+			{"type":"reasoning"},
+			{"type":"function_call","call_id":"call_123","name":"lookup","arguments":"{}"}
+		]
+	}`)
+
+	got, changed := stripInvalidEncryptedContentFromResponsesBody(raw)
+	if !changed {
+		t.Fatalf("expected body to be changed")
+	}
+	items := gjson.GetBytes(got, "input").Array()
+	if len(items) != 2 {
+		t.Fatalf("expected bare reasoning items to be removed, got %d items: %s", len(items), got)
+	}
+	if typ := gjson.GetBytes(got, "input.0.type").String(); typ != "message" {
+		t.Fatalf("first input should remain message, got %q; body=%s", typ, got)
+	}
+	if typ := gjson.GetBytes(got, "input.1.type").String(); typ != "function_call" {
+		t.Fatalf("function call should remain, got %q; body=%s", typ, got)
+	}
+}
+
+func TestPrepareResponsesBodyDropsBareReasoningItems(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"type":"message","role":"user","content":"hello"},
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"stale"}]},
+			{"type":"reasoning"},
+			{"type":"reasoning","encrypted_content":"opaque"},
+			{"type":"function_call","call_id":"call_123","name":"lookup","arguments":"{}"}
+		]
+	}`)
+
+	got, expandedInputRaw := PrepareResponsesBody(raw)
+
+	items := gjson.GetBytes(got, "input").Array()
+	if len(items) != 3 {
+		t.Fatalf("expected bare reasoning items to be dropped before upstream, got %d items: %s", len(items), got)
+	}
+	if typ := gjson.GetBytes(got, "input.0.type").String(); typ != "message" {
+		t.Fatalf("first input should remain message, got %q; body=%s", typ, got)
+	}
+	if encrypted := gjson.GetBytes(got, "input.1.encrypted_content").String(); encrypted != "opaque" {
+		t.Fatalf("encrypted reasoning should be preserved, got %q; body=%s", encrypted, got)
+	}
+	if typ := gjson.GetBytes(got, "input.2.type").String(); typ != "function_call" {
+		t.Fatalf("function call should remain, got %q; body=%s", typ, got)
+	}
+	if strings.Contains(expandedInputRaw, `"summary_text"`) {
+		t.Fatalf("expanded input cache should use cleaned input, got %s", expandedInputRaw)
+	}
+}
 
 func TestConvertMessagesToInput_ToolRole(t *testing.T) {
 	raw := []byte(`{
