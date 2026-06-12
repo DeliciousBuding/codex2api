@@ -1946,6 +1946,38 @@ func TestSyncCodexUsageStateTriggersPremium5hLimitWith5hHeadersOnly(t *testing.T
 	}
 }
 
+func TestSyncCodexUsageState5hOnlyDoesNotRefreshStale7dProbeFreshness(t *testing.T) {
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{
+		DBID:                104,
+		AccessToken:         "at",
+		PlanType:            "plus",
+		Status:              auth.StatusReady,
+		UsagePercent7d:      40,
+		UsagePercent7dValid: true,
+		UsageUpdatedAt:      time.Now().Add(-20 * time.Minute),
+	}
+	resp := &http.Response{Header: make(http.Header)}
+	resp.Header.Set("x-codex-primary-used-percent", "83")
+	resp.Header.Set("x-codex-primary-window-minutes", "300")
+	resp.Header.Set("x-codex-primary-reset-after-seconds", "600")
+
+	result := SyncCodexUsageState(store, account, resp)
+
+	if !result.Used5hHeaders || !result.HasUsage5h {
+		t.Fatalf("usage sync result = %#v, want 5h headers to populate a 5h snapshot", result)
+	}
+	if result.HasUsage7d {
+		t.Fatalf("usage sync result = %#v, want no 7d snapshot from 5h-only headers", result)
+	}
+	if !result.Persisted5hOnly {
+		t.Fatalf("usage sync result = %#v, want 5h-only persistence path", result)
+	}
+	if !account.NeedsUsageProbe(10 * time.Minute) {
+		t.Fatal("NeedsUsageProbe() = false, want true because 5h-only header sync must not refresh stale 7d freshness")
+	}
+}
+
 func TestSyncCodexUsageStateMarks7dUsageLimited(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")

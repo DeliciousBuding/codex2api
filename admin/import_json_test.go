@@ -192,6 +192,7 @@ func TestParseImportJSONTokensPreservesCPAFields(t *testing.T) {
 		"codex_7d_reset_at": "2026-05-15T20:33:11+08:00",
 		"codex_5h_used_percent": 0,
 		"codex_5h_reset_at": "2026-05-11T11:39:07+08:00",
+		"codex_5h_usage_updated_at": "2026-05-11T10:39:07+08:00",
 		"codex_usage_updated_at": "2026-05-11T11:39:07+08:00",
 		"expired": "2026-04-25T12:00:00Z",
 		"id_token": "id-cpa",
@@ -224,6 +225,9 @@ func TestParseImportJSONTokensPreservesCPAFields(t *testing.T) {
 	if token.codex5HUsedPercent != "0" || token.codex5HResetAt != "2026-05-11T11:39:07+08:00" {
 		t.Fatalf("5h usage = %q/%q, want 0/reset", token.codex5HUsedPercent, token.codex5HResetAt)
 	}
+	if token.codex5HUsageUpdatedAt != "2026-05-11T10:39:07+08:00" {
+		t.Fatalf("5h usageUpdatedAt = %q, want timestamp", token.codex5HUsageUpdatedAt)
+	}
 	if token.codexUsageUpdatedAt != "2026-05-11T11:39:07+08:00" {
 		t.Fatalf("usageUpdatedAt = %q, want timestamp", token.codexUsageUpdatedAt)
 	}
@@ -234,12 +238,13 @@ func TestParseImportJSONTokensPreservesCPAFields(t *testing.T) {
 
 func TestAccountFromCredentialSeedRestoresUsageSnapshots(t *testing.T) {
 	account := accountFromCredentialSeed(42, "", tokenCredentialSeed{
-		planType:            "free",
-		codex7DUsedPercent:  "3",
-		codex7DResetAt:      "2026-05-15T20:33:11+08:00",
-		codex5HUsedPercent:  "0",
-		codex5HResetAt:      "2026-05-11T11:39:07+08:00",
-		codexUsageUpdatedAt: "2026-05-11T11:39:07+08:00",
+		planType:              "free",
+		codex7DUsedPercent:    "3",
+		codex7DResetAt:        "2026-05-15T20:33:11+08:00",
+		codex5HUsedPercent:    "0",
+		codex5HResetAt:        "2026-05-11T11:39:07+08:00",
+		codex5HUsageUpdatedAt: "2026-05-11T10:39:07+08:00",
+		codexUsageUpdatedAt:   "2026-05-11T11:39:07+08:00",
 	})
 
 	if got := account.GetPlanType(); got != "free" {
@@ -256,8 +261,27 @@ func TestAccountFromCredentialSeedRestoresUsageSnapshots(t *testing.T) {
 	if !ok || pct5h != 0 {
 		t.Fatalf("5h usage = %v/%t, want 0/true", pct5h, ok)
 	}
-	if account.GetReset5hAt().IsZero() {
-		t.Fatal("Reset5hAt is zero")
+	if account.GetUsageUpdatedAt5h().IsZero() {
+		t.Fatal("UsageUpdatedAt5h is zero")
+	}
+	if account.GetUsageUpdatedAt5h().Equal(account.GetUsageUpdatedAt()) {
+		t.Fatalf("UsageUpdatedAt5h = %s, want separate 5h timestamp from 7d", account.GetUsageUpdatedAt5h())
+	}
+}
+
+func TestAccountFromCredentialSeedDoesNotReuse7dFreshnessForMissing5hTimestamp(t *testing.T) {
+	account := accountFromCredentialSeed(42, "", tokenCredentialSeed{
+		codex7DUsedPercent:  "3",
+		codex5HUsedPercent:  "95",
+		codex5HResetAt:      time.Now().Add(time.Hour).Format(time.RFC3339),
+		codexUsageUpdatedAt: time.Now().Format(time.RFC3339),
+	})
+
+	if account.GetUsageUpdatedAt().IsZero() {
+		t.Fatal("UsageUpdatedAt is zero")
+	}
+	if !account.GetUsageUpdatedAt5h().IsZero() {
+		t.Fatalf("UsageUpdatedAt5h = %s, want zero when codex_5h_usage_updated_at is missing", account.GetUsageUpdatedAt5h())
 	}
 }
 
