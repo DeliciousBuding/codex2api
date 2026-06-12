@@ -1803,7 +1803,19 @@
       "cost5h": "5h 成本上限",
       "cost7d": "7d 成本上限",
       "tokens5h": "5h Token 上限",
-      "tokens7d": "7d Token 上限"
+      "tokens7d": "7d Token 上限",
+      "tokenUnits": {
+        "token": "Token",
+        "k": "K Token",
+        "m": "M Token",
+        "b": "B Token"
+      },
+      "tokenUnitShort": {
+        "token": "Token",
+        "k": "K",
+        "m": "M",
+        "b": "B"
+      }
     },
     "allowedGroupsLabel": "允许账号分组",
     "allowedGroupsPlaceholder": "选择允许调用的分组",
