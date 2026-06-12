@@ -810,6 +810,91 @@ func TestGetUsageLogsRejectsInvalidAPIKeyID(t *testing.T) {
 	}
 }
 
+func TestGetUsageLogsAllowsFiveHundredPageSize(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dbPath := filepath.Join(t.TempDir(), "usage-logs-page-size.sqlite")
+	db, err := database.New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("new test db: %v", err)
+	}
+	dbClosed := false
+	t.Cleanup(func() {
+		if !dbClosed {
+			_ = db.Close()
+		}
+		_ = os.Remove(dbPath)
+	})
+
+	db.SetUsageLogConfig(database.UsageLogModeFull, 1000, 3600)
+	accountID := insertTestAccount(t, db)
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 6, 4, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 501; i++ {
+		if err := db.InsertUsageLog(ctx, &database.UsageLogInput{
+			AccountID:  accountID,
+			Endpoint:   fmt.Sprintf("/v1/log-%03d", i),
+			Model:      "gpt-5.4",
+			StatusCode: http.StatusOK,
+		}); err != nil {
+			t.Fatalf("InsertUsageLog %d returned error: %v", i, err)
+		}
+	}
+	dbClosed = true
+	if err := db.Close(); err != nil {
+		t.Fatalf("flush usage logs: %v", err)
+	}
+
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw sqlite db: %v", err)
+	}
+	if _, err := rawDB.ExecContext(ctx, `
+		UPDATE usage_logs
+		SET created_at = datetime(?, printf('+%d seconds', id - 1))
+	`, baseTime.Format("2006-01-02 15:04:05")); err != nil {
+		_ = rawDB.Close()
+		t.Fatalf("update created_at: %v", err)
+	}
+	if err := rawDB.Close(); err != nil {
+		t.Fatalf("close raw sqlite db: %v", err)
+	}
+
+	db, err = database.New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("reopen test db: %v", err)
+	}
+	dbClosed = false
+	handler := &Handler{db: db}
+
+	start := baseTime.Add(-time.Minute).Format(time.RFC3339)
+	end := baseTime.Add(502 * time.Second).Format(time.RFC3339)
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Request = httptest.NewRequest(http.MethodGet, "/api/admin/usage/logs?start="+start+"&end="+end+"&page=2&page_size=500", nil)
+
+	handler.GetUsageLogs(ginCtx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	var payload database.UsageLogPage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Total != 501 {
+		t.Fatalf("total = %d, want 501", payload.Total)
+	}
+	if len(payload.Logs) != 1 {
+		t.Fatalf("len(logs) = %d, want 1", len(payload.Logs))
+	}
+	if got := payload.Logs[0].Endpoint; got != "/v1/log-000" {
+		t.Fatalf("endpoint = %q, want /v1/log-000", got)
+	}
+}
+
 func TestRuntimeStatusRouteReturnsDependencySnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
