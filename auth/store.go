@@ -71,7 +71,8 @@ type Account struct {
 	UsagePercent5h        float64   // 5h 窗口使用率 0-100+
 	UsagePercent5hValid   bool
 	Reset5hAt             time.Time // 5h 窗口重置时间
-	UsageUpdatedAt        time.Time
+	UsageUpdatedAt        time.Time // 7d 用量快照刷新时间
+	UsageUpdatedAt5h      time.Time // 5h 用量快照刷新时间
 	usageProbeInFlight    bool
 	recoveryProbeInFlight bool
 	AutoPause5hThreshold  float64 // 0..1, 0 = disabled
@@ -1175,11 +1176,17 @@ func (a *Account) usagePercentForScheduling() float64 {
 
 // SetUsageSnapshot5h 更新 5h 用量快照
 func (a *Account) SetUsageSnapshot5h(pct float64, resetAt time.Time) {
+	a.SetUsageSnapshot5hAt(pct, resetAt, time.Now())
+}
+
+// SetUsageSnapshot5hAt 更新 5h 用量快照及刷新时间
+func (a *Account) SetUsageSnapshot5hAt(pct float64, resetAt time.Time, updatedAt time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.UsagePercent5h = pct
 	a.UsagePercent5hValid = true
 	a.Reset5hAt = resetAt
+	a.UsageUpdatedAt5h = updatedAt
 }
 
 // GetUsagePercent5h 获取 5h 用量百分比
@@ -1200,6 +1207,7 @@ func (a *Account) ClearUsageCache() {
 	a.UsagePercent5hValid = false
 	a.Reset5hAt = time.Time{}
 	a.UsageUpdatedAt = time.Time{}
+	a.UsageUpdatedAt5h = time.Time{}
 }
 
 // SetReset7dAt 设置 7d 窗口重置时间
@@ -1221,6 +1229,20 @@ func (a *Account) GetReset7dAt() time.Time {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.Reset7dAt
+}
+
+// GetUsageUpdatedAt 获取 7d 用量快照刷新时间
+func (a *Account) GetUsageUpdatedAt() time.Time {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.UsageUpdatedAt
+}
+
+// GetUsageUpdatedAt5h 获取 5h 用量快照刷新时间
+func (a *Account) GetUsageUpdatedAt5h() time.Time {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.UsageUpdatedAt5h
 }
 
 // GetPlanType 获取账号套餐类型
@@ -1522,10 +1544,18 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 	if a.Status == StatusCooldown && a.CooldownReason == "rate_limited" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
 		return false // 429 冷却期间不探活，避免加重限流
 	}
-	if !a.UsagePercent7dValid || a.UsageUpdatedAt.IsZero() {
+	if !a.UsagePercent7dValid || a.UsageUpdatedAt.IsZero() || now.Sub(a.UsageUpdatedAt) > maxAge {
 		return true
 	}
-	return time.Since(a.UsageUpdatedAt) > maxAge
+	if a.effectiveAutoPause5h > 0 && !a.AutoPause5hDisabled {
+		if !a.UsagePercent5hValid || a.UsageUpdatedAt5h.IsZero() {
+			return true
+		}
+		if a.Reset5hAt.IsZero() || a.Reset5hAt.After(now) {
+			return now.Sub(a.UsageUpdatedAt5h) > maxAge
+		}
+	}
+	return false
 }
 
 // TryBeginUsageProbe 尝试开始一次用量探针
@@ -1672,8 +1702,8 @@ type Store struct {
 	sessionMu             sync.RWMutex
 	sessionBindings       map[string]sessionAffinity
 
-	globalAutoPause5hThreshold float64 // protected by mu
-	globalAutoPause7dThreshold float64 // protected by mu
+	globalAutoPause5hThreshold float64  // protected by mu
+	globalAutoPause7dThreshold float64  // protected by mu
 	groupAutoPauseThresholds   sync.Map // int64 -> [2]float64 {5h, 7d}
 }
 
@@ -2800,7 +2830,15 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 					resetAt = t
 				}
 			}
-			account.SetUsageSnapshot5h(parsed, resetAt)
+			updatedAt := time.Time{}
+			if usageUpdatedAt5h := row.GetCredential("codex_5h_usage_updated_at"); usageUpdatedAt5h != "" {
+				if parsedTime, err := time.Parse(time.RFC3339, usageUpdatedAt5h); err == nil {
+					updatedAt = parsedTime
+				} else {
+					log.Printf("[账号 %d] 解析 codex_5h_usage_updated_at 失败: %v", row.ID, err)
+				}
+			}
+			account.SetUsageSnapshot5hAt(parsed, resetAt, updatedAt)
 		}
 	}
 	if threshold, ok := row.GetCredentialFloat64("auto_pause_5h_threshold"); ok {
@@ -4608,7 +4646,7 @@ func (s *Store) PersistUsageSnapshot(acc *Account, pct7d float64) {
 		reset7dAt := acc.GetReset7dAt()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if err := s.db.UpdateUsageSnapshotFull(ctx, acc.DBID, pct7d, reset7dAt, pct5h, reset5hAt, now); err != nil {
+		if err := s.db.UpdateUsageSnapshotFull(ctx, acc.DBID, pct7d, reset7dAt, pct5h, reset5hAt, now, acc.GetUsageUpdatedAt5h()); err != nil {
 			log.Printf("[账号 %d] 持久化用量快照失败: %v", acc.DBID, err)
 		}
 		return

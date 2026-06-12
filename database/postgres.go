@@ -4348,13 +4348,14 @@ func (db *DB) UpdateUsageSnapshot(ctx context.Context, id int64, pct7d float64, 
 }
 
 // UpdateUsageSnapshotFull 持久化完整用量快照（5h + 7d + 重置时间）
-func (db *DB) UpdateUsageSnapshotFull(ctx context.Context, id int64, pct7d float64, reset7dAt time.Time, pct5h float64, reset5hAt time.Time, updatedAt time.Time) error {
+func (db *DB) UpdateUsageSnapshotFull(ctx context.Context, id int64, pct7d float64, reset7dAt time.Time, pct5h float64, reset5hAt time.Time, updatedAt7d time.Time, updatedAt5h time.Time) error {
 	fields := map[string]interface{}{
-		"codex_7d_used_percent":  pct7d,
-		"codex_7d_reset_at":      reset7dAt.Format(time.RFC3339),
-		"codex_5h_used_percent":  pct5h,
-		"codex_5h_reset_at":      reset5hAt.Format(time.RFC3339),
-		"codex_usage_updated_at": updatedAt.Format(time.RFC3339),
+		"codex_7d_used_percent":     pct7d,
+		"codex_7d_reset_at":         reset7dAt.Format(time.RFC3339),
+		"codex_5h_used_percent":     pct5h,
+		"codex_5h_reset_at":         reset5hAt.Format(time.RFC3339),
+		"codex_usage_updated_at":    updatedAt7d.Format(time.RFC3339),
+		"codex_5h_usage_updated_at": updatedAt5h.Format(time.RFC3339),
 	}
 	return db.UpdateCredentials(ctx, id, fields)
 }

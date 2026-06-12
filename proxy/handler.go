@@ -3804,7 +3804,7 @@ func parseCodexUsageHeaders(resp *http.Response, account *auth.Account) (float64
 	// 写入 5h
 	if w5h.valid {
 		resetAt := now.Add(time.Duration(w5h.resetSec) * time.Second)
-		account.SetUsageSnapshot5h(w5h.usedPct, resetAt)
+		account.SetUsageSnapshot5hAt(w5h.usedPct, resetAt, now)
 	}
 
 	// 写入 7d

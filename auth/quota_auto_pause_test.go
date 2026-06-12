@@ -40,6 +40,28 @@ func TestQuotaAutoPause5hThresholdFencesAccount(t *testing.T) {
 	}
 }
 
+func TestQuotaAutoPause5hThresholdRefreshesMissing5hBeforeFencing(t *testing.T) {
+	acc := newQuotaAutoPauseTestAccount()
+	acc.AutoPause5hThreshold = 0.95
+	acc.UsagePercent7d = 12
+	acc.UsagePercent7dValid = true
+	acc.UsageUpdatedAt = time.Now()
+	setAutoPauseThresholds(acc)
+
+	if !acc.NeedsUsageProbe(10 * time.Minute) {
+		t.Fatal("NeedsUsageProbe() = false, want true when 7d is fresh but 5h snapshot is missing")
+	}
+
+	acc.SetUsageSnapshot5h(95, time.Now().Add(time.Hour))
+
+	if acc.IsAvailable() {
+		t.Fatal("IsAvailable() = true, want false after refreshed 5h usage reaches the threshold")
+	}
+	if got := acc.RuntimeStatus(); got != "quota_paused" {
+		t.Fatalf("RuntimeStatus() = %q, want quota_paused after refreshed 5h usage reaches the threshold", got)
+	}
+}
+
 func TestQuotaAutoPauseIgnoresBelowThresholdAndDisabledWindow(t *testing.T) {
 	acc := newQuotaAutoPauseTestAccount()
 	acc.AutoPause5hThreshold = 0.95

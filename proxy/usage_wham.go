@@ -135,7 +135,7 @@ func ApplyWhamUsage(store *auth.Store, account *auth.Account, usage *WhamUsage) 
 
 	if w5h != nil {
 		resetAt := whamWindowResetAt(w5h, now)
-		account.SetUsageSnapshot5h(w5h.UsedPercent, resetAt)
+		account.SetUsageSnapshot5hAt(w5h.UsedPercent, resetAt, now)
 		result.UsagePct5h = w5h.UsedPercent
 		result.Reset5hAt = resetAt
 		result.HasUsage5h = true
