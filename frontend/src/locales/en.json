@@ -1803,7 +1803,19 @@
       "cost5h": "Cost limit (5h)",
       "cost7d": "Cost limit (7d)",
       "tokens5h": "Token limit (5h)",
-      "tokens7d": "Token limit (7d)"
+      "tokens7d": "Token limit (7d)",
+      "tokenUnits": {
+        "token": "Tokens",
+        "k": "K Tokens",
+        "m": "M Tokens",
+        "b": "B Tokens"
+      },
+      "tokenUnitShort": {
+        "token": "Tokens",
+        "k": "K",
+        "m": "M",
+        "b": "B"
+      }
     },
     "allowedGroupsLabel": "Allowed Account Groups",
     "allowedGroupsPlaceholder": "Choose allowed groups",
