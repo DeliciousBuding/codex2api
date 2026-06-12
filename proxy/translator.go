@@ -1430,6 +1430,41 @@ func normalizeResponsesFunctionTools(body map[string]any) bool {
 	return modified
 }
 
+func normalizeResponsesToolChoice(body map[string]any) bool {
+	rawChoice, ok := body["tool_choice"]
+	if !ok {
+		return false
+	}
+	choice, ok := rawChoice.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	modified := false
+	toolType := strings.TrimSpace(firstNonEmptyAnyString(choice["type"]))
+	function, _ := choice["function"].(map[string]any)
+	name := strings.TrimSpace(firstNonEmptyAnyString(choice["name"]))
+	if toolType == "" && (function != nil || name != "") {
+		choice["type"] = "function"
+		toolType = "function"
+		modified = true
+	}
+	if toolType != "function" {
+		return modified
+	}
+	if name == "" && function != nil {
+		if nestedName := strings.TrimSpace(firstNonEmptyAnyString(function["name"])); nestedName != "" {
+			choice["name"] = nestedName
+			modified = true
+		}
+	}
+	if function != nil {
+		delete(choice, "function")
+		modified = true
+	}
+	return modified
+}
+
 type responsesBodyPrepareOptions struct {
 	forceStoreFalse            bool
 	expandPreviousResponse     bool
@@ -1517,6 +1552,7 @@ func prepareResponsesBodyWithOptions(rawBody []byte, opts responsesBodyPrepareOp
 	}
 	normalizeResponsesStructuredOutputFormat(body)
 	normalizeResponsesFunctionTools(body)
+	normalizeResponsesToolChoice(body)
 	normalizeResponsesWebSearchTools(body)
 
 	// 5. 工具描述补充 + schema 清理 + 上游数量限制
@@ -1644,6 +1680,7 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 
 	normalizeResponsesStructuredOutputFormat(body)
 	normalizeResponsesFunctionTools(body)
+	normalizeResponsesToolChoice(body)
 	normalizeResponsesContentPartTypes(body)
 	normalizeResponsesInputMessageContent(body)
 	if shouldInjectOpenAIResponsesImageGenerationTool(body) {

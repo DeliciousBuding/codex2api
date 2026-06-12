@@ -1651,6 +1651,75 @@ func TestPrepareResponsesBodyNormalizesChatStyleFunctionTool(t *testing.T) {
 	}
 }
 
+func TestPrepareResponsesBodyNormalizesChatStyleFunctionToolChoice(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"input":"hello",
+		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+		"tool_choice":{
+			"type":"function",
+			"function":{"name":"lookup"}
+		}
+	}`)
+
+	got, _ := PrepareResponsesBody(raw)
+	choice := gjson.GetBytes(got, "tool_choice")
+	if choice.Get("type").String() != "function" {
+		t.Fatalf("tool_choice.type = %q, want function; body=%s", choice.Get("type").String(), got)
+	}
+	if choice.Get("name").String() != "lookup" {
+		t.Fatalf("tool_choice.name = %q, want lookup; body=%s", choice.Get("name").String(), got)
+	}
+	if choice.Get("function").Exists() {
+		t.Fatalf("tool_choice nested function object should be removed, got %s", got)
+	}
+}
+
+func TestPrepareResponsesBodyInfersFunctionToolChoiceTypeWhenMissing(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"input":"hello",
+		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+		"tool_choice":{"function":{"name":"lookup"}}
+	}`)
+
+	got, _ := PrepareResponsesBody(raw)
+	choice := gjson.GetBytes(got, "tool_choice")
+	if choice.Get("type").String() != "function" {
+		t.Fatalf("tool_choice.type = %q, want function; body=%s", choice.Get("type").String(), got)
+	}
+	if choice.Get("name").String() != "lookup" {
+		t.Fatalf("tool_choice.name = %q, want lookup; body=%s", choice.Get("name").String(), got)
+	}
+	if choice.Get("function").Exists() {
+		t.Fatalf("tool_choice nested function object should be removed, got %s", got)
+	}
+}
+
+func TestPrepareOpenAIResponsesBodyNormalizesChatStyleFunctionToolChoice(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"input":"hello",
+		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+		"tool_choice":{
+			"type":"function",
+			"function":{"name":"lookup"}
+		}
+	}`)
+
+	got := PrepareOpenAIResponsesBody(raw)
+	choice := gjson.GetBytes(got, "tool_choice")
+	if choice.Get("type").String() != "function" {
+		t.Fatalf("tool_choice.type = %q, want function; body=%s", choice.Get("type").String(), got)
+	}
+	if choice.Get("name").String() != "lookup" {
+		t.Fatalf("tool_choice.name = %q, want lookup; body=%s", choice.Get("name").String(), got)
+	}
+	if choice.Get("function").Exists() {
+		t.Fatalf("tool_choice nested function object should be removed, got %s", got)
+	}
+}
+
 func TestPrepareResponsesBody_DefaultsNullMessageContent(t *testing.T) {
 	raw := []byte(`{
 		"model":"gpt-5.4",
