@@ -11,6 +11,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"strconv"
@@ -20,7 +21,9 @@ import (
 
 	"github.com/codex2api/auth"
 	"github.com/codex2api/database"
+	"github.com/codex2api/internal/imagestore"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -55,6 +58,9 @@ const (
 
 	imageStreamConnectedComment = ": connected\n\n"
 	imageStreamKeepaliveComment = ": keepalive\n\n"
+
+	// imageCloudURLTTL 控制 response_format=url 时返回的预签名云直链有效期。
+	imageCloudURLTTL = time.Hour
 )
 
 var imageStreamKeepaliveInterval = 15 * time.Second
@@ -1077,6 +1083,14 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	var lastBody []byte
 	excludeAccounts := make(map[int64]bool)
 
+	// 仅在 response_format=url 且配置了云存储时启用：上传图片到对象存储、
+	// 登记进图库并返回预签名直链。否则 urlFor 为 nil，沿用 base64/data URL。
+	persister := h.newImageGalleryPersister(c, responseFormat, requestModel, responsesBody)
+	var urlFor imageURLBuilder
+	if persister != nil {
+		urlFor = persister.buildURL
+	}
+
 	for attempt := 0; attempt < maxImageAttempts; attempt++ {
 		if err := c.Request.Context().Err(); err != nil {
 			return
@@ -1175,8 +1189,9 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			usage, imageCount, firstTokenMs, imageLogInfo, readErr = h.streamImagesResponse(c, resp.Body, responseFormat, streamPrefix, requestModel, start)
 		} else {
 			var out []byte
-			out, usage, imageCount, imageLogInfo, readErr = collectImagesResponse(resp.Body, responseFormat, requestModel)
+			out, usage, imageCount, imageLogInfo, readErr = collectImagesResponse(c.Request.Context(), resp.Body, responseFormat, requestModel, urlFor)
 			if readErr == nil {
+				persister.finalize(c.Request.Context())
 				c.Data(http.StatusOK, "application/json", out)
 			} else {
 				// Check retryability BEFORE writing error response to avoid
@@ -1307,7 +1322,7 @@ func shouldRetryImageStreamError(err error, generalRetries *int, maxGeneralRetri
 	return true
 }
 
-func collectImagesResponse(body io.Reader, responseFormat, fallbackModel string) ([]byte, *UsageInfo, int, imageUsageLogInfo, error) {
+func collectImagesResponse(ctx context.Context, body io.Reader, responseFormat, fallbackModel string, urlFor imageURLBuilder) ([]byte, *UsageInfo, int, imageUsageLogInfo, error) {
 	var (
 		out            []byte
 		usage          *UsageInfo
@@ -1353,7 +1368,7 @@ func collectImagesResponse(body io.Reader, responseFormat, fallbackModel string)
 				readErr = fmt.Errorf("upstream did not return image output")
 				return false
 			}
-			out, readErr = buildImagesAPIResponse(results, createdAt, usageRaw, firstMeta, responseFormat)
+			out, readErr = buildImagesAPIResponse(ctx, results, createdAt, usageRaw, firstMeta, responseFormat, urlFor)
 			imageLogInfo = imageUsageLogInfoFromImages(results)
 			return false
 		case "error":
@@ -1376,7 +1391,7 @@ func collectImagesResponse(body io.Reader, responseFormat, fallbackModel string)
 			for i := range pendingResults {
 				mergeImageMeta(&pendingResults[i], firstMeta)
 			}
-			out, readErr = buildImagesAPIResponse(pendingResults, createdAt, nil, firstMeta, responseFormat)
+			out, readErr = buildImagesAPIResponse(ctx, pendingResults, createdAt, nil, firstMeta, responseFormat, urlFor)
 			if readErr != nil {
 				return nil, usage, 0, imageLogInfo, readErr
 			}
@@ -1774,7 +1789,11 @@ func mergeImageMeta(target *imageCallResult, source imageCallResult) {
 	}
 }
 
-func buildImagesAPIResponse(results []imageCallResult, createdAt int64, usageRaw []byte, firstMeta imageCallResult, responseFormat string) ([]byte, error) {
+// imageURLBuilder 接收一张生成图，返回其托管直链。返回 ok=false 表示
+// 应回退到 base64 data URL。为 nil 时表示未启用云存储直链。
+type imageURLBuilder func(ctx context.Context, image imageCallResult, idx int) (string, bool)
+
+func buildImagesAPIResponse(ctx context.Context, results []imageCallResult, createdAt int64, usageRaw []byte, firstMeta imageCallResult, responseFormat string, urlFor imageURLBuilder) ([]byte, error) {
 	if createdAt <= 0 {
 		createdAt = time.Now().Unix()
 	}
@@ -1785,11 +1804,16 @@ func buildImagesAPIResponse(results []imageCallResult, createdAt int64, usageRaw
 	if format == "" {
 		format = "b64_json"
 	}
-	for _, image := range results {
+	for idx, image := range results {
 		populateImageStats(&image)
 		item := []byte(`{}`)
 		if format == "url" {
-			item, _ = sjson.SetBytes(item, "url", "data:"+mimeTypeFromOutputFormat(image.OutputFormat)+";base64,"+image.Result)
+			// 已配置云存储直链时上传并返回托管 URL；失败或未配置则回退到 data URL。
+			if url, ok := buildImageURL(ctx, urlFor, image, idx); ok {
+				item, _ = sjson.SetBytes(item, "url", url)
+			} else {
+				item, _ = sjson.SetBytes(item, "url", "data:"+mimeTypeFromOutputFormat(image.OutputFormat)+";base64,"+image.Result)
+			}
 		} else {
 			item, _ = sjson.SetBytes(item, "b64_json", image.Result)
 		}
@@ -1826,6 +1850,209 @@ func buildImagesAPIResponse(results []imageCallResult, createdAt int64, usageRaw
 		out, _ = sjson.SetRawBytes(out, "usage", usageRaw)
 	}
 	return out, nil
+}
+
+// imageStorageIsCloud 报告当前图片存储后端是否为云端（S3 兼容）对象存储。
+func imageStorageIsCloud() bool {
+	return imagestore.CurrentConfig().Backend == imagestore.BackendS3
+}
+
+// cloudUploadImage 把单张生成图上传到已配置的云存储，返回存储 ref 与限时预签名直链。
+//
+// 任一步失败都返回 ok=false，由调用方回退到 base64/data URL，
+// 确保 API 不会因为对象存储配置或网络问题而整体失败。
+func cloudUploadImage(ctx context.Context, image imageCallResult, idx int) (ref, url string, ok bool) {
+	data, decoded := decodeImageBase64(image.Result)
+	if !decoded || len(data) == 0 {
+		return "", "", false
+	}
+	backend, err := imagestore.Primary()
+	if err != nil {
+		log.Printf("[images] 云存储未初始化，回退 base64: %v", err)
+		return "", "", false
+	}
+	mimeType := mimeTypeFromOutputFormat(image.OutputFormat)
+	key := fmt.Sprintf("api/%d-%02d-%s.%s", time.Now().UnixNano(), idx+1, uuid.NewString()[:8], imageExtFromOutputFormat(image.OutputFormat))
+	ref, err = backend.Save(ctx, key, data, mimeType)
+	if err != nil {
+		log.Printf("[images] 上传云存储失败，回退 base64: %v", err)
+		return "", "", false
+	}
+	url, err = imagestore.PresignURL(ctx, ref, imageCloudURLTTL)
+	if err != nil {
+		log.Printf("[images] 生成预签名直链失败，回退 base64: %v", err)
+		return "", "", false
+	}
+	return ref, url, true
+}
+
+// cloudImageURLOnly 仅上传 + 预签名，不写图库。供未接入 DB 的场景（如单测）使用。
+func cloudImageURLOnly(ctx context.Context, image imageCallResult, idx int) (string, bool) {
+	_, url, ok := cloudUploadImage(ctx, image, idx)
+	return url, ok
+}
+
+// buildImageURL 执行注入的 url 构造回调；回调为 nil 时返回 ok=false（回退 data URL）。
+func buildImageURL(ctx context.Context, urlFor imageURLBuilder, image imageCallResult, idx int) (string, bool) {
+	if urlFor == nil {
+		return "", false
+	}
+	return urlFor(ctx, image, idx)
+}
+
+// imageExtFromOutputFormat 把 output_format 归一为对象 key 用的文件扩展名。
+func imageExtFromOutputFormat(outputFormat string) string {
+	switch strings.ToLower(strings.TrimSpace(outputFormat)) {
+	case "jpg", "jpeg", "image/jpeg":
+		return "jpg"
+	case "webp", "image/webp":
+		return "webp"
+	default:
+		return "png"
+	}
+}
+
+// imageGalleryPersister 在 response_format=url 且配置了云存储时，把每张生成图
+// 上传到对象存储、登记进图库（懒创建 synthetic job + asset 记录），并返回预签名直链。
+//
+// 这样 API 生成的图与后台 Image Studio 生成的图共用同一套图库展示与删除逻辑：
+// 管理员可在图库中看到它们，删除时会级联删掉数据库记录与云端对象，不再无主堆积。
+type imageGalleryPersister struct {
+	h            *Handler
+	prompt       string
+	paramsJSON   string
+	apiKeyID     int64
+	apiKeyName   string
+	apiKeyMasked string
+	model        string
+	start        time.Time
+
+	jobID        int64 // 懒创建：第一张图上传成功时才建 job；0 表示尚未/无法创建
+	jobAttempted bool
+	saved        int
+}
+
+// newImageGalleryPersister 在 response_format=url 且已配置云存储时构造一个 persister，
+// 否则返回 nil（调用方据此回退到 data URL / base64）。
+func (h *Handler) newImageGalleryPersister(c *gin.Context, responseFormat, model string, responsesBody []byte) *imageGalleryPersister {
+	if !strings.EqualFold(strings.TrimSpace(responseFormat), "url") || !imageStorageIsCloud() {
+		return nil
+	}
+	prompt := gjson.GetBytes(responsesBody, "input.0.content.0.text").String()
+	paramsJSON := "{}"
+	if tool := gjson.GetBytes(responsesBody, "tools.0"); tool.Exists() {
+		paramsJSON = tool.Raw
+	}
+	p := &imageGalleryPersister{
+		h:          h,
+		prompt:     prompt,
+		paramsJSON: paramsJSON,
+		apiKeyID:   requestAPIKeyID(c),
+		model:      model,
+		start:      time.Now(),
+	}
+	if v, ok := c.Get(contextAPIKeyName); ok {
+		if name, ok := v.(string); ok {
+			p.apiKeyName = name
+		}
+	}
+	if v, ok := c.Get(contextAPIKeyMasked); ok {
+		if masked, ok := v.(string); ok {
+			p.apiKeyMasked = masked
+		}
+	}
+	return p
+}
+
+// buildURL 实现注入 buildImagesAPIResponse 的回调：上传 + 登记图库，返回直链。
+func (p *imageGalleryPersister) buildURL(ctx context.Context, image imageCallResult, idx int) (string, bool) {
+	ref, url, ok := cloudUploadImage(ctx, image, idx)
+	if !ok {
+		return "", false
+	}
+	p.recordAsset(ctx, image, ref)
+	return url, true
+}
+
+// recordAsset 尽力把已上传对象登记进图库（job + asset）。失败时删除已上传对象，
+// 保持「每个云端对象都有数据库记录」的不变式，避免产生无主文件。
+func (p *imageGalleryPersister) recordAsset(ctx context.Context, image imageCallResult, ref string) {
+	if p == nil || p.h == nil || p.h.db == nil {
+		return
+	}
+	jobID := p.ensureJob(ctx)
+	populateImageStats(&image)
+	input := database.ImageAssetInput{
+		JobID:         jobID,
+		Filename:      ref,
+		StoragePath:   ref,
+		MimeType:      mimeTypeFromOutputFormat(image.OutputFormat),
+		Bytes:         image.ByteSize,
+		Width:         image.Width,
+		Height:        image.Height,
+		Model:         firstNonEmptyImageStr(image.Model, p.model),
+		RequestedSize: image.Size,
+		ActualSize:    imageActualSize(image.Width, image.Height),
+		Quality:       image.Quality,
+		OutputFormat:  image.OutputFormat,
+		RevisedPrompt: image.RevisedPrompt,
+	}
+	if _, err := p.h.db.InsertImageAsset(ctx, input); err != nil {
+		log.Printf("[images] 登记图库 asset 失败，删除已上传对象避免无主: %v", err)
+		if backend, rerr := imagestore.Resolve(ref); rerr == nil {
+			_ = backend.Delete(ctx, ref)
+		}
+		return
+	}
+	p.saved++
+}
+
+// ensureJob 懒创建一条 synthetic job，返回 job_id；创建失败时返回 0（asset 仍可见于图库平铺视图）。
+func (p *imageGalleryPersister) ensureJob(ctx context.Context) int64 {
+	if p.jobAttempted {
+		return p.jobID
+	}
+	p.jobAttempted = true
+	id, err := p.h.db.InsertImageGenerationJob(ctx, database.ImageGenerationJobInput{
+		Prompt:       p.prompt,
+		ParamsJSON:   p.paramsJSON,
+		APIKeyID:     p.apiKeyID,
+		APIKeyName:   p.apiKeyName,
+		APIKeyMasked: p.apiKeyMasked,
+	})
+	if err != nil {
+		log.Printf("[images] 创建图库 job 失败，asset 将以 job_id=0 登记: %v", err)
+		return 0
+	}
+	p.jobID = id
+	return id
+}
+
+// finalize 把 synthetic job 标记为成功（含耗时）。无 job 或一张都没存成时跳过。
+func (p *imageGalleryPersister) finalize(ctx context.Context) {
+	if p == nil || p.h == nil || p.h.db == nil || p.jobID == 0 || p.saved == 0 {
+		return
+	}
+	durationMs := int(time.Since(p.start).Milliseconds())
+	if err := p.h.db.MarkImageJobSucceeded(ctx, p.jobID, durationMs); err != nil {
+		log.Printf("[images] 标记图库 job 成功失败: %v", err)
+	}
+}
+
+func firstNonEmptyImageStr(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func imageActualSize(width, height int) string {
+	if width > 0 && height > 0 {
+		return fmt.Sprintf("%dx%d", width, height)
+	}
+	return ""
 }
 
 func buildImagesStreamPartialPayload(eventType, b64 string, partialImageIndex int64, responseFormat string, createdAt int64, meta imageCallResult) []byte {
