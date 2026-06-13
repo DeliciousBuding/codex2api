@@ -4,14 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	neturl "net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -300,6 +303,138 @@ func (h *Handler) ExchangeOAuthCode(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":   fmt.Sprintf("OAuth 账号 %s 添加成功", name),
+		"id":        id,
+		"email":     email,
+		"plan_type": planType,
+	})
+}
+
+// UpdateOAuthAccountCode 用授权码更新已有 OAuth 账号的授权参数。
+// POST /api/admin/accounts/:id/oauth/exchange-code
+func (h *Handler) UpdateOAuthAccountCode(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(c, http.StatusBadRequest, "无效的账号 ID")
+		return
+	}
+
+	var req struct {
+		SessionID string `json:"session_id"`
+		Code      string `json:"code"`
+		State     string `json:"state"`
+		ProxyURL  string `json:"proxy_url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	req.Code = strings.TrimSpace(req.Code)
+	req.State = strings.TrimSpace(req.State)
+	req.ProxyURL = strings.TrimSpace(req.ProxyURL)
+	if req.SessionID == "" || req.Code == "" || req.State == "" {
+		writeError(c, http.StatusBadRequest, "session_id、code 和 state 均为必填")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	row, err := h.db.GetAccountByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "账号不存在")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(row.Type), "oauth") {
+		writeError(c, http.StatusBadRequest, "当前账号不是 OAuth 授权类型，不能重新授权")
+		return
+	}
+
+	sess, ok := globalOAuthStore.get(req.SessionID)
+	if !ok {
+		writeError(c, http.StatusBadRequest, "OAuth 会话不存在或已过期（有效期 30 分钟）")
+		return
+	}
+	if req.State != sess.State {
+		writeError(c, http.StatusBadRequest, "state 不匹配，请重新发起授权")
+		return
+	}
+
+	proxyURL := sess.ProxyURL
+	if req.ProxyURL != "" {
+		proxyURL = req.ProxyURL
+	}
+	if proxyURL == "" {
+		proxyURL = strings.TrimSpace(row.ProxyURL)
+	}
+	if proxyURL == "" && h.store != nil {
+		proxyURL = h.store.GetProxyURL()
+	}
+
+	resinAccountID := fmt.Sprintf("%d", id)
+	tokenResp, accountInfo, err := doOAuthCodeExchange(c.Request.Context(), req.Code, sess.CodeVerifier, sess.RedirectURI, proxyURL, resinAccountID)
+	if err != nil {
+		writeError(c, http.StatusBadGateway, "授权码兑换失败: "+err.Error())
+		return
+	}
+	globalOAuthStore.delete(req.SessionID)
+
+	if tokenResp.RefreshToken == "" {
+		writeError(c, http.StatusBadGateway, "授权服务器未返回 refresh_token，请确认已开启 offline_access scope")
+		return
+	}
+
+	seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
+		refreshToken: tokenResp.RefreshToken,
+		accessToken:  tokenResp.AccessToken,
+		idToken:      tokenResp.IDToken,
+		expiresIn:    tokenResp.ExpiresIn,
+	})
+	if err := h.db.UpdateOAuthAccountCredentials(ctx, id, tokenCredentialMap(seed), proxyURL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "账号不存在")
+			return
+		}
+		writeError(c, http.StatusInternalServerError, "Token 写入数据库失败: "+err.Error())
+		return
+	}
+
+	if h.store != nil {
+		h.store.RemoveAccount(id)
+		if err := h.store.LoadAccountByID(ctx, id); err != nil {
+			writeError(c, http.StatusInternalServerError, "重新加载运行时账号失败: "+err.Error())
+			return
+		}
+	}
+	h.db.InsertAccountEventAsync(id, "updated", "oauth_reauth")
+
+	if h.store != nil {
+		if account := h.store.FindByID(id); account != nil && account.GetAccessToken() != "" {
+			h.triggerImportedAccountUsageProbe(id, "oauth_reauth")
+		} else if !h.store.GetLazyMode() {
+			go h.refreshImportedAccountAndProbe(id, "oauth_reauth_refresh")
+		}
+	}
+
+	email := ""
+	planType := ""
+	if accountInfo != nil {
+		email = accountInfo.Email
+		planType = accountInfo.PlanType
+	}
+	if email == "" {
+		email = seed.email
+	}
+	if planType == "" {
+		planType = seed.planType
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":   "OAuth 账号授权参数更新成功",
 		"id":        id,
 		"email":     email,
 		"plan_type": planType,
