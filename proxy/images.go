@@ -1199,19 +1199,16 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 				resp.Body.Close()
 				h.store.Release(account)
 				excludeAccounts[account.ID()] = true
-				if shouldRetryImageStreamError(readErr, &generalRetries, maxRetries, attempt, maxImageAttempts) {
+				willRetry := shouldRetryImageStreamError(readErr, &generalRetries, maxRetries, attempt, maxImageAttempts)
+				// Always record the failed attempt so it appears in usage stats,
+				// matching the chat completions error path.
+				h.logUsageForRequest(c, buildImageErrorUsageLog(account, inboundEndpoint, logModel, logEffectiveModel, stream, int(time.Since(start).Milliseconds()), attempt, willRetry, readErr, usage, imageLogInfo))
+				if willRetry {
 					lastStatusCode = http.StatusBadGateway
 					lastBody = []byte(readErr.Error())
 					continue
 				}
 				c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": readErr.Error(), "type": "upstream_error"}})
-				h.logUsageForRequest(c, &database.UsageLogInput{
-					AccountID:      account.ID(),
-					Endpoint:       inboundEndpoint,
-					Model:          logModel,
-					EffectiveModel: logEffectiveModel,
-					StatusCode:     http.StatusBadGateway,
-				})
 				return
 			}
 		}
@@ -1225,24 +1222,19 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			resp.Body.Close()
 			h.store.Release(account)
 			excludeAccounts[account.ID()] = true
-			if shouldRetryImageStreamError(readErr, &generalRetries, maxRetries, attempt, maxImageAttempts) {
+			// Only retry when nothing has been written to the client yet.
+			willRetry := shouldRetryImageStreamError(readErr, &generalRetries, maxRetries, attempt, maxImageAttempts) && !c.Writer.Written()
+			// Always record the failed attempt so it appears in usage stats.
+			h.logUsageForRequest(c, buildImageErrorUsageLog(account, inboundEndpoint, logModel, logEffectiveModel, stream, int(time.Since(start).Milliseconds()), attempt, willRetry, readErr, usage, imageLogInfo))
+			if willRetry {
 				lastStatusCode = statusCode
 				lastBody = []byte(readErr.Error())
-				if !c.Writer.Written() {
-					continue
-				}
+				continue
 			}
 			// Non-retryable -- deliver error response if nothing written yet.
 			if !c.Writer.Written() {
 				c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": readErr.Error(), "type": "upstream_error"}})
 			}
-			h.logUsageForRequest(c, &database.UsageLogInput{
-				AccountID:      account.ID(),
-				Endpoint:       inboundEndpoint,
-				Model:          logModel,
-				EffectiveModel: logEffectiveModel,
-				StatusCode:     http.StatusBadGateway,
-			})
 			return
 		}
 		logInput := &database.UsageLogInput{
@@ -1256,9 +1248,6 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 			InboundEndpoint:  inboundEndpoint,
 			UpstreamEndpoint: "/v1/responses",
 			Stream:           stream,
-		}
-		if readErr != nil {
-			logInput.ErrorMessage = usageLogErrorMessage(statusCode, []byte(readErr.Error()))
 		}
 		if usage != nil {
 			logInput.PromptTokens = usage.PromptTokens
@@ -1279,12 +1268,8 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 
 		resp.Body.Close()
 		SyncCodexUsageState(h.store, account, resp)
-		if readErr != nil {
-			h.store.ReportRequestFailure(account, "transport", time.Duration(logInput.DurationMs)*time.Millisecond)
-		} else {
-			h.store.ClearModelCooldown(account, requestModel)
-			h.store.ReportRequestSuccess(account, time.Duration(logInput.DurationMs)*time.Millisecond)
-		}
+		h.store.ClearModelCooldown(account, requestModel)
+		h.store.ReportRequestSuccess(account, time.Duration(logInput.DurationMs)*time.Millisecond)
 		h.store.Release(account)
 		return
 	}
@@ -1294,6 +1279,38 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		return
 	}
 	c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(""))
+}
+
+// buildImageErrorUsageLog builds a usage log entry for a failed image request
+// so that failures -- including retried attempts -- still appear in usage stats.
+// Previously the read-error retry paths called continue without logging, so
+// failed image requests were silently missing from the statistics.
+func buildImageErrorUsageLog(account *auth.Account, inboundEndpoint, logModel, logEffectiveModel string, stream bool, durationMs, attempt int, willRetry bool, readErr error, usage *UsageInfo, imageLogInfo imageUsageLogInfo) *database.UsageLogInput {
+	logInput := &database.UsageLogInput{
+		AccountID:        account.ID(),
+		Endpoint:         inboundEndpoint,
+		Model:            logModel,
+		EffectiveModel:   logEffectiveModel,
+		StatusCode:       http.StatusBadGateway,
+		DurationMs:       durationMs,
+		InboundEndpoint:  inboundEndpoint,
+		UpstreamEndpoint: "/v1/responses",
+		Stream:           stream,
+		IsRetryAttempt:   willRetry,
+		AttemptIndex:     attempt + 1,
+		ErrorMessage:     usageLogErrorMessage(http.StatusBadGateway, []byte(readErr.Error())),
+	}
+	if usage != nil {
+		logInput.PromptTokens = usage.PromptTokens
+		logInput.CompletionTokens = usage.CompletionTokens
+		logInput.TotalTokens = usage.TotalTokens
+		logInput.InputTokens = usage.InputTokens
+		logInput.OutputTokens = usage.OutputTokens
+		logInput.ReasoningTokens = usage.ReasoningTokens
+		logInput.CachedTokens = usage.CachedTokens
+	}
+	applyImageUsageLogInfo(logInput, imageLogInfo)
+	return logInput
 }
 
 // shouldRetryImageStreamError determines whether an image generation stream

@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -542,6 +543,37 @@ func TestCollectImagesResponseUsesUpstreamFailureMessage(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "server_error") || !strings.Contains(got, "req-123") {
 		t.Fatalf("error = %q, want upstream code and request id", got)
+	}
+}
+
+func TestBuildImageErrorUsageLogRecordsFailure(t *testing.T) {
+	account := &auth.Account{DBID: 42, AccessToken: "token", PlanType: "plus"}
+	readErr := fmt.Errorf("upstream image generation failed: server_error")
+	usage := &UsageInfo{InputTokens: 12, OutputTokens: 3, TotalTokens: 15, PromptTokens: 12, CompletionTokens: 3}
+	imageLogInfo := imageUsageLogInfo{Count: 1, Width: 1024, Height: 1024, Bytes: 2048, Format: "png", Size: "1024x1024"}
+
+	logInput := buildImageErrorUsageLog(account, "/v1/images/generations", "gpt-image-2", "gpt-image-2", false, 1500, 1, true, readErr, usage, imageLogInfo)
+
+	if logInput.AccountID != 42 {
+		t.Fatalf("AccountID = %d, want 42", logInput.AccountID)
+	}
+	if logInput.StatusCode != http.StatusBadGateway {
+		t.Fatalf("StatusCode = %d, want %d", logInput.StatusCode, http.StatusBadGateway)
+	}
+	if logInput.DurationMs != 1500 {
+		t.Fatalf("DurationMs = %d, want 1500", logInput.DurationMs)
+	}
+	if !logInput.IsRetryAttempt || logInput.AttemptIndex != 2 {
+		t.Fatalf("retry fields = (%v, %d), want (true, 2)", logInput.IsRetryAttempt, logInput.AttemptIndex)
+	}
+	if logInput.ErrorMessage == "" {
+		t.Fatal("ErrorMessage is empty, want upstream failure detail")
+	}
+	if logInput.PromptTokens != 12 || logInput.CompletionTokens != 3 || logInput.TotalTokens != 15 {
+		t.Fatalf("token fields = (%d, %d, %d), want (12, 3, 15)", logInput.PromptTokens, logInput.CompletionTokens, logInput.TotalTokens)
+	}
+	if logInput.ImageCount != 1 || logInput.ImageWidth != 1024 || logInput.ImageFormat != "png" {
+		t.Fatalf("image fields = %#v, want count=1 width=1024 format=png", logInput)
 	}
 }
 
