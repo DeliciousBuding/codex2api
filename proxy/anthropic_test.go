@@ -613,8 +613,43 @@ func TestAnthropicResponseAccumulatorUsesStreamDeltasWhenCompletedOutputIsEmpty(
 	if resp.StopReason != "end_turn" {
 		t.Fatalf("stop_reason = %q, want end_turn", resp.StopReason)
 	}
-	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 2 || resp.Usage.CacheReadInputTokens != 3 {
-		t.Fatalf("usage = %+v, want input=10 output=2 cache_read=3", resp.Usage)
+	// 上游 input_tokens=10 含 3 个缓存命中；Anthropic 语义下 input_tokens 不含
+	// 缓存，应对外报 input=7（10-3）、cache_read=3，避免缓存 token 被重复计费。
+	if resp.Usage.InputTokens != 7 || resp.Usage.OutputTokens != 2 || resp.Usage.CacheReadInputTokens != 3 {
+		t.Fatalf("usage = %+v, want input=7 output=2 cache_read=3", resp.Usage)
+	}
+}
+
+// TestAnthropicStreamTranslatorUsageExcludesCachedTokens 验证流式 message_delta
+// 的 usage 把缓存命中从 input_tokens 中扣除，避免缓存 token 被重复计费。
+func TestAnthropicStreamTranslatorUsageExcludesCachedTokens(t *testing.T) {
+	tr := newAnthropicStreamTranslator("claude-sonnet-4-5")
+	tr.translateEvent([]byte(`{"type":"response.created"}`))
+
+	completed := []byte(`{
+		"type":"response.completed",
+		"response":{
+			"status":"completed",
+			"usage":{
+				"input_tokens":10,
+				"output_tokens":2,
+				"input_tokens_details":{"cached_tokens":3}
+			}
+		}
+	}`)
+
+	var usage *anthropicUsage
+	for _, evt := range tr.translateEvent(completed) {
+		if evt.Type == "message_delta" && evt.Usage != nil {
+			usage = evt.Usage
+		}
+	}
+	if usage == nil {
+		t.Fatal("expected message_delta with usage")
+	}
+	// input_tokens=10 含 3 个缓存 → 对外 input=7、cache_read=3
+	if usage.InputTokens != 7 || usage.OutputTokens != 2 || usage.CacheReadInputTokens != 3 {
+		t.Fatalf("usage = %+v, want input=7 output=2 cache_read=3", *usage)
 	}
 }
 

@@ -794,9 +794,12 @@ func (t *anthropicStreamTranslator) handleCompleted(data []byte) []anthropicStre
 	// 提取 usage
 	usage := gjson.GetBytes(data, "response.usage")
 	if usage.Exists() {
-		t.inputTokens = int(usage.Get("input_tokens").Int())
-		t.outputTokens = int(usage.Get("output_tokens").Int())
+		// OpenAI Responses 的 input_tokens 含缓存命中部分，而 Anthropic Messages
+		// 的 input_tokens 不含缓存（缓存另计在 cache_read_input_tokens）。
+		// 直接透传会把缓存 token 重复计入，导致费用偏高，因此这里扣除缓存部分。
 		t.cachedTokens = int(usage.Get("input_tokens_details.cached_tokens").Int())
+		t.inputTokens = max(int(usage.Get("input_tokens").Int())-t.cachedTokens, 0)
+		t.outputTokens = int(usage.Get("output_tokens").Int())
 	}
 
 	// 确定 stop_reason
@@ -1118,10 +1121,13 @@ func buildAnthropicResponseFromCompleted(completedData []byte, model string) *an
 	// usage
 	usage := gjson.GetBytes(completedData, "response.usage")
 	if usage.Exists() {
+		// 见流式分支说明：扣除缓存命中部分，避免缓存 token 被重复计入。
+		cached := int(usage.Get("input_tokens_details.cached_tokens").Int())
+		input := max(int(usage.Get("input_tokens").Int())-cached, 0)
 		resp.Usage = anthropicUsage{
-			InputTokens:          int(usage.Get("input_tokens").Int()),
+			InputTokens:          input,
 			OutputTokens:         int(usage.Get("output_tokens").Int()),
-			CacheReadInputTokens: int(usage.Get("input_tokens_details.cached_tokens").Int()),
+			CacheReadInputTokens: cached,
 		}
 	}
 
