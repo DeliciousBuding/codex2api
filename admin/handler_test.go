@@ -1350,6 +1350,36 @@ func TestUpdateAccountSchedulerKeepsAllowedAPIKeyIDsWhenFieldOmitted(t *testing.
 	}
 }
 
+func TestUpdateAccountSchedulerClearsProxyURLOnNull(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	accountID, err := db.InsertAccount(context.Background(), "proxy-account", "rt_proxy", "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatalf("InsertAccount: %v", err)
+	}
+
+	handler := &Handler{db: db}
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
+	ginCtx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(`{"proxy_url":null}`))
+	ginCtx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.UpdateAccountScheduler(ginCtx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	rows, err := db.ListActive(context.Background())
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if rows[0].ProxyURL != "" {
+		t.Fatalf("proxy_url = %q, want empty", rows[0].ProxyURL)
+	}
+}
+
 func TestUpdateAccountSchedulerRejectsMissingAllowedAPIKeyID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1427,6 +1457,44 @@ func TestUpdateAccountSchedulerUpdatesRuntimeOverrides(t *testing.T) {
 	}
 	if runtimeAccount.AutoPause7dDisabled {
 		t.Fatal("runtime auto_pause_7d_disabled = true, want false")
+	}
+}
+
+func TestUpdateAccountSchedulerRuntimePatchPreservesOmittedOverrides(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	accountID := insertTestAccount(t, db)
+	runtimeAccount := &auth.Account{
+		DBID:                    accountID,
+		AccessToken:             "token",
+		Status:                  auth.StatusReady,
+		PlanType:                "pro",
+		ScoreBiasOverride:       int64Ptr(10),
+		BaseConcurrencyOverride: int64Ptr(4),
+	}
+	store := auth.NewStore(nil, nil, nil)
+	store.AddAccount(runtimeAccount)
+
+	handler := &Handler{db: db, store: store}
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", accountID)}}
+	ginCtx.Request = httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/admin/accounts/%d/scheduler", accountID), strings.NewReader(`{"score_bias_override":20}`))
+	ginCtx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.UpdateAccountScheduler(ginCtx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	scoreBias, ok := runtimeAccount.GetScoreBiasOverride()
+	if !ok || scoreBias != 20 {
+		t.Fatalf("runtime score_bias_override = (%d, %t), want (20, true)", scoreBias, ok)
+	}
+	baseConcurrency, ok := runtimeAccount.GetBaseConcurrencyOverride()
+	if !ok || baseConcurrency != 4 {
+		t.Fatalf("runtime base_concurrency_override = (%d, %t), want (4, true)", baseConcurrency, ok)
 	}
 }
 
@@ -1810,6 +1878,10 @@ func insertTestAPIKey(t *testing.T, db *database.DB, name string) int64 {
 		t.Fatalf("insert api key: %v", err)
 	}
 	return id
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
 }
 
 func assertErrorMessage(t *testing.T, recorder *httptest.ResponseRecorder, want string) {

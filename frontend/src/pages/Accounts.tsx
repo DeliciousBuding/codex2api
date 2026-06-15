@@ -2213,6 +2213,11 @@ export default function Accounts() {
         }),
       );
       void reload();
+    } catch (error) {
+      showToast(
+        t("accounts.lockFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
     } finally {
       setBatchLoading(false);
       setLockingSubscriptionAccounts(false);
@@ -2310,6 +2315,11 @@ export default function Accounts() {
       );
       setSelected(new Set());
       void reload();
+    } catch (error) {
+      showToast(
+        t("accounts.lockFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
     } finally {
       setBatchLoading(false);
     }
@@ -2329,6 +2339,11 @@ export default function Accounts() {
       );
       setSelected(new Set());
       void reload();
+    } catch (error) {
+      showToast(
+        t("accounts.enableFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
     } finally {
       setBatchLoading(false);
     }

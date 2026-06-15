@@ -887,7 +887,7 @@ type updateAccountSchedulerReq struct {
 	AutoPause7dThreshold    json.RawMessage `json:"auto_pause_7d_threshold"`
 	AutoPause5hDisabled     json.RawMessage `json:"auto_pause_5h_disabled"`
 	AutoPause7dDisabled     json.RawMessage `json:"auto_pause_7d_disabled"`
-	ProxyURL                *string         `json:"proxy_url"`
+	ProxyURL                json.RawMessage `json:"proxy_url"`
 }
 
 type accountSchedulerUpdate struct {
@@ -947,9 +947,9 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		return accountSchedulerUpdate{}, err
 	}
 
-	proxyURL := database.OptionalString{}
-	if req.ProxyURL != nil {
-		proxyURL = database.OptionalString{Set: true, Value: *req.ProxyURL}
+	proxyURL, err := parseOptionalStringField(req.ProxyURL, "proxy_url", security.ValidateProxyURL)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
 	}
 	credentialUpdates := make(map[string]interface{})
 	if autoPause5hThreshold.Set {
@@ -1118,34 +1118,14 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 		return
 	}
 	if update.ScoreBiasOverride.Set || update.BaseConcurrencyOverride.Set || update.SkipWarmTier.Set {
-		current := h.store.FindByID(id)
-		var score *int64
-		var concurrency *int64
-		var skipWarm *bool
-		if current != nil {
-			current.Mu().RLock()
-			if current.ScoreBiasOverride != nil {
-				value := *current.ScoreBiasOverride
-				score = &value
-			}
-			if current.BaseConcurrencyOverride != nil {
-				value := *current.BaseConcurrencyOverride
-				concurrency = &value
-			}
-			skipValue := current.SkipWarmTier
-			skipWarm = &skipValue
-			current.Mu().RUnlock()
-		}
-		if update.ScoreBiasOverride.Set {
-			score = nullableInt64Pointer(update.ScoreBiasOverride.Value)
-		}
-		if update.BaseConcurrencyOverride.Set {
-			concurrency = nullableInt64Pointer(update.BaseConcurrencyOverride.Value)
-		}
-		if update.SkipWarmTier.Set {
-			skipWarm = &update.SkipWarmTier.Value
-		}
-		h.store.ApplyAccountSchedulerOverrides(id, score, concurrency, skipWarm)
+		h.store.ApplyAccountSchedulerOverridePatch(
+			id,
+			update.ScoreBiasOverride.Set,
+			nullableInt64Pointer(update.ScoreBiasOverride.Value),
+			update.BaseConcurrencyOverride.Set,
+			nullableInt64Pointer(update.BaseConcurrencyOverride.Value),
+			optionalBoolPtr(update.SkipWarmTier),
+		)
 	}
 	if update.AllowedAPIKeyIDs.Set {
 		h.store.ApplyAccountAllowedAPIKeys(id, update.AllowedAPIKeyIDs.Values)
@@ -1223,6 +1203,27 @@ func parseOptionalStringSliceField(raw json.RawMessage, field string) (optionalS
 		return optionalStringSlice{}, fmt.Errorf("%s 最多 32 个标签", field)
 	}
 	return optionalStringSlice{Set: true, Values: out}, nil
+}
+
+func parseOptionalStringField(raw json.RawMessage, field string, validator func(string) error) (database.OptionalString, error) {
+	if len(raw) == 0 {
+		return database.OptionalString{}, nil
+	}
+	if string(raw) == "null" {
+		return database.OptionalString{Set: true, Value: ""}, nil
+	}
+
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return database.OptionalString{}, fmt.Errorf("%s 必须是字符串或 null", field)
+	}
+	value = strings.TrimSpace(value)
+	if validator != nil {
+		if err := validator(value); err != nil {
+			return database.OptionalString{}, fmt.Errorf("%s 无效: %w", field, err)
+		}
+	}
+	return database.OptionalString{Set: true, Value: value}, nil
 }
 
 func parseOptionalIntegerField(raw json.RawMessage, field string, minValue, maxValue int64) (database.OptionalNullInt64, error) {
