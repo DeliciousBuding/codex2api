@@ -4034,6 +4034,28 @@ func (s *Store) ApplyAccountSchedulerOverrides(dbID int64, scoreBiasOverride, ba
 	return true
 }
 
+func (s *Store) ApplyAccountSchedulerOverridePatch(dbID int64, scoreBiasSet bool, scoreBiasOverride *int64, baseConcurrencySet bool, baseConcurrencyOverride *int64, skipWarmTier *bool) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+
+	acc.mu.Lock()
+	if scoreBiasSet {
+		acc.ScoreBiasOverride = cloneInt64Ptr(scoreBiasOverride)
+	}
+	if baseConcurrencySet {
+		acc.BaseConcurrencyOverride = cloneInt64Ptr(baseConcurrencyOverride)
+	}
+	if skipWarmTier != nil {
+		acc.SkipWarmTier = *skipWarmTier
+	}
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.mu.Unlock()
+	s.fastSchedulerUpdate(acc)
+	return true
+}
+
 func (s *Store) ApplyAccountAllowedAPIKeys(dbID int64, allowedAPIKeyIDs []int64) bool {
 	acc := s.FindByID(dbID)
 	if acc == nil {

@@ -104,7 +104,6 @@ import AccountGroupFilterSelect, {
 } from "../components/AccountGroupFilterSelect";
 import ChipInput from "../components/ChipInput";
 
-const ACCOUNT_BATCH_CONCURRENCY = 6;
 const OPERATION_PROGRESS_FLUSH_INTERVAL_MS = 200;
 const ACCOUNT_ANALYSIS_VISIBILITY_KEY = "codex2api:accounts:analysis-visible";
 const ACCOUNT_EMAIL_DOMAIN_VISIBILITY_KEY =
@@ -391,34 +390,6 @@ function useMediaQuery(query: string) {
   }, [query]);
 
   return matches;
-}
-
-async function runAccountBatch(
-  ids: number[],
-  action: (id: number) => Promise<unknown>,
-  concurrency = ACCOUNT_BATCH_CONCURRENCY,
-) {
-  let success = 0;
-  let fail = 0;
-  let cursor = 0;
-  const workerCount = Math.min(concurrency, ids.length);
-
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (cursor < ids.length) {
-        const id = ids[cursor];
-        cursor += 1;
-        try {
-          await action(id);
-          success += 1;
-        } catch {
-          fail += 1;
-        }
-      }
-    }),
-  );
-
-  return { success, fail };
 }
 
 type BatchOperationAction = "batch_test" | "batch_delete" | "batch_refresh";
@@ -2276,12 +2247,22 @@ export default function Accounts() {
     setBatchLoading(true);
     setLockingSubscriptionAccounts(true);
     try {
-      const { success, fail } = await runAccountBatch(
-        candidates.map((account) => account.id),
-        (id) => api.toggleAccountLock(id, true),
+      const result = await api.batchUpdateAccounts({
+        ids: candidates.map((account) => account.id),
+        locked: true,
+      });
+      showToast(
+        t("accounts.lockSubscriptionAccountsDone", {
+          success: result.success,
+          fail: result.failed,
+        }),
       );
-      showToast(t("accounts.lockSubscriptionAccountsDone", { success, fail }));
       void reload();
+    } catch (error) {
+      showToast(
+        t("accounts.lockFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
     } finally {
       setBatchLoading(false);
       setLockingSubscriptionAccounts(false);
@@ -2370,17 +2351,20 @@ export default function Accounts() {
     if (ids.length === 0) return;
     setBatchLoading(true);
     try {
-      const { success, fail } = await runAccountBatch(ids, (id) =>
-        api.toggleAccountLock(id, locked),
-      );
+      const result = await api.batchUpdateAccounts({ ids, locked });
       showToast(
         t(locked ? "accounts.batchLockDone" : "accounts.batchUnlockDone", {
-          success,
-          fail,
+          success: result.success,
+          fail: result.failed,
         }),
       );
       setSelected(new Set());
       void reload();
+    } catch (error) {
+      showToast(
+        t("accounts.lockFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
     } finally {
       setBatchLoading(false);
     }
@@ -2391,17 +2375,20 @@ export default function Accounts() {
     if (ids.length === 0) return;
     setBatchLoading(true);
     try {
-      const { success, fail } = await runAccountBatch(ids, (id) =>
-        api.toggleAccountEnabled(id, enabled),
-      );
+      const result = await api.batchUpdateAccounts({ ids, enabled });
       showToast(
         t(enabled ? "accounts.batchEnableDone" : "accounts.batchDisableDone", {
-          success,
-          fail,
+          success: result.success,
+          fail: result.failed,
         }),
       );
       setSelected(new Set());
       void reload();
+    } catch (error) {
+      showToast(
+        t("accounts.enableFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
     } finally {
       setBatchLoading(false);
     }
@@ -2464,13 +2451,17 @@ export default function Accounts() {
     if (ids.length === 0) return;
     setBatchMetaSubmitting(true);
     try {
-      const { success, fail } = await runAccountBatch(ids, (id) =>
-        api.updateAccountScheduler(id, {
-          tags: batchTags,
-          group_ids: batchGroupIds,
+      const result = await api.batchUpdateAccounts({
+        ids,
+        tags: batchTags,
+        group_ids: batchGroupIds,
+      });
+      showToast(
+        t("accounts.batchMetaDone", {
+          success: result.success,
+          fail: result.failed,
         }),
       );
-      showToast(t("accounts.batchMetaDone", { success, fail }));
       setShowBatchMetaEditor(false);
       await Promise.all([reload(), reloadGroups()]);
     } catch (error) {
@@ -2513,10 +2504,13 @@ export default function Accounts() {
         auto_pause_5h_disabled: batchAutoPause5hDisabled,
         auto_pause_7d_disabled: batchAutoPause7dDisabled,
       };
-      const { success, fail } = await runAccountBatch(ids, (id) =>
-        api.updateAccountScheduler(id, payload),
+      const result = await api.batchUpdateAccounts({ ids, ...payload });
+      showToast(
+        t("accounts.batchAutoPauseDone", {
+          success: result.success,
+          fail: result.failed,
+        }),
       );
-      showToast(t("accounts.batchAutoPauseDone", { success, fail }));
       setShowBatchQuotaAutoPauseEditor(false);
       await reload();
     } catch (error) {
