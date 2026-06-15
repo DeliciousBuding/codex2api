@@ -290,6 +290,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/sub2api/import", h.ImportFromSub2API)
 	api.PATCH("/accounts/:id/scheduler", h.UpdateAccountScheduler)
 	api.DELETE("/accounts/:id", h.DeleteAccount)
+	api.GET("/accounts/health-bars", h.GetAccountHealthBars)
 	api.GET("/accounts/recycle-bin", h.ListRecycleBinAccounts)
 	api.DELETE("/accounts/recycle-bin", h.EmptyRecycleBin)
 	api.POST("/accounts/recycle-bin/batch-test", h.RecycleBinBatchTest)

@@ -50,6 +50,7 @@ import type {
   UsageStats,
   AccountGroup,
   AccountGroupsResponse,
+  AccountHealthBarsResponse,
   BackgroundUploadResponse,
   CreateAccountGroupRequest,
   UpdateAccountGroupRequest,
@@ -242,6 +243,8 @@ export const api = {
     request<MessageResponse>(`/accounts/${id}/reset-status`, { method: 'POST' }),
   resetCredits: (id: number) =>
     request<{ message: string; rate_limit_reset_credits?: number }>(`/accounts/${id}/reset-credits`, { method: 'POST' }),
+  getAccountHealthBars: () =>
+    request<AccountHealthBarsResponse>('/accounts/health-bars'),
   sendInvite: (id: number, data: { emails?: string[]; emails_text?: string; referral_key?: string; proxy_url?: string; max_emails?: number }) =>
     request<InviteResponse>(`/accounts/${id}/invite`, { method: 'POST', body: JSON.stringify(data) }),
   batchResetStatus: (ids: number[]) =>
