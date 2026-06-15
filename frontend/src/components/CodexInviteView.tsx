@@ -80,11 +80,14 @@ function resolveAccountInput(accounts: AccountRow[], input: string): AccountRow 
   if (!normalized) return null
   return accounts.find((account) => {
     const id = String(account.id)
+    const name = account.name?.trim().toLowerCase()
+    const normalizedNameWithID = normalized.replace(/\s+#(?=\d+$)/, '#')
     return (
       normalized === id ||
       normalized === `#${id}` ||
       normalized === account.email?.trim().toLowerCase() ||
-      normalized === account.name?.trim().toLowerCase()
+      normalized === name ||
+      (Boolean(name) && normalizedNameWithID === `${name}#${id}`)
     )
   }) ?? null
 }
