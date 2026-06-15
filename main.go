@@ -290,6 +290,7 @@ func main() {
 	log.Printf("单账号并发上限: %d", settings.MaxConcurrency)
 
 	handler.RegisterRoutes(r)
+	adminHandler.RegisterExternalImageRoutes(r, handler)
 	adminHandler.RegisterRoutes(r)
 
 	// 管理后台前端静态文件
@@ -356,7 +357,8 @@ func main() {
 	log.Printf("  API:    POST /v1/chat/completions")
 	log.Printf("  API:    POST /v1/responses")
 	log.Printf("  API:    POST /v1/images/generations")
-	log.Printf("  API:    POST /v1/images/edits")
+	log.Printf("  API:    POST /v1/images/jobs")
+	log.Printf("  API:    GET  /v1/images/jobs/:id")
 	log.Printf("  API:    POST /v1/messages")
 	log.Printf("  API:    GET  /v1/models")
 	log.Println("==========================================")

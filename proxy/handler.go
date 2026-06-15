@@ -1145,6 +1145,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	})
 }
 
+// APIKeyAuthMiddleware exposes the standard /v1 API key authentication middleware
+// for companion routes that live outside proxy.RegisterRoutes.
+func (h *Handler) APIKeyAuthMiddleware() gin.HandlerFunc {
+	return h.authMiddleware()
+}
+
 // authMiddleware API Key 鉴权中间件（增强版，带安全日志）
 //
 // 安全策略（fail-closed）：
