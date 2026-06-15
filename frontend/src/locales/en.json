@@ -870,6 +870,7 @@
     "atWarning": "AT-only accounts cannot auto-refresh. You will need to manually update the token after it expires.",
     "atRefreshDisabled": "AT accounts cannot be refreshed",
     "generateAuthJson": "Generate auth.json",
+    "actionAuthJson": "Export",
     "authJsonGenerated": "auth.json generated. Choose copy or export.",
     "authJsonFailed": "Failed to generate auth.json: {{error}}",
     "authJsonDisabled": "AT-only accounts cannot generate auth.json",

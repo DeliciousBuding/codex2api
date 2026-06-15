@@ -870,6 +870,7 @@
     "atWarning": "AT 模式账号无法自动刷新，过期后需手动更新",
     "atRefreshDisabled": "AT 账号无法刷新",
     "generateAuthJson": "生成 auth.json",
+    "actionAuthJson": "导出",
     "authJsonGenerated": "auth.json 已生成，请选择复制或导出",
     "authJsonFailed": "生成 auth.json 失败：{{error}}",
     "authJsonDisabled": "AT-only 账号无法生成 auth.json",

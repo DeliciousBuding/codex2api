@@ -2407,6 +2407,24 @@ export default function Accounts() {
     }
   };
 
+  // 主动重置额度：消耗 1 次「主动重置次数」立即重置该账号额度（带二次确认）。
+  const handleResetCredits = async (account: AccountRow) => {
+    const confirmed = await confirm({
+      title: t("accounts.resetCreditsButton"),
+      description: t("accounts.resetCreditsConfirmMessage"),
+      confirmText: t("accounts.resetCreditsConfirmButton"),
+      tone: "warning",
+    });
+    if (!confirmed) return;
+    try {
+      await api.resetCredits(account.id);
+      showToast(t("accounts.resetCreditsSuccess"));
+      void reload();
+    } catch (error) {
+      showToast(getErrorMessage(error), "error");
+    }
+  };
+
   const handleBatchResetStatus = async () => {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
@@ -3668,6 +3686,9 @@ export default function Accounts() {
                           }
                           onToggleLock={() => void handleToggleLock(account)}
                           onResetStatus={() => void handleResetStatus(account)}
+                          onResetCredits={() =>
+                            void handleResetCredits(account)
+                          }
                           onDelete={() => void handleDelete(account)}
                         />
                       );
@@ -4189,6 +4210,21 @@ export default function Accounts() {
                                     title={t("accounts.resetStatusHint")}
                                   >
                                     <RotateCcw className="size-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="icon"
+                                    className="h-7 w-8 px-0"
+                                    disabled={
+                                      (account.rate_limit_reset_credits ?? 0) <=
+                                      0
+                                    }
+                                    onClick={() =>
+                                      void handleResetCredits(account)
+                                    }
+                                    title={t("accounts.resetCreditsButton")}
+                                  >
+                                    <Timer className="size-3.5" />
                                   </Button>
                                   <Button
                                     variant="destructive"
@@ -8118,6 +8154,7 @@ function AccountMobileCard({
   onToggleEnabled,
   onToggleLock,
   onResetStatus,
+  onResetCredits,
   onDelete,
 }: {
   account: AccountRow;
@@ -8140,6 +8177,7 @@ function AccountMobileCard({
   onToggleEnabled: () => void;
   onToggleLock: () => void;
   onResetStatus: () => void;
+  onResetCredits: () => void;
   onDelete: () => void;
 }) {
   const displayName = account.openai_responses_api
@@ -8151,14 +8189,17 @@ function AccountMobileCard({
     refreshing || account.at_only || account.openai_responses_api;
   const authJsonDisabled =
     authJsonExporting || account.at_only || account.openai_responses_api;
-  // 自用模式（personal）卡片更宽，给更舒展的内边距、圆角与悬浮抬升。
+  // 自用模式（personal）卡片更宽，给更舒展的内边距、圆角与悬浮抬升；并用 flex 列
+  // 布局让同行卡片等高、操作行顶到底部对齐（不受限流倒计时等高度差影响）。
   const isPersonal = variant === "personal";
+  // 头像首字母（自用模式高级感点缀）。
+  const avatarInitial = (displayName.trim()[0] || "?").toUpperCase();
 
   return (
     <article
       className={`min-w-0 border bg-card shadow-sm ${
         isPersonal
-          ? "rounded-2xl p-5 transition-shadow hover:shadow-md"
+          ? "flex h-full flex-col rounded-2xl p-5 transition-shadow hover:shadow-lg"
           : "rounded-lg p-3"
       } ${selected ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20" : "border-border"}`}
     >
@@ -8170,6 +8211,29 @@ function AccountMobileCard({
           onChange={onToggleSelect}
           aria-label={fullName}
         />
+        {isPersonal && (
+          <div className="flex shrink-0 flex-col items-center gap-2">
+            <div className="mt-0.5 flex size-11 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 text-lg font-semibold text-primary ring-1 ring-inset ring-primary/15">
+              {avatarInitial}
+            </div>
+            {(account.rate_limit_reset_credits ?? 0) > 0 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUsage();
+                }}
+                className="inline-flex items-center gap-0.5 rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 ring-1 ring-inset ring-violet-600/20 transition-colors hover:bg-violet-100 dark:bg-violet-950 dark:text-violet-400 dark:ring-violet-400/20 dark:hover:bg-violet-900"
+                title={t("accounts.resetCreditsBadge", {
+                  count: account.rate_limit_reset_credits ?? 0,
+                })}
+              >
+                <RotateCcw className="size-2.5" />
+                {account.rate_limit_reset_credits ?? 0}
+              </button>
+            )}
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
@@ -8178,6 +8242,7 @@ function AccountMobileCard({
                   #{sequence}
                 </span>
                 <PlanBadge planType={account.plan_type} />
+                <AccountStatusCountdown account={account} />
                 <ExpiryBadge
                   expiresAt={account.subscription_expires_at}
                   planType={account.plan_type}
@@ -8207,31 +8272,35 @@ function AccountMobileCard({
             </div>
           </div>
 
-          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-            {account.at_only && (
-              <span className="inline-flex items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-400/20">
-                AT
-              </span>
-            )}
-            {account.openai_responses_api && (
-              <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-400 dark:ring-emerald-400/20">
-                Responses API
-              </span>
-            )}
-            {account.enabled === false && (
-              <span className="inline-flex items-center rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-500/20 dark:bg-zinc-900 dark:text-zinc-300 dark:ring-zinc-400/20">
-                <PowerOff className="mr-0.5 size-2.5" />
-                {t("accounts.disabled")}
-              </span>
-            )}
-            {account.locked && (
-              <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20">
-                <Lock className="mr-0.5 size-2.5" />
-                {t("accounts.lock")}
-              </span>
-            )}
-            <AccountStatusCountdown account={account} />
-          </div>
+          {(account.at_only ||
+            account.openai_responses_api ||
+            account.enabled === false ||
+            account.locked) && (
+            <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
+              {account.at_only && (
+                <span className="inline-flex items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-400/20">
+                  AT
+                </span>
+              )}
+              {account.openai_responses_api && (
+                <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-400 dark:ring-emerald-400/20">
+                  Responses API
+                </span>
+              )}
+              {account.enabled === false && (
+                <span className="inline-flex items-center rounded-md bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-700 ring-1 ring-inset ring-zinc-500/20 dark:bg-zinc-900 dark:text-zinc-300 dark:ring-zinc-400/20">
+                  <PowerOff className="mr-0.5 size-2.5" />
+                  {t("accounts.disabled")}
+                </span>
+              )}
+              {account.locked && (
+                <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20">
+                  <Lock className="mr-0.5 size-2.5" />
+                  {t("accounts.lock")}
+                </span>
+              )}
+            </div>
+          )}
 
           {account.status === "error" && account.error_message && (
             <div
@@ -8266,13 +8335,13 @@ function AccountMobileCard({
       </div>
 
       <div
-        className={`mt-3 grid min-w-0 gap-2 ${
+        className={`grid min-w-0 gap-2 ${
           isPersonal
-            ? "grid-cols-2 sm:grid-cols-4"
-            : "grid-cols-2 max-[380px]:grid-cols-1"
+            ? "mt-4 grid-cols-2 border-t border-border/60 pt-4 sm:grid-cols-4"
+            : "mt-3 grid-cols-2 max-[380px]:grid-cols-1"
         }`}
       >
-        <AccountMobileMetric label={t("accounts.requests")}>
+        <AccountMobileMetric label={t("accounts.requests")} premium={isPersonal}>
           <div className="flex items-center gap-2 text-[13px]">
             <span className="font-medium text-emerald-600">
               {account.success_requests ?? 0}
@@ -8290,10 +8359,10 @@ function AccountMobileCard({
             </div>
           )}
         </AccountMobileMetric>
-        <AccountMobileMetric label={t("accounts.billed")}>
+        <AccountMobileMetric label={t("accounts.billed")} premium={isPersonal}>
           <BilledCell account={account} />
         </AccountMobileMetric>
-        <AccountMobileMetric label={t("accounts.updatedAt")}>
+        <AccountMobileMetric label={t("accounts.updatedAt")} premium={isPersonal}>
           {lazyMode ? (
             <div className="space-y-0.5">
               <div>
@@ -8315,11 +8384,12 @@ function AccountMobileCard({
             formatRelativeTime(account.updated_at)
           )}
         </AccountMobileMetric>
-        <AccountMobileMetric label={t("accounts.importTime")}>
+        <AccountMobileMetric label={t("accounts.importTime")} premium={isPersonal}>
           {formatBeijingTime(account.created_at)}
         </AccountMobileMetric>
         <AccountMobileMetric
           label={t("accounts.usage")}
+          premium={isPersonal}
           className={
             isPersonal
               ? "col-span-2 sm:col-span-4"
@@ -8345,24 +8415,27 @@ function AccountMobileCard({
       )}
 
       <div
-        className={`mt-3 grid gap-1.5 ${
+        className={`grid gap-1.5 ${
           isPersonal
-            ? "grid-cols-5 border-t border-border pt-3 sm:grid-cols-9"
-            : "grid-cols-5 max-[380px]:grid-cols-4"
+            ? "mt-auto grid-cols-5 border-t border-border pt-4"
+            : "mt-3 grid-cols-5 max-[380px]:grid-cols-4"
         }`}
       >
         <AccountMobileActionButton
           title={t("accounts.editScheduler")}
+          label={isPersonal ? t("accounts.editScheduler") : undefined}
           onClick={onEdit}
           icon={<Pencil className="size-3.5" />}
         />
         <AccountMobileActionButton
           title={t("accounts.usageDetail")}
+          label={isPersonal ? t("accounts.usageDetail") : undefined}
           onClick={onUsage}
           icon={<BarChart3 className="size-3.5" />}
         />
         <AccountMobileActionButton
           title={t("accounts.testConnection")}
+          label={isPersonal ? t("accounts.testConnection") : undefined}
           onClick={onTest}
           icon={<Zap className="size-3.5" />}
         />
@@ -8372,6 +8445,7 @@ function AccountMobileCard({
               ? t("accounts.atRefreshDisabled")
               : t("accounts.refreshAccessToken")
           }
+          label={isPersonal ? t("common.refresh") : undefined}
           disabled={refreshDisabled}
           onClick={onRefresh}
           icon={
@@ -8386,6 +8460,7 @@ function AccountMobileCard({
               ? t("accounts.authJsonDisabled")
               : t("accounts.generateAuthJson")
           }
+          label={isPersonal ? t("accounts.actionAuthJson") : undefined}
           disabled={authJsonDisabled}
           onClick={onGenerateAuthJson}
           icon={<FileJson className="size-3.5" />}
@@ -8395,6 +8470,13 @@ function AccountMobileCard({
             account.enabled === false
               ? t("accounts.enableHint")
               : t("accounts.disableHint")
+          }
+          label={
+            isPersonal
+              ? account.enabled === false
+                ? t("accounts.enable")
+                : t("accounts.disable")
+              : undefined
           }
           variant={account.enabled === false ? "default" : "outline"}
           onClick={onToggleEnabled}
@@ -8410,6 +8492,13 @@ function AccountMobileCard({
           title={
             account.locked ? t("accounts.unlockHint") : t("accounts.lockHint")
           }
+          label={
+            isPersonal
+              ? account.locked
+                ? t("accounts.unlock")
+                : t("accounts.lock")
+              : undefined
+          }
           variant={account.locked ? "default" : "outline"}
           onClick={onToggleLock}
           icon={
@@ -8422,11 +8511,30 @@ function AccountMobileCard({
         />
         <AccountMobileActionButton
           title={t("accounts.resetStatusHint")}
+          label={isPersonal ? t("accounts.resetStatus") : undefined}
           onClick={onResetStatus}
           icon={<RotateCcw className="size-3.5" />}
         />
+        {isPersonal && (
+          <AccountMobileActionButton
+            title={t("accounts.resetCreditsButton")}
+            label={t("accounts.resetCreditsButton")}
+            disabled={(account.rate_limit_reset_credits ?? 0) <= 0}
+            onClick={onResetCredits}
+            icon={<Timer className="size-3.5" />}
+          />
+        )}
+        {!isPersonal && (
+          <AccountMobileActionButton
+            title={t("accounts.resetCreditsButton")}
+            disabled={(account.rate_limit_reset_credits ?? 0) <= 0}
+            onClick={onResetCredits}
+            icon={<Timer className="size-3.5" />}
+          />
+        )}
         <AccountMobileActionButton
           title={t("accounts.deleteAccount")}
+          label={isPersonal ? t("accounts.deleteAccount") : undefined}
           variant="destructive"
           onClick={onDelete}
           icon={<Trash2 className="size-3.5" />}
@@ -8440,16 +8548,26 @@ function AccountMobileMetric({
   label,
   children,
   className = "",
+  premium = false,
 }: {
   label: string;
   children: ReactNode;
   className?: string;
+  premium?: boolean;
 }) {
   return (
     <div
-      className={`min-w-0 rounded-lg border border-border bg-muted/20 p-2 ${className}`}
+      className={`min-w-0 ${
+        premium
+          ? "rounded-xl bg-muted/40 p-3 ring-1 ring-inset ring-border/40"
+          : "rounded-lg border border-border bg-muted/20 p-2"
+      } ${className}`}
     >
-      <div className="mb-1 text-[11px] font-bold uppercase text-muted-foreground">
+      <div
+        className={`mb-1 font-bold uppercase text-muted-foreground ${
+          premium ? "text-[10px] tracking-wider" : "text-[11px]"
+        }`}
+      >
         {label}
       </div>
       <div className="min-w-0 break-words text-[12px] leading-snug text-foreground">
@@ -8462,16 +8580,35 @@ function AccountMobileMetric({
 function AccountMobileActionButton({
   title,
   icon,
+  label,
   onClick,
   disabled,
   variant = "outline",
 }: {
   title: string;
   icon: ReactNode;
+  label?: string;
   onClick: () => void;
   disabled?: boolean;
   variant?: "default" | "outline" | "destructive";
 }) {
+  // 带 label 时图标在上、文字在下，按钮等高等宽（自用模式用）；否则纯图标。
+  if (label) {
+    return (
+      <Button
+        type="button"
+        variant={variant}
+        className="flex h-auto w-full flex-col items-center justify-center gap-1 px-1 py-2 text-[11px] font-medium leading-none"
+        disabled={disabled}
+        onClick={onClick}
+        title={title}
+        aria-label={title}
+      >
+        {icon}
+        <span className="max-w-full truncate">{label}</span>
+      </Button>
+    );
+  }
   return (
     <Button
       type="button"
