@@ -111,6 +111,20 @@ export interface AccountRow {
 
 export type AccountsResponse = ApiListResponse<'accounts', AccountRow>
 
+// AccountHealthBucket 是「健康状态」条单个时间窗口内的请求成败计数。
+export interface AccountHealthBucket {
+  success: number
+  failed: number
+}
+
+// AccountHealthBarsResponse 是 GET /api/accounts/health-bars 的响应。
+// buckets 按账号 ID（字符串）映射到由旧到新的 block_count 个时间桶。
+export interface AccountHealthBarsResponse {
+  buckets: Record<string, AccountHealthBucket[]>
+  block_count: number
+  block_minutes: number
+}
+
 export interface InviteItem {
   referral_id?: string
   email?: string

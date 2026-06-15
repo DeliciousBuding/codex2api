@@ -17,6 +17,7 @@ import {
 import { useToast } from "../hooks/useToast";
 import type {
   AccountRow,
+  AccountHealthBucket,
   AddAccountRequest,
   AddATAccountRequest,
   AddOpenAIResponsesAccountRequest,
@@ -89,6 +90,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AccountUsageModal from "../components/AccountUsageModal";
+import AccountHealthBar from "../components/AccountHealthBar";
 import CodexInviteView from "../components/CodexInviteView";
 import Sub2APIImportModal from "../components/Sub2APIImportModal";
 import AccountQuotaDistributionChart from "../components/AccountQuotaDistributionChart";
@@ -206,6 +208,29 @@ function getInitialAccountViewMode(): AccountViewMode {
 function persistAccountViewMode(mode: AccountViewMode) {
   try {
     window.localStorage.setItem(ACCOUNT_VIEW_MODE_KEY, mode);
+  } catch {
+    // ignore
+  }
+}
+
+// 账号管理页面级模式：号池模式（pool，默认，完整管理布局）/ 自用模式
+// （personal，主体列表改为每行 2 列卡片）。
+const ACCOUNT_PAGE_MODE_KEY = "codex2api:accounts:page-mode";
+type AccountPageMode = "pool" | "personal";
+
+function getInitialAccountPageMode(): AccountPageMode {
+  try {
+    const raw = window.localStorage.getItem(ACCOUNT_PAGE_MODE_KEY);
+    if (raw === "pool" || raw === "personal") return raw;
+  } catch {
+    // ignore
+  }
+  return "pool";
+}
+
+function persistAccountPageMode(mode: AccountPageMode) {
+  try {
+    window.localStorage.setItem(ACCOUNT_PAGE_MODE_KEY, mode);
   } catch {
     // ignore
   }
@@ -697,6 +722,9 @@ export default function Accounts() {
   const [viewMode, setViewMode] = useState<AccountViewMode>(
     getInitialAccountViewMode,
   );
+  const [pageMode, setPageMode] = useState<AccountPageMode>(
+    getInitialAccountPageMode,
+  );
   const isDesktopLayout = useMediaQuery("(min-width: 1024px)");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
@@ -939,6 +967,7 @@ export default function Accounts() {
       opsOverview,
       groupsResponse,
       settings,
+      healthBars,
     ] =
       await Promise.all([
         api.getAccounts(),
@@ -948,6 +977,10 @@ export default function Accounts() {
         shouldLoadSettings
           ? api.getSettings().catch((): SystemSettings | null => null)
           : Promise.resolve<SystemSettings | null>(null),
+        api
+          .getAccountHealthBars()
+          .then((res) => res.buckets)
+          .catch((): Record<string, AccountHealthBucket[]> | null => null),
       ]);
     if (settings) {
       lazyModeRef.current = settings.lazy_mode;
@@ -958,6 +991,7 @@ export default function Accounts() {
       apiKeys: apiKeysResponse.keys ?? [],
       opsOverview,
       lazyMode: lazyModeRef.current ?? false,
+      healthBars: healthBars ?? {},
     };
   }, []);
 
@@ -966,12 +1000,14 @@ export default function Accounts() {
     apiKeys: APIKeyRow[];
     opsOverview: OpsOverviewResponse | null;
     lazyMode: boolean;
+    healthBars: Record<string, AccountHealthBucket[]>;
   }>({
     initialData: {
       accounts: [],
       apiKeys: [],
       opsOverview: null,
       lazyMode: false,
+      healthBars: {},
     },
     load: loadAccounts,
   });
@@ -979,6 +1015,7 @@ export default function Accounts() {
   const apiKeys = data.apiKeys;
   const opsOverview = data.opsOverview;
   const lazyMode = data.lazyMode;
+  const healthBars = data.healthBars;
   const usageReloadAttemptsRef = useRef<Map<number, number>>(new Map());
 
   useEffect(() => {
@@ -996,6 +1033,10 @@ export default function Accounts() {
   useEffect(() => {
     persistAccountViewMode(viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    persistAccountPageMode(pageMode);
+  }, [pageMode]);
 
   useEffect(() => {
     setGroupFilter((current) => pruneAccountGroupFilter(current, allGroups));
@@ -1255,8 +1296,12 @@ export default function Accounts() {
     () => pagedAccounts.map((account) => account.id),
     [pagedAccounts],
   );
-  const shouldRenderMobileCards = viewMode === "grid" || !isDesktopLayout;
-  const shouldRenderDesktopTable = viewMode !== "grid" && isDesktopLayout;
+  // 自用模式（personal）下，主体列表强制走每行 2 列卡片，桌面端也不渲染表格。
+  const isPersonalMode = pageMode === "personal";
+  const shouldRenderMobileCards =
+    isPersonalMode || viewMode === "grid" || !isDesktopLayout;
+  const shouldRenderDesktopTable =
+    !isPersonalMode && viewMode !== "grid" && isDesktopLayout;
   const pageSelectedCount = useMemo(
     () =>
       pagedAccountIds.reduce(
@@ -2946,6 +2991,20 @@ export default function Accounts() {
             title={t("accounts.title")}
             description={t("accounts.description")}
             onRefresh={() => void reload()}
+            titleAdornment={
+              <Select
+                className="w-32"
+                compact
+                value={pageMode}
+                onValueChange={(value) =>
+                  setPageMode(value === "personal" ? "personal" : "pool")
+                }
+                options={[
+                  { value: "pool", label: t("accounts.pageModePool") },
+                  { value: "personal", label: t("accounts.pageModePersonal") },
+                ]}
+              />
+            }
             actions={
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 <Button
@@ -3579,9 +3638,11 @@ export default function Accounts() {
                 {shouldRenderMobileCards ? (
                   <div
                     className={
-                      viewMode === "grid"
-                        ? "grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"
-                        : "grid gap-3 lg:hidden"
+                      isPersonalMode
+                        ? "grid gap-3 grid-cols-1 md:grid-cols-2"
+                        : viewMode === "grid"
+                          ? "grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"
+                          : "grid gap-3 lg:hidden"
                     }
                   >
                     {pagedAccounts.map((account, index) => {
@@ -3595,8 +3656,10 @@ export default function Accounts() {
                           allGroups={allGroups}
                           lazyMode={lazyMode}
                           showEmailDomainTags={showEmailDomainTags}
+                          healthBuckets={healthBars[String(account.id)]}
                           refreshing={refreshingIds.has(account.id)}
                           authJsonExporting={authJsonExportingIds.has(account.id)}
+                          variant={isPersonalMode ? "personal" : "mobile"}
                           t={t}
                           onToggleSelect={() => toggleSelect(account.id)}
                           onEdit={() => openSchedulerEditor(account)}
@@ -3794,7 +3857,9 @@ export default function Accounts() {
                                   {(account.at_only ||
                                     account.openai_responses_api ||
                                     account.enabled === false ||
-                                    account.locked) && (
+                                    account.locked ||
+                                    (account.rate_limit_reset_credits ?? 0) >
+                                      0) && (
                                     <div className="flex flex-wrap gap-1">
                                       {account.at_only && (
                                         <span className="inline-flex items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950 dark:text-amber-400 dark:ring-amber-400/20">
@@ -3817,6 +3882,25 @@ export default function Accounts() {
                                           <Lock className="mr-0.5 size-2.5" />
                                           {t("accounts.lock")}
                                         </span>
+                                      )}
+                                      {(account.rate_limit_reset_credits ??
+                                        0) > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setUsageAccount(account);
+                                          }}
+                                          className="inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 ring-1 ring-inset ring-violet-600/20 transition-colors hover:bg-violet-100 dark:bg-violet-950 dark:text-violet-400 dark:ring-violet-400/20 dark:hover:bg-violet-900"
+                                          title={t("accounts.resetCreditsBadge", {
+                                            count:
+                                              account.rate_limit_reset_credits ??
+                                              0,
+                                          })}
+                                        >
+                                          <RotateCcw className="mr-0.5 size-2.5" />
+                                          {account.rate_limit_reset_credits ?? 0}
+                                        </button>
                                       )}
                                     </div>
                                   )}
@@ -3908,6 +3992,14 @@ export default function Accounts() {
                                         account.dynamic_concurrency_limit ??
                                         "-",
                                     })}
+                                  </div>
+                                  <div className="space-y-0.5 pt-0.5">
+                                    <div className="text-[10px] text-muted-foreground/70">
+                                      {t("accounts.healthBarLabel")}
+                                    </div>
+                                    <AccountHealthBar
+                                      buckets={healthBars[String(account.id)]}
+                                    />
                                   </div>
                                 </div>
                               </TableCell>
@@ -8018,8 +8110,10 @@ function AccountMobileCard({
   allGroups,
   lazyMode,
   showEmailDomainTags,
+  healthBuckets,
   refreshing,
   authJsonExporting,
+  variant = "mobile",
   t,
   onToggleSelect,
   onEdit,
@@ -8038,8 +8132,10 @@ function AccountMobileCard({
   allGroups: AccountGroup[];
   lazyMode: boolean;
   showEmailDomainTags: boolean;
+  healthBuckets: AccountHealthBucket[] | undefined;
   refreshing: boolean;
   authJsonExporting: boolean;
+  variant?: "mobile" | "personal";
   t: ReturnType<typeof useTranslation>["t"];
   onToggleSelect: () => void;
   onEdit: () => void;
@@ -8061,12 +8157,16 @@ function AccountMobileCard({
     refreshing || account.at_only || account.openai_responses_api;
   const authJsonDisabled =
     authJsonExporting || account.at_only || account.openai_responses_api;
+  // 自用模式（personal）卡片更宽，给更舒展的内边距、圆角与悬浮抬升。
+  const isPersonal = variant === "personal";
 
   return (
     <article
-      className={`min-w-0 rounded-lg border bg-card p-3 shadow-sm ${
-        selected ? "border-primary/35 bg-primary/5" : "border-border"
-      }`}
+      className={`min-w-0 border bg-card shadow-sm ${
+        isPersonal
+          ? "rounded-2xl p-5 transition-shadow hover:shadow-md"
+          : "rounded-lg p-3"
+      } ${selected ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20" : "border-border"}`}
     >
       <div className="flex min-w-0 items-start gap-3">
         <input
@@ -8096,7 +8196,9 @@ function AccountMobileCard({
                 )}
               </div>
               <div
-                className="mt-1 break-all text-[15px] font-semibold leading-tight text-foreground"
+                className={`mt-1 break-all font-semibold leading-tight text-foreground ${
+                  isPersonal ? "text-[17px]" : "text-[15px]"
+                }`}
                 title={fullName}
               >
                 {displayName}
@@ -8160,10 +8262,22 @@ function AccountMobileCard({
               concurrency: account.dynamic_concurrency_limit ?? "-",
             })}
           </div>
+          <div className="mt-1.5 space-y-0.5">
+            <div className="text-[10px] text-muted-foreground/70">
+              {t("accounts.healthBarLabel")}
+            </div>
+            <AccountHealthBar buckets={healthBuckets} />
+          </div>
         </div>
       </div>
 
-      <div className="mt-3 grid min-w-0 grid-cols-2 gap-2 max-[380px]:grid-cols-1">
+      <div
+        className={`mt-3 grid min-w-0 gap-2 ${
+          isPersonal
+            ? "grid-cols-2 sm:grid-cols-4"
+            : "grid-cols-2 max-[380px]:grid-cols-1"
+        }`}
+      >
         <AccountMobileMetric label={t("accounts.requests")}>
           <div className="flex items-center gap-2 text-[13px]">
             <span className="font-medium text-emerald-600">
@@ -8184,12 +8298,6 @@ function AccountMobileCard({
         </AccountMobileMetric>
         <AccountMobileMetric label={t("accounts.billed")}>
           <BilledCell account={account} />
-        </AccountMobileMetric>
-        <AccountMobileMetric
-          label={t("accounts.usage")}
-          className="col-span-2 max-[380px]:col-span-1"
-        >
-          <UsageCell account={account} />
         </AccountMobileMetric>
         <AccountMobileMetric label={t("accounts.updatedAt")}>
           {lazyMode ? (
@@ -8216,6 +8324,16 @@ function AccountMobileCard({
         <AccountMobileMetric label={t("accounts.importTime")}>
           {formatBeijingTime(account.created_at)}
         </AccountMobileMetric>
+        <AccountMobileMetric
+          label={t("accounts.usage")}
+          className={
+            isPersonal
+              ? "col-span-2 sm:col-span-4"
+              : "col-span-2 max-[380px]:col-span-1"
+          }
+        >
+          <UsageCell account={account} wide={isPersonal} />
+        </AccountMobileMetric>
       </div>
 
       {((account.tags ?? []).length > 0 ||
@@ -8232,7 +8350,13 @@ function AccountMobileCard({
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-5 gap-1.5 max-[380px]:grid-cols-4">
+      <div
+        className={`mt-3 grid gap-1.5 ${
+          isPersonal
+            ? "grid-cols-5 border-t border-border pt-3 sm:grid-cols-9"
+            : "grid-cols-5 max-[380px]:grid-cols-4"
+        }`}
+      >
         <AccountMobileActionButton
           title={t("accounts.editScheduler")}
           onClick={onEdit}
@@ -8973,7 +9097,13 @@ function UsageWindowStat({
 // 后端已经返回 5h 窗口数据时,只看 plan_type 会把 5h 吞掉。
 // 因此这里以"是否真的存在 5h / 7d 数据(含 reset 时间)"作为主判据,
 // plan_type 仅作为 5h 数据缺位时的辅助提示。
-function UsageCell({ account }: { account: AccountRow }) {
+function UsageCell({
+  account,
+  wide = false,
+}: {
+  account: AccountRow;
+  wide?: boolean;
+}) {
   const plan = normalizePlanType(account.plan_type);
   const has7d =
     account.usage_percent_7d !== null && account.usage_percent_7d !== undefined;
@@ -8998,7 +9128,7 @@ function UsageCell({ account }: { account: AccountRow }) {
     if (!has5h && !has7d && !has5hDetail && !has7dDetail && !has5hReset && !has7dReset)
       return <span className="text-[12px] text-muted-foreground">-</span>;
     return (
-      <div className="w-52 space-y-1.5">
+      <div className={`${wide ? "w-full" : "w-52"} space-y-1.5`}>
         {has5h ? (
           <UsageBar
             label="5h"
@@ -9025,7 +9155,7 @@ function UsageCell({ account }: { account: AccountRow }) {
 
   if (sevenDayPresent) {
     return (
-      <div className="w-48">
+      <div className={wide ? "w-full" : "w-48"}>
         {has7d ? (
           <UsageBar
             label="7d"
