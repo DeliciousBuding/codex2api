@@ -46,6 +46,10 @@ type promptFilterRulesResponse struct {
 }
 
 func (h *Handler) inspectImageStudioPromptFilter(c *gin.Context, text string, model string, keyID int64, keyName string, keyMasked string) bool {
+	return h.inspectImagePromptFilter(c, text, model, keyID, keyName, keyMasked, "/api/admin/images/jobs", nil, false)
+}
+
+func (h *Handler) inspectImagePromptFilter(c *gin.Context, text string, model string, keyID int64, keyName string, keyMasked string, endpoint string, writeBlock func(*gin.Context), redactPreview bool) bool {
 	if h == nil || h.store == nil {
 		return false
 	}
@@ -58,22 +62,30 @@ func (h *Handler) inspectImageStudioPromptFilter(c *gin.Context, text string, mo
 	if verdict.Action != promptfilter.ActionBlock {
 		return false
 	}
+	textPreview := verdict.TextPreview
+	if redactPreview {
+		textPreview = "[redacted]"
+	}
 	h.recordPromptFilterLog(c, &database.PromptFilterLogInput{
 		Source:          "local_filter",
-		Endpoint:        "/api/admin/images/jobs",
+		Endpoint:        endpoint,
 		Model:           model,
 		Action:          verdict.Action,
 		Mode:            verdict.Mode,
 		Score:           verdict.Score,
 		Threshold:       verdict.Threshold,
 		MatchedPatterns: promptfilter.MatchesJSON(verdict.Matched),
-		TextPreview:     verdict.TextPreview,
+		TextPreview:     textPreview,
 		APIKeyID:        keyID,
 		APIKeyName:      keyName,
 		APIKeyMasked:    keyMasked,
 		ClientIP:        c.ClientIP(),
 	})
-	writeError(c, http.StatusBadRequest, "Prompt 被检查规则拦截")
+	if writeBlock != nil {
+		writeBlock(c)
+	} else {
+		writeError(c, http.StatusBadRequest, "Prompt 被检查规则拦截")
+	}
 	return true
 }
 
