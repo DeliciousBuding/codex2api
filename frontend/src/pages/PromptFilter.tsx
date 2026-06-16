@@ -2,7 +2,7 @@ import type { Dispatch, ReactNode, SetStateAction, TextareaHTMLAttributes } from
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { NavLink, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, CheckCircle2, HelpCircle, Plus, RefreshCw, Save, Search, ShieldAlert, Trash2, Wand2, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ChevronDown, HelpCircle, Plus, RefreshCw, Save, Search, ShieldAlert, Trash2, Wand2, X } from 'lucide-react'
 import { api } from '../api'
 import PageHeader from '../components/PageHeader'
 import Pagination from '../components/Pagination'
@@ -1188,8 +1188,13 @@ function MiniStat({ label, value }: { label: string; value: string }) {
 }
 
 function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: boolean }) {
+  const { t } = useTranslation()
   const matches = parseLogMatches(log.matched_patterns)
+  const [expanded, setExpanded] = useState(false)
+  const fullText = (log.full_text || '').trim()
+  const hasFull = fullText.length > 0
   return (
+    <>
     <TableRow>
       <TableCell className="min-w-[150px]">
         <div className="font-medium text-foreground">{formatRelativeTime(log.created_at, { variant: 'compact' })}</div>
@@ -1224,9 +1229,37 @@ function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: 
       </TableCell>
       <TableCell className="max-w-[360px]">
         <div className="truncate text-muted-foreground" title={log.text_preview || log.error_code || log.review_error || ''}>{log.text_preview || log.error_code || log.review_error || '-'}</div>
+        {hasFull ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+          >
+            <ChevronDown className={`size-3 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+            {expanded ? t('promptFilter.collapseFullText') : t('promptFilter.viewFullText')}
+          </button>
+        ) : null}
         {!compact && log.review_model ? <div className="mt-1 truncate text-xs text-muted-foreground">{log.review_model}</div> : null}
       </TableCell>
     </TableRow>
+    {expanded && hasFull ? (
+      <TableRow>
+        <TableCell colSpan={7} className="bg-muted/30">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted-foreground">{t('promptFilter.fullTextTitle')}</span>
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(fullText)}
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              {t('common.copy')}
+            </button>
+          </div>
+          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 text-xs leading-relaxed text-foreground">{fullText}</pre>
+        </TableCell>
+      </TableRow>
+    ) : null}
+    </>
   )
 }
 

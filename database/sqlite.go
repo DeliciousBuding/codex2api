@@ -324,7 +324,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			error_code TEXT DEFAULT '',
 			review_model TEXT DEFAULT '',
 			review_flagged INTEGER DEFAULT 0,
-			review_error TEXT DEFAULT ''
+			review_error TEXT DEFAULT '',
+			full_text TEXT DEFAULT ''
 		);`,
 	}
 	for _, stmt := range statements {
@@ -437,6 +438,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"prompt_filter_logs", "review_model", "TEXT DEFAULT ''"},
 		{"prompt_filter_logs", "review_flagged", "INTEGER DEFAULT 0"},
 		{"prompt_filter_logs", "review_error", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "full_text", "TEXT DEFAULT ''"},
 		{"system_settings", "client_compat_mode", "TEXT DEFAULT 'preserve'"},
 		{"system_settings", "codex_min_cli_version", "TEXT DEFAULT '0.118.0'"},
 		{"system_settings", "usage_log_mode", "TEXT DEFAULT 'full'"},

@@ -765,6 +765,7 @@ export interface PromptFilterLog {
   threshold: number
   matched_patterns: string
   text_preview: string
+  full_text: string
   api_key_id: number
   api_key_name: string
   api_key_masked: string

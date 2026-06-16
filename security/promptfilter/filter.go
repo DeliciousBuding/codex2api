@@ -77,6 +77,7 @@ type Verdict struct {
 	Matched        []Match `json:"matched"`
 	Reason         string  `json:"reason,omitempty"`
 	TextPreview    string  `json:"text_preview,omitempty"`
+	FullText       string  `json:"full_text,omitempty"`
 	ExtractedChars int     `json:"extracted_chars"`
 	Reviewed       bool    `json:"reviewed,omitempty"`
 	ReviewFlagged  bool    `json:"review_flagged,omitempty"`
@@ -279,6 +280,7 @@ func (e *Engine) InspectText(text string) Verdict {
 		Action:         ActionAllow,
 		Threshold:      cfg.Threshold,
 		TextPreview:    preview,
+		FullText:       text,
 		ExtractedChars: utf8.RuneCountInString(text),
 	}
 	if !cfg.Enabled || strings.TrimSpace(text) == "" {

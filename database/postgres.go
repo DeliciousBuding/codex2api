@@ -804,11 +804,13 @@ func (db *DB) migrate(ctx context.Context) error {
 				error_code       VARCHAR(100) DEFAULT '',
 				review_model     VARCHAR(100) DEFAULT '',
 				review_flagged   BOOLEAN DEFAULT FALSE,
-				review_error     TEXT DEFAULT ''
+				review_error     TEXT DEFAULT '',
+				full_text        TEXT DEFAULT ''
 			);
 			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS review_model VARCHAR(100) DEFAULT '';
 			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS review_flagged BOOLEAN DEFAULT FALSE;
 			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS review_error TEXT DEFAULT '';
+			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS full_text TEXT DEFAULT '';
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_created_at ON prompt_filter_logs(created_at);
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_action_created_at ON prompt_filter_logs(action, created_at);
 

@@ -19,6 +19,7 @@ type PromptFilterLog struct {
 	Threshold       int       `json:"threshold"`
 	MatchedPatterns string    `json:"matched_patterns"`
 	TextPreview     string    `json:"text_preview"`
+	FullText        string    `json:"full_text"`
 	APIKeyID        int64     `json:"api_key_id"`
 	APIKeyName      string    `json:"api_key_name"`
 	APIKeyMasked    string    `json:"api_key_masked"`
@@ -39,6 +40,7 @@ type PromptFilterLogInput struct {
 	Threshold       int
 	MatchedPatterns string
 	TextPreview     string
+	FullText        string
 	APIKeyID        int64
 	APIKeyName      string
 	APIKeyMasked    string
@@ -68,12 +70,12 @@ func (db *DB) InsertPromptFilterLog(ctx context.Context, input *PromptFilterLogI
 	_, err := db.conn.ExecContext(ctx, `
 		INSERT INTO prompt_filter_logs (
 			source, endpoint, model, action, mode, score, threshold_value, matched_patterns, text_preview,
-			api_key_id, api_key_name, api_key_masked, client_ip, error_code, review_model, review_flagged, review_error
+			api_key_id, api_key_name, api_key_masked, client_ip, error_code, review_model, review_flagged, review_error, full_text
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 	`, input.Source, input.Endpoint, input.Model, input.Action, input.Mode, input.Score, input.Threshold,
 		input.MatchedPatterns, input.TextPreview, input.APIKeyID, input.APIKeyName, input.APIKeyMasked, input.ClientIP, input.ErrorCode,
-		input.ReviewModel, input.ReviewFlagged, input.ReviewError)
+		input.ReviewModel, input.ReviewFlagged, input.ReviewError, input.FullText)
 	return err
 }
 
@@ -111,7 +113,7 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 		       COALESCE(action, ''), COALESCE(mode, ''), COALESCE(score, 0), COALESCE(threshold_value, 0),
 		       COALESCE(matched_patterns, '[]'), COALESCE(text_preview, ''), COALESCE(api_key_id, 0),
 		       COALESCE(api_key_name, ''), COALESCE(api_key_masked, ''), COALESCE(client_ip, ''), COALESCE(error_code, ''),
-		       COALESCE(review_model, ''), COALESCE(review_flagged, false), COALESCE(review_error, '')
+		       COALESCE(review_model, ''), COALESCE(review_flagged, false), COALESCE(review_error, ''), COALESCE(full_text, '')
 		FROM prompt_filter_logs
 		`+where+`
 		ORDER BY id DESC
@@ -128,7 +130,7 @@ func (db *DB) ListPromptFilterLogsPage(ctx context.Context, query PromptFilterLo
 		var createdAtRaw interface{}
 		if err := rows.Scan(&item.ID, &createdAtRaw, &item.Source, &item.Endpoint, &item.Model, &item.Action, &item.Mode,
 			&item.Score, &item.Threshold, &item.MatchedPatterns, &item.TextPreview, &item.APIKeyID, &item.APIKeyName,
-			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError); err != nil {
+			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.FullText); err != nil {
 			return nil, 0, err
 		}
 		createdAt, err := parseDBTimeValue(createdAtRaw)
@@ -165,12 +167,13 @@ func promptFilterLogWhere(query PromptFilterLogQuery) (string, []any) {
 		idx := len(args)
 		clauses = append(clauses, fmt.Sprintf(`(
 			LOWER(COALESCE(text_preview, '')) LIKE $%d OR
+			LOWER(COALESCE(full_text, '')) LIKE $%d OR
 			LOWER(COALESCE(matched_patterns, '')) LIKE $%d OR
 			LOWER(COALESCE(error_code, '')) LIKE $%d OR
 			LOWER(COALESCE(review_error, '')) LIKE $%d OR
 			LOWER(COALESCE(api_key_name, '')) LIKE $%d OR
 			LOWER(COALESCE(api_key_masked, '')) LIKE $%d
-		)`, idx, idx, idx, idx, idx, idx))
+		)`, idx, idx, idx, idx, idx, idx, idx))
 	}
 	if len(clauses) == 0 {
 		return "", args
