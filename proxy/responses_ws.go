@@ -585,6 +585,9 @@ func (h *Handler) streamResponsesWSUpstream(
 		if responseFailedDecision.Reason != "" {
 			outcome.failureKind = upstreamErrorKind(outcome.logStatusCode, responseFailedErrorBody(terminalFailurePayload), responseFailedDecision)
 		}
+		// 流式 response.failed（HTTP 200）里的 cyber_policy 处罚也要记录，
+		// 否则只有非 2xx 错误体才会被记入提示词过滤日志。
+		h.logUpstreamCyberPolicy(c, "/v1/responses", model, responseFailedErrorBody(terminalFailurePayload))
 	}
 	if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, viaWebsocket, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 		resp.Body.Close()

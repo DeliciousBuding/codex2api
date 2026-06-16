@@ -1789,6 +1789,9 @@ func (h *Handler) Responses(c *gin.Context) {
 				if responseFailedDecision.Reason != "" {
 					outcome.failureKind = upstreamErrorKind(outcome.logStatusCode, responseFailedErrorBody(terminalFailurePayload), responseFailedDecision)
 				}
+				// 流式 response.failed（HTTP 200）里的 cyber_policy 处罚也要记录，
+				// 否则只有非 2xx 错误体才会被记入提示词过滤日志。
+				h.logUpstreamCyberPolicy(c, "/v1/responses", logModel, responseFailedErrorBody(terminalFailurePayload))
 			}
 			if shouldTransparentRetryStream(outcome, attempt, maxRetries, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 				log.Printf("OpenAI Responses 上游流在首包前断开，重置连接并重试 (attempt %d/%d, account %d): %s", attempt+1, maxRetries+1, account.ID(), outcome.failureMessage)
@@ -2183,6 +2186,9 @@ func (h *Handler) Responses(c *gin.Context) {
 			if responseFailedDecision.Reason != "" {
 				outcome.failureKind = upstreamErrorKind(outcome.logStatusCode, responseFailedErrorBody(terminalFailurePayload), responseFailedDecision)
 			}
+			// 流式 response.failed（HTTP 200）里的 cyber_policy 处罚也要记录，
+			// 否则只有非 2xx 错误体才会被记入提示词过滤日志。
+			h.logUpstreamCyberPolicy(c, "/v1/responses", logModel, responseFailedErrorBody(terminalFailurePayload))
 		}
 		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 			log.Printf("上游 WebSocket 消息过大，首包前自动降级 HTTP 重试 (attempt %d, account %d, /v1/responses): %s", attempt+1, account.ID(), outcome.failureMessage)
@@ -3242,6 +3248,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if responseFailedDecision.Reason != "" {
 				outcome.failureKind = upstreamErrorKind(outcome.logStatusCode, responseFailedErrorBody(terminalFailurePayload), responseFailedDecision)
 			}
+			// 流式 response.failed（HTTP 200）里的 cyber_policy 处罚也要记录，
+			// 否则只有非 2xx 错误体才会被记入提示词过滤日志。
+			h.logUpstreamCyberPolicy(c, "/v1/chat/completions", logModel, responseFailedErrorBody(terminalFailurePayload))
 		}
 		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 			log.Printf("上游 WebSocket 消息过大，首包前自动降级 HTTP 重试 (attempt %d, account %d, /v1/chat/completions): %s", attempt+1, account.ID(), outcome.failureMessage)
