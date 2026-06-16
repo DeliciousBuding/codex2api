@@ -5118,6 +5118,12 @@ type settingsResponse struct {
 	PromptFilterSensitiveWords         string  `json:"prompt_filter_sensitive_words"`
 	PromptFilterCustomPatterns         string  `json:"prompt_filter_custom_patterns"`
 	PromptFilterDisabledPatterns       string  `json:"prompt_filter_disabled_patterns"`
+	PromptFilterReviewEnabled          bool    `json:"prompt_filter_review_enabled"`
+	PromptFilterReviewAPIKeyConfigured bool    `json:"prompt_filter_review_api_key_configured"`
+	PromptFilterReviewBaseURL          string  `json:"prompt_filter_review_base_url"`
+	PromptFilterReviewModel            string  `json:"prompt_filter_review_model"`
+	PromptFilterReviewTimeoutSeconds   int     `json:"prompt_filter_review_timeout_seconds"`
+	PromptFilterReviewFailClosed       bool    `json:"prompt_filter_review_fail_closed"`
 	ClientCompatMode                   string  `json:"client_compat_mode"`
 	CodexMinCLIVersion                 string  `json:"codex_min_cli_version"`
 	UsageLogMode                       string  `json:"usage_log_mode"`
@@ -5195,6 +5201,12 @@ type updateSettingsReq struct {
 	PromptFilterSensitiveWords         *string  `json:"prompt_filter_sensitive_words"`
 	PromptFilterCustomPatterns         *string  `json:"prompt_filter_custom_patterns"`
 	PromptFilterDisabledPatterns       *string  `json:"prompt_filter_disabled_patterns"`
+	PromptFilterReviewEnabled          *bool    `json:"prompt_filter_review_enabled"`
+	PromptFilterReviewAPIKey           *string  `json:"prompt_filter_review_api_key"`
+	PromptFilterReviewBaseURL          *string  `json:"prompt_filter_review_base_url"`
+	PromptFilterReviewModel            *string  `json:"prompt_filter_review_model"`
+	PromptFilterReviewTimeoutSeconds   *int     `json:"prompt_filter_review_timeout_seconds"`
+	PromptFilterReviewFailClosed       *bool    `json:"prompt_filter_review_fail_closed"`
 	ClientCompatMode                   *string  `json:"client_compat_mode"`
 	CodexMinCLIVersion                 *string  `json:"codex_min_cli_version"`
 	UsageLogMode                       *string  `json:"usage_log_mode"`
@@ -5765,6 +5777,12 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		PromptFilterSensitiveWords:         promptFilterCfg.SensitiveWords,
 		PromptFilterCustomPatterns:         promptfilter.MarshalCustomPatterns(promptFilterCfg.CustomPatterns),
 		PromptFilterDisabledPatterns:       promptfilter.MarshalDisabledPatterns(promptFilterCfg.DisabledPatterns),
+		PromptFilterReviewEnabled:          promptFilterCfg.Review.Enabled,
+		PromptFilterReviewAPIKeyConfigured: promptFilterCfg.Review.APIKey != "",
+		PromptFilterReviewBaseURL:          promptFilterCfg.Review.BaseURL,
+		PromptFilterReviewModel:            promptFilterCfg.Review.Model,
+		PromptFilterReviewTimeoutSeconds:   promptFilterCfg.Review.TimeoutSeconds,
+		PromptFilterReviewFailClosed:       promptFilterCfg.Review.FailClosed,
 		ClientCompatMode:                   runtimeCfg.ClientCompatMode,
 		CodexMinCLIVersion:                 runtimeCfg.CodexMinCLIVersion,
 		UsageLogMode:                       h.db.GetUsageLogMode(),
@@ -6268,8 +6286,42 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		promptFilterCfg.DisabledPatterns = disabled
 		promptFilterChanged = true
 	}
+	if req.PromptFilterReviewEnabled != nil {
+		promptFilterCfg.Review.Enabled = *req.PromptFilterReviewEnabled
+		promptFilterChanged = true
+	}
+	if req.PromptFilterReviewAPIKey != nil {
+		if key := strings.TrimSpace(*req.PromptFilterReviewAPIKey); key != "" {
+			promptFilterCfg.Review.APIKey = key
+			promptFilterChanged = true
+		}
+	}
+	if req.PromptFilterReviewBaseURL != nil {
+		promptFilterCfg.Review.BaseURL = strings.TrimSpace(*req.PromptFilterReviewBaseURL)
+		promptFilterChanged = true
+	}
+	if req.PromptFilterReviewModel != nil {
+		promptFilterCfg.Review.Model = strings.TrimSpace(*req.PromptFilterReviewModel)
+		promptFilterChanged = true
+	}
+	if req.PromptFilterReviewTimeoutSeconds != nil {
+		promptFilterCfg.Review.TimeoutSeconds = *req.PromptFilterReviewTimeoutSeconds
+		promptFilterChanged = true
+	}
+	if req.PromptFilterReviewFailClosed != nil {
+		promptFilterCfg.Review.FailClosed = *req.PromptFilterReviewFailClosed
+		promptFilterChanged = true
+	}
 	if promptFilterChanged {
 		promptFilterCfg = promptfilter.NormalizeConfig(promptFilterCfg)
+		if promptFilterCfg.Review.Enabled && strings.TrimSpace(promptFilterCfg.Review.APIKey) == "" {
+			writeError(c, http.StatusBadRequest, "Prompt 检查二次审查已启用时必须填写审查 API Key")
+			return
+		}
+		if err := promptfilter.ValidateReviewConfig(promptFilterCfg.Review); err != nil {
+			writeError(c, http.StatusBadRequest, "Prompt 检查审查配置无效: "+err.Error())
+			return
+		}
 		if _, err := promptfilter.NewEngine(promptFilterCfg); err != nil {
 			writeError(c, http.StatusBadRequest, "Prompt 检查规则无效: "+err.Error())
 			return
@@ -6408,6 +6460,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		PromptFilterSensitiveWords:         promptFilterCfg.SensitiveWords,
 		PromptFilterCustomPatterns:         promptfilter.MarshalCustomPatterns(promptFilterCfg.CustomPatterns),
 		PromptFilterDisabledPatterns:       promptfilter.MarshalDisabledPatterns(promptFilterCfg.DisabledPatterns),
+		PromptFilterReviewEnabled:          promptFilterCfg.Review.Enabled,
+		PromptFilterReviewAPIKey:           promptFilterCfg.Review.APIKey,
+		PromptFilterReviewBaseURL:          promptFilterCfg.Review.BaseURL,
+		PromptFilterReviewModel:            promptFilterCfg.Review.Model,
+		PromptFilterReviewTimeoutSeconds:   promptFilterCfg.Review.TimeoutSeconds,
+		PromptFilterReviewFailClosed:       promptFilterCfg.Review.FailClosed,
 		ClientCompatMode:                   runtimeCfg.ClientCompatMode,
 		CodexMinCLIVersion:                 runtimeCfg.CodexMinCLIVersion,
 		UsageLogMode:                       usageLogMode,
@@ -6501,6 +6559,12 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		PromptFilterSensitiveWords:         promptFilterCfg.SensitiveWords,
 		PromptFilterCustomPatterns:         promptfilter.MarshalCustomPatterns(promptFilterCfg.CustomPatterns),
 		PromptFilterDisabledPatterns:       promptfilter.MarshalDisabledPatterns(promptFilterCfg.DisabledPatterns),
+		PromptFilterReviewEnabled:          promptFilterCfg.Review.Enabled,
+		PromptFilterReviewAPIKeyConfigured: promptFilterCfg.Review.APIKey != "",
+		PromptFilterReviewBaseURL:          promptFilterCfg.Review.BaseURL,
+		PromptFilterReviewModel:            promptFilterCfg.Review.Model,
+		PromptFilterReviewTimeoutSeconds:   promptFilterCfg.Review.TimeoutSeconds,
+		PromptFilterReviewFailClosed:       promptFilterCfg.Review.FailClosed,
 		ClientCompatMode:                   runtimeCfg.ClientCompatMode,
 		CodexMinCLIVersion:                 runtimeCfg.CodexMinCLIVersion,
 		UsageLogMode:                       usageLogMode,

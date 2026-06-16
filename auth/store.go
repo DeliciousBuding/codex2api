@@ -65,14 +65,14 @@ type Account struct {
 	ErrorMsg       string
 
 	// 用量进度（从 Codex 响应头被动解析）
-	UsagePercent7d        float64 // 7d 窗口使用率 0-100+
-	UsagePercent7dValid   bool
-	Reset7dAt             time.Time // 7d 窗口重置时间
-	UsagePercent5h        float64   // 5h 窗口使用率 0-100+
-	UsagePercent5hValid   bool
-	Reset5hAt             time.Time // 5h 窗口重置时间
-	UsageUpdatedAt        time.Time // 7d 用量快照刷新时间
-	UsageUpdatedAt5h      time.Time // 5h 用量快照刷新时间
+	UsagePercent7d      float64 // 7d 窗口使用率 0-100+
+	UsagePercent7dValid bool
+	Reset7dAt           time.Time // 7d 窗口重置时间
+	UsagePercent5h      float64   // 5h 窗口使用率 0-100+
+	UsagePercent5hValid bool
+	Reset5hAt           time.Time // 5h 窗口重置时间
+	UsageUpdatedAt      time.Time // 7d 用量快照刷新时间
+	UsageUpdatedAt5h    time.Time // 5h 用量快照刷新时间
 
 	// RateLimitResetCredits 是 OpenAI 官方账号剩余的「主动重置次数」，来自
 	// /backend-api/wham/usage 响应的 rate_limit_reset_credits.available_count。
@@ -3875,6 +3875,14 @@ func promptFilterConfigFromSettings(settings *database.SystemSettings) promptfil
 	}
 	if disabled, err := promptfilter.ParseDisabledPatterns(settings.PromptFilterDisabledPatterns); err == nil {
 		cfg.DisabledPatterns = disabled
+	}
+	cfg.Review = promptfilter.ReviewConfig{
+		Enabled:        settings.PromptFilterReviewEnabled,
+		APIKey:         settings.PromptFilterReviewAPIKey,
+		BaseURL:        settings.PromptFilterReviewBaseURL,
+		Model:          settings.PromptFilterReviewModel,
+		TimeoutSeconds: settings.PromptFilterReviewTimeoutSeconds,
+		FailClosed:     settings.PromptFilterReviewFailClosed,
 	}
 	return promptfilter.NormalizeConfig(cfg)
 }

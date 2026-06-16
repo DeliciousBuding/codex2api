@@ -55,6 +55,9 @@ func (h *Handler) inspectImagePromptFilter(c *gin.Context, text string, model st
 	}
 	cfg := h.store.GetPromptFilterConfig()
 	verdict := promptfilter.InspectText(text, cfg)
+	if shouldReviewPromptFilterVerdict(verdict, cfg) {
+		verdict = reviewPromptFilterVerdict(c.Request.Context(), text, verdict, cfg)
+	}
 	if verdict.Action == promptfilter.ActionWarn {
 		c.Header("X-Prompt-Filter-Warning", verdict.Reason)
 		return false
@@ -80,6 +83,9 @@ func (h *Handler) inspectImagePromptFilter(c *gin.Context, text string, model st
 		APIKeyName:      keyName,
 		APIKeyMasked:    keyMasked,
 		ClientIP:        c.ClientIP(),
+		ReviewModel:     verdict.ReviewModel,
+		ReviewFlagged:   verdict.ReviewFlagged,
+		ReviewError:     verdict.ReviewError,
 	})
 	if writeBlock != nil {
 		writeBlock(c)
@@ -157,6 +163,9 @@ func (h *Handler) TestPromptFilter(c *gin.Context) {
 	cfg := h.store.GetPromptFilterConfig()
 	cfg.Enabled = true
 	verdict := promptfilter.InspectText(req.Text, cfg)
+	if shouldReviewPromptFilterVerdict(verdict, cfg) {
+		verdict = reviewPromptFilterVerdict(c.Request.Context(), req.Text, verdict, cfg)
+	}
 	c.JSON(http.StatusOK, promptFilterTestResponse{Verdict: verdict})
 }
 
@@ -196,4 +205,16 @@ func positiveQueryInt(c *gin.Context, key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func shouldReviewPromptFilterVerdict(verdict promptfilter.Verdict, cfg promptfilter.Config) bool {
+	if verdict.Action != promptfilter.ActionWarn && verdict.Action != promptfilter.ActionBlock {
+		return false
+	}
+	return promptfilter.NormalizeReviewConfig(cfg.Review).Ready()
+}
+
+func reviewPromptFilterVerdict(ctx context.Context, text string, verdict promptfilter.Verdict, cfg promptfilter.Config) promptfilter.Verdict {
+	flagged, model, err := promptfilter.DefaultReviewClient.ReviewText(ctx, text, cfg.Review)
+	return promptfilter.ApplyReviewResult(verdict, flagged, model, err, cfg.Review)
 }

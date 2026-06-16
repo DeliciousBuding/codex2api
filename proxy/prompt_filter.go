@@ -19,6 +19,10 @@ func (h *Handler) inspectPromptFilterOpenAI(c *gin.Context, rawBody []byte, endp
 	}
 	cfg := h.store.GetPromptFilterConfig()
 	verdict := promptfilter.Inspect(rawBody, endpoint, cfg)
+	if shouldReviewPromptFilterVerdict(verdict, cfg) {
+		text := promptfilter.ExtractText(rawBody, endpoint, cfg.MaxTextLength)
+		verdict = h.reviewPromptFilterVerdict(c.Request.Context(), text, verdict, cfg)
+	}
 	h.logPromptFilterVerdict(c, endpoint, model, "local_filter", "", verdict)
 	if verdict.Action == promptfilter.ActionWarn {
 		c.Header("X-Prompt-Filter-Warning", verdict.Reason)
@@ -40,6 +44,9 @@ func (h *Handler) inspectPromptFilterTextOpenAI(c *gin.Context, text string, end
 	}
 	cfg := h.store.GetPromptFilterConfig()
 	verdict := promptfilter.InspectText(text, cfg)
+	if shouldReviewPromptFilterVerdict(verdict, cfg) {
+		verdict = h.reviewPromptFilterVerdict(c.Request.Context(), text, verdict, cfg)
+	}
 	h.logPromptFilterVerdict(c, endpoint, model, "local_filter", "", verdict)
 	if verdict.Action == promptfilter.ActionWarn {
 		c.Header("X-Prompt-Filter-Warning", verdict.Reason)
@@ -61,6 +68,10 @@ func (h *Handler) inspectPromptFilterAnthropic(c *gin.Context, rawBody []byte, e
 	}
 	cfg := h.store.GetPromptFilterConfig()
 	verdict := promptfilter.Inspect(rawBody, endpoint, cfg)
+	if shouldReviewPromptFilterVerdict(verdict, cfg) {
+		text := promptfilter.ExtractText(rawBody, endpoint, cfg.MaxTextLength)
+		verdict = h.reviewPromptFilterVerdict(c.Request.Context(), text, verdict, cfg)
+	}
 	h.logPromptFilterVerdict(c, endpoint, model, "local_filter", "", verdict)
 	if verdict.Action == promptfilter.ActionWarn {
 		c.Header("X-Prompt-Filter-Warning", verdict.Reason)
@@ -97,6 +108,9 @@ func (h *Handler) logPromptFilterVerdict(c *gin.Context, endpoint string, model 
 		TextPreview:     verdict.TextPreview,
 		ClientIP:        c.ClientIP(),
 		ErrorCode:       errorCode,
+		ReviewModel:     verdict.ReviewModel,
+		ReviewFlagged:   verdict.ReviewFlagged,
+		ReviewError:     verdict.ReviewError,
 	}
 	populatePromptFilterAPIKeyMeta(c, input)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -162,4 +176,16 @@ func populatePromptFilterAPIKeyMeta(c *gin.Context, input *database.PromptFilter
 			input.APIKeyMasked = masked
 		}
 	}
+}
+
+func shouldReviewPromptFilterVerdict(verdict promptfilter.Verdict, cfg promptfilter.Config) bool {
+	if verdict.Action != promptfilter.ActionWarn && verdict.Action != promptfilter.ActionBlock {
+		return false
+	}
+	return promptfilter.NormalizeReviewConfig(cfg.Review).Ready()
+}
+
+func (h *Handler) reviewPromptFilterVerdict(ctx context.Context, text string, verdict promptfilter.Verdict, cfg promptfilter.Config) promptfilter.Verdict {
+	flagged, model, err := promptfilter.DefaultReviewClient.ReviewText(ctx, text, cfg.Review)
+	return promptfilter.ApplyReviewResult(verdict, flagged, model, err, cfg.Review)
 }

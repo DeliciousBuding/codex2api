@@ -673,6 +673,13 @@ export interface SystemSettings {
   prompt_filter_sensitive_words: string
   prompt_filter_custom_patterns: string
   prompt_filter_disabled_patterns: string
+  prompt_filter_review_enabled: boolean
+  prompt_filter_review_api_key?: string
+  prompt_filter_review_api_key_configured?: boolean
+  prompt_filter_review_base_url: string
+  prompt_filter_review_model: string
+  prompt_filter_review_timeout_seconds: number
+  prompt_filter_review_fail_closed: boolean
   client_compat_mode: 'preserve' | 'auto' | 'force' | string
   codex_min_cli_version: string
   usage_log_mode: 'full' | 'errors' | 'off' | string
@@ -740,6 +747,10 @@ export interface PromptFilterVerdict {
   text_preview: string
   reason: string
   extracted_chars: number
+  reviewed?: boolean
+  review_flagged?: boolean
+  review_error?: string
+  review_model?: string
 }
 
 export interface PromptFilterLog {
@@ -759,6 +770,9 @@ export interface PromptFilterLog {
   api_key_masked: string
   client_ip: string
   error_code: string
+  review_model: string
+  review_flagged: boolean
+  review_error: string
 }
 
 export interface PromptFilterLogsResponse {

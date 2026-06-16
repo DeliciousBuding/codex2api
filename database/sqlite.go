@@ -321,7 +321,10 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			api_key_name TEXT DEFAULT '',
 			api_key_masked TEXT DEFAULT '',
 			client_ip TEXT DEFAULT '',
-			error_code TEXT DEFAULT ''
+			error_code TEXT DEFAULT '',
+			review_model TEXT DEFAULT '',
+			review_flagged INTEGER DEFAULT 0,
+			review_error TEXT DEFAULT ''
 		);`,
 	}
 	for _, stmt := range statements {
@@ -425,6 +428,15 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "prompt_filter_sensitive_words", "TEXT DEFAULT ''"},
 		{"system_settings", "prompt_filter_custom_patterns", "TEXT DEFAULT '[]'"},
 		{"system_settings", "prompt_filter_disabled_patterns", "TEXT DEFAULT '[]'"},
+		{"system_settings", "prompt_filter_review_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "prompt_filter_review_api_key", "TEXT DEFAULT ''"},
+		{"system_settings", "prompt_filter_review_base_url", "TEXT DEFAULT 'https://api.openai.com'"},
+		{"system_settings", "prompt_filter_review_model", "TEXT DEFAULT 'omni-moderation-latest'"},
+		{"system_settings", "prompt_filter_review_timeout_seconds", "INTEGER DEFAULT 10"},
+		{"system_settings", "prompt_filter_review_fail_closed", "INTEGER DEFAULT 1"},
+		{"prompt_filter_logs", "review_model", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "review_flagged", "INTEGER DEFAULT 0"},
+		{"prompt_filter_logs", "review_error", "TEXT DEFAULT ''"},
 		{"system_settings", "client_compat_mode", "TEXT DEFAULT 'preserve'"},
 		{"system_settings", "codex_min_cli_version", "TEXT DEFAULT '0.118.0'"},
 		{"system_settings", "usage_log_mode", "TEXT DEFAULT 'full'"},

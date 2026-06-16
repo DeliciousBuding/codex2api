@@ -755,6 +755,12 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_sensitive_words TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_custom_patterns TEXT DEFAULT '[]';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_disabled_patterns TEXT DEFAULT '[]';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_review_enabled BOOLEAN DEFAULT FALSE;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_review_api_key TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_review_base_url TEXT DEFAULT 'https://api.openai.com';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_review_model TEXT DEFAULT 'omni-moderation-latest';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_review_timeout_seconds INT DEFAULT 10;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS prompt_filter_review_fail_closed BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS client_compat_mode VARCHAR(20) DEFAULT 'preserve';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_min_cli_version VARCHAR(32) DEFAULT '0.118.0';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS usage_log_mode VARCHAR(20) DEFAULT 'full';
@@ -795,8 +801,14 @@ func (db *DB) migrate(ctx context.Context) error {
 				api_key_name     VARCHAR(255) DEFAULT '',
 				api_key_masked   VARCHAR(64) DEFAULT '',
 				client_ip        VARCHAR(64) DEFAULT '',
-				error_code       VARCHAR(100) DEFAULT ''
+				error_code       VARCHAR(100) DEFAULT '',
+				review_model     VARCHAR(100) DEFAULT '',
+				review_flagged   BOOLEAN DEFAULT FALSE,
+				review_error     TEXT DEFAULT ''
 			);
+			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS review_model VARCHAR(100) DEFAULT '';
+			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS review_flagged BOOLEAN DEFAULT FALSE;
+			ALTER TABLE prompt_filter_logs ADD COLUMN IF NOT EXISTS review_error TEXT DEFAULT '';
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_created_at ON prompt_filter_logs(created_at);
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_action_created_at ON prompt_filter_logs(action, created_at);
 
@@ -1314,6 +1326,12 @@ type SystemSettings struct {
 	PromptFilterSensitiveWords         string
 	PromptFilterCustomPatterns         string
 	PromptFilterDisabledPatterns       string
+	PromptFilterReviewEnabled          bool
+	PromptFilterReviewAPIKey           string
+	PromptFilterReviewBaseURL          string
+	PromptFilterReviewModel            string
+	PromptFilterReviewTimeoutSeconds   int
+	PromptFilterReviewFailClosed       bool
 	ClientCompatMode                   string
 	CodexMinCLIVersion                 string
 	UsageLogMode                       string
@@ -1389,6 +1407,12 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		       COALESCE(prompt_filter_sensitive_words, ''),
 		       COALESCE(prompt_filter_custom_patterns, '[]'),
 		       COALESCE(prompt_filter_disabled_patterns, '[]'),
+		       COALESCE(prompt_filter_review_enabled, false),
+		       COALESCE(prompt_filter_review_api_key, ''),
+		       COALESCE(prompt_filter_review_base_url, 'https://api.openai.com'),
+		       COALESCE(prompt_filter_review_model, 'omni-moderation-latest'),
+		       COALESCE(prompt_filter_review_timeout_seconds, 10),
+		       COALESCE(prompt_filter_review_fail_closed, true),
 		       COALESCE(client_compat_mode, 'preserve'),
 		       COALESCE(codex_min_cli_version, '0.118.0'),
 		       COALESCE(usage_log_mode, 'full'),
@@ -1425,6 +1449,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.PromptFilterEnabled, &s.PromptFilterMode, &s.PromptFilterThreshold, &s.PromptFilterStrictThreshold,
 		&s.PromptFilterLogMatches, &s.PromptFilterMaxTextLength, &s.PromptFilterSensitiveWords,
 		&s.PromptFilterCustomPatterns, &s.PromptFilterDisabledPatterns,
+		&s.PromptFilterReviewEnabled, &s.PromptFilterReviewAPIKey, &s.PromptFilterReviewBaseURL,
+		&s.PromptFilterReviewModel, &s.PromptFilterReviewTimeoutSeconds, &s.PromptFilterReviewFailClosed,
 		&s.ClientCompatMode, &s.CodexMinCLIVersion, &s.UsageLogMode, &s.UsageLogBatchSize,
 		&s.UsageLogFlushIntervalSeconds, &s.StreamFlushPolicy, &s.StreamFlushIntervalMS,
 		&s.FirstTokenMode,
@@ -1474,6 +1500,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				resin_url, resin_platform_name, prompt_filter_enabled, prompt_filter_mode, prompt_filter_threshold,
 				prompt_filter_strict_threshold, prompt_filter_log_matches, prompt_filter_max_text_length,
 				prompt_filter_sensitive_words, prompt_filter_custom_patterns, prompt_filter_disabled_patterns,
+				prompt_filter_review_enabled, prompt_filter_review_api_key, prompt_filter_review_base_url,
+				prompt_filter_review_model, prompt_filter_review_timeout_seconds, prompt_filter_review_fail_closed,
 				client_compat_mode, codex_min_cli_version, usage_log_mode, usage_log_batch_size,
 					usage_log_flush_interval_seconds, stream_flush_policy, stream_flush_interval_ms,
 					first_token_timeout_seconds,
@@ -1494,7 +1522,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					auto_pause_5h_threshold,
 					auto_pause_7d_threshold
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -1535,6 +1563,12 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 				prompt_filter_sensitive_words = EXCLUDED.prompt_filter_sensitive_words,
 				prompt_filter_custom_patterns = EXCLUDED.prompt_filter_custom_patterns,
 				prompt_filter_disabled_patterns = EXCLUDED.prompt_filter_disabled_patterns,
+				prompt_filter_review_enabled = EXCLUDED.prompt_filter_review_enabled,
+				prompt_filter_review_api_key = EXCLUDED.prompt_filter_review_api_key,
+				prompt_filter_review_base_url = EXCLUDED.prompt_filter_review_base_url,
+				prompt_filter_review_model = EXCLUDED.prompt_filter_review_model,
+				prompt_filter_review_timeout_seconds = EXCLUDED.prompt_filter_review_timeout_seconds,
+				prompt_filter_review_fail_closed = EXCLUDED.prompt_filter_review_fail_closed,
 				client_compat_mode = EXCLUDED.client_compat_mode,
 				codex_min_cli_version = EXCLUDED.codex_min_cli_version,
 				usage_log_mode = EXCLUDED.usage_log_mode,
@@ -1568,6 +1602,8 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.ResinURL, s.ResinPlatformName, s.PromptFilterEnabled, s.PromptFilterMode, s.PromptFilterThreshold,
 		s.PromptFilterStrictThreshold, s.PromptFilterLogMatches, s.PromptFilterMaxTextLength,
 		s.PromptFilterSensitiveWords, s.PromptFilterCustomPatterns, s.PromptFilterDisabledPatterns,
+		s.PromptFilterReviewEnabled, s.PromptFilterReviewAPIKey, s.PromptFilterReviewBaseURL,
+		s.PromptFilterReviewModel, s.PromptFilterReviewTimeoutSeconds, s.PromptFilterReviewFailClosed,
 		s.ClientCompatMode, s.CodexMinCLIVersion, s.UsageLogMode, s.UsageLogBatchSize,
 		s.UsageLogFlushIntervalSeconds, s.StreamFlushPolicy, s.StreamFlushIntervalMS,
 		s.FirstTokenTimeoutSeconds, firstTokenMode, billingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers, reasoningEffortModels,

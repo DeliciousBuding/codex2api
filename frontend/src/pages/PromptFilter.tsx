@@ -50,6 +50,13 @@ type PromptFilterForm = Pick<
   | 'prompt_filter_sensitive_words'
   | 'prompt_filter_custom_patterns'
   | 'prompt_filter_disabled_patterns'
+  | 'prompt_filter_review_enabled'
+  | 'prompt_filter_review_api_key'
+  | 'prompt_filter_review_api_key_configured'
+  | 'prompt_filter_review_base_url'
+  | 'prompt_filter_review_model'
+  | 'prompt_filter_review_timeout_seconds'
+  | 'prompt_filter_review_fail_closed'
 >
 
 type LogFilters = {
@@ -79,6 +86,13 @@ const defaultForm: PromptFilterForm = {
   prompt_filter_sensitive_words: '',
   prompt_filter_custom_patterns: '[]',
   prompt_filter_disabled_patterns: '[]',
+  prompt_filter_review_enabled: false,
+  prompt_filter_review_api_key: '',
+  prompt_filter_review_api_key_configured: false,
+  prompt_filter_review_base_url: 'https://api.openai.com',
+  prompt_filter_review_model: 'omni-moderation-latest',
+  prompt_filter_review_timeout_seconds: 10,
+  prompt_filter_review_fail_closed: true,
 }
 
 const emptyFilters: LogFilters = {
@@ -108,6 +122,13 @@ const normalizePromptFilterForm = (settings?: SystemSettings | null): PromptFilt
   prompt_filter_sensitive_words: settings?.prompt_filter_sensitive_words || '',
   prompt_filter_custom_patterns: settings?.prompt_filter_custom_patterns || '[]',
   prompt_filter_disabled_patterns: settings?.prompt_filter_disabled_patterns || '[]',
+  prompt_filter_review_enabled: Boolean(settings?.prompt_filter_review_enabled),
+  prompt_filter_review_api_key: '',
+  prompt_filter_review_api_key_configured: Boolean(settings?.prompt_filter_review_api_key_configured),
+  prompt_filter_review_base_url: settings?.prompt_filter_review_base_url || 'https://api.openai.com',
+  prompt_filter_review_model: settings?.prompt_filter_review_model || 'omni-moderation-latest',
+  prompt_filter_review_timeout_seconds: settings?.prompt_filter_review_timeout_seconds || 10,
+  prompt_filter_review_fail_closed: settings?.prompt_filter_review_fail_closed ?? true,
 })
 
 function normalizePromptFilterView(value?: string): PromptFilterView {
@@ -121,6 +142,14 @@ function parseJSONList<T>(raw: string, fallback: T[] = []): T[] {
   } catch {
     return fallback
   }
+}
+
+function promptFilterSavePayload(form: PromptFilterForm): Partial<SystemSettings> {
+  const payload: Partial<SystemSettings> = { ...form }
+  if (!payload.prompt_filter_review_api_key?.trim()) {
+    delete payload.prompt_filter_review_api_key
+  }
+  return payload
 }
 
 export default function PromptFilter() {
@@ -191,7 +220,7 @@ export default function PromptFilter() {
   const saveSettings = async (partial?: Partial<SystemSettings>) => {
     setSaving(true)
     try {
-      const payload = partial ?? form
+      const payload = partial ?? promptFilterSavePayload(form)
       const updated = await api.updateSettings(payload)
       setForm(normalizePromptFilterForm(updated))
       const rules = await api.getPromptFilterRules()
@@ -465,6 +494,51 @@ function OverviewView({
             <Field label={t('promptFilter.sensitiveWords')}>
               <Textarea rows={5} value={form.prompt_filter_sensitive_words} placeholder={t('promptFilter.sensitiveWordsPlaceholder')} onChange={(event) => setForm((current) => ({ ...current, prompt_filter_sensitive_words: event.target.value }))} />
             </Field>
+
+            <div className="space-y-4 rounded-lg border border-border bg-muted/20 p-4">
+              <div>
+                <SectionTitle title={t('promptFilter.reviewTitle')} />
+                <p className="mt-1 text-sm text-muted-foreground">{t('promptFilter.reviewDesc')}</p>
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-4">
+                <Field label={t('promptFilter.reviewEnabled')}>
+                  <Select
+                    value={form.prompt_filter_review_enabled ? 'true' : 'false'}
+                    onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_review_enabled: value === 'true' }))}
+                    options={booleanOptions}
+                  />
+                </Field>
+                <Field label={t('promptFilter.reviewFailClosed')}>
+                  <Select
+                    value={form.prompt_filter_review_fail_closed ? 'true' : 'false'}
+                    onValueChange={(value) => setForm((current) => ({ ...current, prompt_filter_review_fail_closed: value === 'true' }))}
+                    options={[
+                      { label: t('promptFilter.reviewFailClosedBlock'), value: 'true' },
+                      { label: t('promptFilter.reviewFailClosedAllow'), value: 'false' },
+                    ]}
+                  />
+                </Field>
+                <Field label={t('promptFilter.reviewTimeout')}>
+                  <Input type="number" min={1} max={60} value={form.prompt_filter_review_timeout_seconds} onChange={(event) => setForm((current) => ({ ...current, prompt_filter_review_timeout_seconds: parseInt(event.target.value, 10) || 10 }))} />
+                </Field>
+              </div>
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(180px,0.8fr)]">
+                <Field label={t('promptFilter.reviewBaseUrl')}>
+                  <Input value={form.prompt_filter_review_base_url} placeholder="https://api.openai.com" onChange={(event) => setForm((current) => ({ ...current, prompt_filter_review_base_url: event.target.value }))} />
+                </Field>
+                <Field label={t('promptFilter.reviewModel')}>
+                  <Input value={form.prompt_filter_review_model} placeholder="omni-moderation-latest" onChange={(event) => setForm((current) => ({ ...current, prompt_filter_review_model: event.target.value }))} />
+                </Field>
+              </div>
+              <Field label={t('promptFilter.reviewApiKey')}>
+                <Input
+                  type="password"
+                  value={form.prompt_filter_review_api_key ?? ''}
+                  placeholder={form.prompt_filter_review_api_key_configured ? t('promptFilter.reviewApiKeyConfigured') : t('promptFilter.reviewApiKeyPlaceholder')}
+                  onChange={(event) => setForm((current) => ({ ...current, prompt_filter_review_api_key: event.target.value }))}
+                />
+              </Field>
+            </div>
             <Button onClick={onSave} disabled={saving}>
               <Save className="size-4" />
               {saving ? t('common.saving') : t('common.save')}
@@ -1084,8 +1158,10 @@ function VerdictPanel({ verdict }: { verdict: PromptFilterVerdict }) {
         <MiniStat label="Mode" value={verdict.mode || '-'} />
         <MiniStat label="Score" value={`${verdict.score} / ${verdict.threshold}`} />
         <MiniStat label="Matches" value={String(verdict.matched?.length ?? 0)} />
+        <MiniStat label="Review" value={verdict.reviewed ? (verdict.review_flagged ? 'Flagged' : 'Cleared') : '-'} />
       </div>
       {verdict.reason ? <p className="mt-3 text-sm text-muted-foreground">{verdict.reason}</p> : null}
+      {verdict.review_error ? <p className="mt-2 text-sm text-destructive">{verdict.review_error}</p> : null}
       {verdict.matched?.length ? (
         <div className="mt-3 flex flex-wrap gap-1.5">
           {verdict.matched.map((match, index) => (
@@ -1123,6 +1199,7 @@ function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: 
         <div className="flex flex-col items-start gap-1">
           <ActionBadge action={log.action} />
           {log.source === 'upstream_cyber_policy' ? <Badge variant="outline" className="text-[11px]">upstream</Badge> : null}
+          {log.review_model ? <Badge variant="outline" className="text-[11px]">{log.review_flagged ? 'review flagged' : 'review cleared'}</Badge> : null}
         </div>
       </TableCell>
       <TableCell>
@@ -1146,7 +1223,8 @@ function PromptFilterLogRow({ log, compact }: { log: PromptFilterLog; compact?: 
         {!compact && log.client_ip ? <div className="text-xs text-muted-foreground">{log.client_ip}</div> : null}
       </TableCell>
       <TableCell className="max-w-[360px]">
-        <div className="truncate text-muted-foreground" title={log.text_preview || log.error_code || ''}>{log.text_preview || log.error_code || '-'}</div>
+        <div className="truncate text-muted-foreground" title={log.text_preview || log.error_code || log.review_error || ''}>{log.text_preview || log.error_code || log.review_error || '-'}</div>
+        {!compact && log.review_model ? <div className="mt-1 truncate text-xs text-muted-foreground">{log.review_model}</div> : null}
       </TableCell>
     </TableRow>
   )

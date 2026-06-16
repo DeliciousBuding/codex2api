@@ -963,6 +963,12 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 		PromptFilterMaxTextLength:        81920,
 		PromptFilterCustomPatterns:       "[]",
 		PromptFilterDisabledPatterns:     "[]",
+		PromptFilterReviewEnabled:        true,
+		PromptFilterReviewAPIKey:         "sk-review-test",
+		PromptFilterReviewBaseURL:        "https://review.example.com",
+		PromptFilterReviewModel:          "review-model",
+		PromptFilterReviewTimeoutSeconds: 7,
+		PromptFilterReviewFailClosed:     false,
 		ClientCompatMode:                 "preserve",
 		CodexMinCLIVersion:               "0.118.0",
 		UsageLogMode:                     "full",
@@ -1009,6 +1015,24 @@ func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
 	}
 	if settings.ReasoningEffortModels != `[{"model":"gpt-5.5","effort":"xhigh"}]` {
 		t.Fatalf("ReasoningEffortModels = %q, want gpt-5.5 xhigh entry", settings.ReasoningEffortModels)
+	}
+	if !settings.PromptFilterReviewEnabled {
+		t.Fatal("PromptFilterReviewEnabled = false, want true")
+	}
+	if settings.PromptFilterReviewAPIKey != "sk-review-test" {
+		t.Fatalf("PromptFilterReviewAPIKey = %q, want sk-review-test", settings.PromptFilterReviewAPIKey)
+	}
+	if settings.PromptFilterReviewBaseURL != "https://review.example.com" {
+		t.Fatalf("PromptFilterReviewBaseURL = %q, want https://review.example.com", settings.PromptFilterReviewBaseURL)
+	}
+	if settings.PromptFilterReviewModel != "review-model" {
+		t.Fatalf("PromptFilterReviewModel = %q, want review-model", settings.PromptFilterReviewModel)
+	}
+	if settings.PromptFilterReviewTimeoutSeconds != 7 {
+		t.Fatalf("PromptFilterReviewTimeoutSeconds = %d, want 7", settings.PromptFilterReviewTimeoutSeconds)
+	}
+	if settings.PromptFilterReviewFailClosed {
+		t.Fatal("PromptFilterReviewFailClosed = true, want false")
 	}
 	if !settings.CodexWSHideUpstreamErrors {
 		t.Fatal("CodexWSHideUpstreamErrors = false, want true")
@@ -2289,5 +2313,45 @@ func TestFlushLogsRollsBackAndRequeuesWhenQuotaUpdateFails(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("usage_logs count = %d, want 0 after rolled-back flush", count)
+	}
+}
+
+func TestPromptFilterLogsPersistReviewMetadata(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.InsertPromptFilterLog(ctx, &PromptFilterLogInput{
+		Source:          "local_filter",
+		Endpoint:        "/v1/responses",
+		Model:           "gpt-5.4",
+		Action:          "allow",
+		Mode:            "block",
+		Score:           100,
+		Threshold:       50,
+		MatchedPatterns: `[{"name":"credential_theft","weight":100}]`,
+		TextPreview:     "preview",
+		ReviewModel:     "omni-moderation-latest",
+		ReviewFlagged:   false,
+		ReviewError:     "temporary failure",
+	}); err != nil {
+		t.Fatalf("InsertPromptFilterLog 返回错误: %v", err)
+	}
+
+	logs, total, err := db.ListPromptFilterLogsPage(ctx, PromptFilterLogQuery{Page: 1, PageSize: 10, Query: "temporary"})
+	if err != nil {
+		t.Fatalf("ListPromptFilterLogsPage 返回错误: %v", err)
+	}
+	if total != 1 || len(logs) != 1 {
+		t.Fatalf("logs total=%d len=%d, want 1", total, len(logs))
+	}
+	got := logs[0]
+	if got.ReviewModel != "omni-moderation-latest" || got.ReviewFlagged || got.ReviewError != "temporary failure" {
+		t.Fatalf("review metadata = %+v", got)
 	}
 }
