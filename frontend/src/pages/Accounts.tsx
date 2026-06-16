@@ -3887,6 +3887,14 @@ export default function Accounts() {
                                       ? formatAccountName(account)
                                       : formatAccountListEmail(account)}
                                   </span>
+                                  {account.chatgpt_account_id && (
+                                    <span
+                                      className="max-w-full truncate font-mono text-[10px] leading-tight text-muted-foreground/70"
+                                      title={account.chatgpt_account_id}
+                                    >
+                                      {account.chatgpt_account_id}
+                                    </span>
+                                  )}
                                   {showEmailDomainTags &&
                                     getAccountEmailDomain(account) && (
                                     <EmailDomainBadge

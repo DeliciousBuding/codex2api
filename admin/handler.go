@@ -552,6 +552,7 @@ type accountResponse struct {
 	Name                     string                     `json:"name"`
 	Email                    string                     `json:"email"`
 	EmailDomain              string                     `json:"email_domain,omitempty"`
+	ChatGPTAccountID         string                     `json:"chatgpt_account_id,omitempty"`
 	PlanType                 string                     `json:"plan_type"`
 	SubscriptionExpiresAt    string                     `json:"subscription_expires_at,omitempty"`
 	Status                   string                     `json:"status"`
@@ -703,6 +704,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			Name:                     row.Name,
 			Email:                    email,
 			EmailDomain:              accountEmailDomain(email),
+			ChatGPTAccountID:         row.GetCredential("account_id"),
 			PlanType:                 planType,
 			SubscriptionExpiresAt:    row.GetCredential("subscription_expires_at"),
 			Status:                   row.Status,
