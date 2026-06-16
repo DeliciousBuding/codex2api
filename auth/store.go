@@ -79,6 +79,10 @@ type Account struct {
 	// -1 表示尚未探测过（未知）；>=0 为已知次数。
 	RateLimitResetCredits      int
 	RateLimitResetCreditsValid bool
+	// resetCreditsProbedAt 记录最近一次成功 wham 用量探针的时间。
+	// 「主动重置次数」只能通过 wham 探针刷新（普通 /responses 流量不携带该字段），
+	// 因此用它独立判断重置次数是否过期，避免活跃账号因用量快照一直被流量刷新而长期不探针。
+	resetCreditsProbedAt time.Time
 
 	usageProbeInFlight    bool
 	recoveryProbeInFlight bool
@@ -1221,6 +1225,15 @@ func (a *Account) GetRateLimitResetCredits() (int, bool) {
 	return a.RateLimitResetCredits, a.RateLimitResetCreditsValid
 }
 
+// MarkResetCreditsProbed 记录最近一次成功 wham 用量探针的时间。
+// 调用方应在 wham 探针成功（拿到 usage）后调用，无论本次响应是否带 reset_credits 字段，
+// 因为「能成功拉到 wham」本身就代表重置次数已是最新。
+func (a *Account) MarkResetCreditsProbed(t time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.resetCreditsProbedAt = t
+}
+
 // ClearUsageCache 清除内存中的用量缓存，下次请求时从上游重新获取
 func (a *Account) ClearUsageCache() {
 	a.mu.Lock()
@@ -1561,13 +1574,26 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 		return false
 	}
 	if a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
-		return false
+		return false // token 失效，wham 也会 401，探针无意义
 	}
+
+	// 「主动重置次数」只能由 wham 探针刷新（普通 /responses 流量不携带该字段），
+	// 因此用独立的 resetCreditsProbedAt 判断它是否过期。否则活跃账号的用量快照被
+	// 业务流量持续刷新，会让用量看起来一直"新鲜"，从而长期不触发 wham 探针、
+	// 重置次数迟迟探测不出来。
+	resetCreditsStale := a.resetCreditsProbedAt.IsZero() || now.Sub(a.resetCreditsProbedAt) > maxAge
+
 	if a.premium5hRateLimitedLocked(now) {
-		return false
+		// premium 5h 限流期间不发 /responses 探活，但 wham 零成本，仍允许其刷新重置次数。
+		return resetCreditsStale
 	}
 	if a.Status == StatusCooldown && a.CooldownReason == "rate_limited" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
-		return false // 429 冷却期间不探活，避免加重限流
+		// 429 冷却期间不发 /responses 探活（避免加重限流），但允许 wham-only 探针刷新重置次数——
+		// 这正是用户最需要看到"还剩几次主动重置"的时刻。
+		return resetCreditsStale
+	}
+	if resetCreditsStale {
+		return true
 	}
 	if !a.UsagePercent7dValid || a.UsageUpdatedAt.IsZero() || now.Sub(a.UsageUpdatedAt) > maxAge {
 		return true
@@ -1579,6 +1605,23 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 		if a.Reset5hAt.IsZero() || a.Reset5hAt.After(now) {
 			return now.Sub(a.UsageUpdatedAt5h) > maxAge
 		}
+	}
+	return false
+}
+
+// InLimitedState 报告账号是否处于"应避免 /responses 探活"的限流/冷却状态
+// （429 冷却或 premium 5h 限流）。此时用量探针应只走 wham（零成本），
+// 失败也不回退 /responses，避免加重限流或消耗额度。
+// 注意：unauthorized 冷却不在此列——那类账号 NeedsUsageProbe 已直接跳过。
+func (a *Account) InLimitedState() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	now := time.Now()
+	if a.premium5hRateLimitedLocked(now) {
+		return true
+	}
+	if a.Status == StatusCooldown && a.CooldownReason == "rate_limited" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
+		return true
 	}
 	return false
 }

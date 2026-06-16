@@ -201,6 +201,10 @@ func ApplyWhamUsage(store *auth.Store, account *auth.Account, usage *WhamUsage) 
 
 	now := time.Now()
 
+	// 记录本次成功的 wham 探针时间。「主动重置次数」只能由 wham 刷新，
+	// 用它独立判断重置次数是否过期（见 auth.Account.NeedsUsageProbe）。
+	account.MarkResetCreditsProbed(now)
+
 	w5h, w7d := pickClassifiedWhamWindows(usage.RateLimit.PrimaryWindow, usage.RateLimit.SecondaryWindow, usage.PlanType, now)
 
 	if w5h != nil {
