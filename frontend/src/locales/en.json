@@ -1754,6 +1754,11 @@
     "globalAutoPauseDesc": "Set default auto-pause thresholds for all accounts. Account-level or group-level settings take priority.",
     "globalAutoPause5h": "Global 5h Threshold (%)",
     "globalAutoPause7d": "Global 7d Threshold (%)",
+    "autoPause5hGuardBand": "5h Guard Band (%)",
+    "autoPause5hGuardBandHint": "Reduce concurrency when 5h usage nears the pause line to slow quota consumption. Enter how many percentage points early to start; 0 turns it off.",
+    "autoPause5hGuardBandPlaceholder": "Blank or 0 to disable",
+    "autoPause5hGuardConcurrency": "5h Guard Concurrency Cap",
+    "autoPause5hGuardConcurrencyHint": "When an account enters the 5h guard band, cap its concurrency at this value. Default is 1. Enter 0 to disable guard-band concurrency reduction.",
     "globalAutoPausePlaceholder": "Blank or 0 to disable",
     "globalAutoPauseHint": "Enter 0 to disable global default. Priority: Account > Group > Global."
   },

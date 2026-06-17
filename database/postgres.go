@@ -781,6 +781,8 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_ws_silent_max_retries INT DEFAULT 2;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_pause_5h_threshold DOUBLE PRECISION DEFAULT 0;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_pause_7d_threshold DOUBLE PRECISION DEFAULT 0;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_pause_5h_guard_band_percent DOUBLE PRECISION DEFAULT 5;
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_pause_5h_guard_concurrency INT DEFAULT 1;
 
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS auto_pause_5h_threshold DOUBLE PRECISION DEFAULT 0;
 	ALTER TABLE account_groups ADD COLUMN IF NOT EXISTS auto_pause_7d_threshold DOUBLE PRECISION DEFAULT 0;
@@ -1354,6 +1356,8 @@ type SystemSettings struct {
 	CodexWSSilentMaxRetries            int  // WS 静默换号最大重试次数，默认 2
 	AutoPause5hThreshold               float64
 	AutoPause7dThreshold               float64
+	AutoPause5hGuardBandPercent        float64
+	AutoPause5hGuardConcurrency        int
 }
 
 func normalizeBillingTierPolicy(policy string) string {
@@ -1436,7 +1440,9 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 			       COALESCE(codex_ws_silent_retry_enabled, true),
 			       COALESCE(codex_ws_silent_max_retries, 2),
 			       COALESCE(auto_pause_5h_threshold, 0),
-			       COALESCE(auto_pause_7d_threshold, 0)
+			       COALESCE(auto_pause_7d_threshold, 0),
+			       COALESCE(auto_pause_5h_guard_band_percent, 5),
+			       COALESCE(auto_pause_5h_guard_concurrency, 1)
 			FROM system_settings WHERE id = 1
 		`).Scan(
 		&s.SiteName, &s.SiteLogo,
@@ -1470,6 +1476,8 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 		&s.CodexWSSilentMaxRetries,
 		&s.AutoPause5hThreshold,
 		&s.AutoPause7dThreshold,
+		&s.AutoPause5hGuardBandPercent,
+		&s.AutoPause5hGuardConcurrency,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1522,9 +1530,11 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_ws_silent_retry_enabled,
 					codex_ws_silent_max_retries,
 					auto_pause_5h_threshold,
-					auto_pause_7d_threshold
+					auto_pause_7d_threshold,
+					auto_pause_5h_guard_band_percent,
+					auto_pause_5h_guard_concurrency
 					)
-						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69)
+						VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71)
 				ON CONFLICT (id) DO UPDATE SET
 				site_name               = EXCLUDED.site_name,
 				site_logo               = EXCLUDED.site_logo,
@@ -1594,7 +1604,9 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 					codex_ws_silent_retry_enabled = EXCLUDED.codex_ws_silent_retry_enabled,
 					codex_ws_silent_max_retries = EXCLUDED.codex_ws_silent_max_retries,
 					auto_pause_5h_threshold = EXCLUDED.auto_pause_5h_threshold,
-					auto_pause_7d_threshold = EXCLUDED.auto_pause_7d_threshold
+					auto_pause_7d_threshold = EXCLUDED.auto_pause_7d_threshold,
+					auto_pause_5h_guard_band_percent = EXCLUDED.auto_pause_5h_guard_band_percent,
+					auto_pause_5h_guard_concurrency = EXCLUDED.auto_pause_5h_guard_concurrency
 			`, NormalizeSiteName(s.SiteName), strings.TrimSpace(s.SiteLogo),
 		s.MaxConcurrency, s.GlobalRPM, s.TestModel, s.TestConcurrency, s.ProxyURL, s.PgMaxConns, s.RedisPoolSize,
 		s.AutoCleanUnauthorized, s.AutoCleanRateLimited, s.AdminSecret, s.AutoCleanFullUsage, s.ProxyPoolEnabled,
@@ -1611,7 +1623,7 @@ func (db *DB) UpdateSystemSettings(ctx context.Context, s *SystemSettings) error
 		s.FirstTokenTimeoutSeconds, firstTokenMode, billingTierPolicy, s.ImageStorageConfig, s.SchedulerMode, normalizeAffinityMode(s.AffinityMode), s.BackgroundConfig, s.ShowFullUsageNumbers, reasoningEffortModels,
 		s.CodexForceWebsocket, s.CodexWSKeepaliveEnabled, normalizeCodexWSKeepaliveInterval(s.CodexWSKeepaliveIntervalSec),
 		s.CodexWSHideUpstreamErrors, s.CodexWSSilentRetryEnabled, normalizeCodexWSSilentMaxRetries(s.CodexWSSilentMaxRetries),
-		s.AutoPause5hThreshold, s.AutoPause7dThreshold)
+		s.AutoPause5hThreshold, s.AutoPause7dThreshold, s.AutoPause5hGuardBandPercent, s.AutoPause5hGuardConcurrency)
 	return err
 }
 
