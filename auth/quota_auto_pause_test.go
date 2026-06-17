@@ -1,11 +1,17 @@
 package auth
 
 import (
+	"math"
 	"testing"
 	"time"
 
 	"github.com/codex2api/database"
 )
+
+func nearlyEqualFloat64(a, b float64) bool {
+	const epsilon = 1e-6
+	return math.Abs(a-b) < epsilon
+}
 
 func newQuotaAutoPauseTestAccount() *Account {
 	acc := &Account{
@@ -249,7 +255,7 @@ func TestQuotaAutoPause5hGuardReducesDispatchScoreNearThreshold(t *testing.T) {
 	recomputeTestAccount(baseline, 4)
 
 	penalty := baseline.DispatchScore - guarded.DispatchScore
-	if penalty != 20 {
+	if !nearlyEqualFloat64(penalty, 20) {
 		t.Fatalf("guard penalty = %v, want 20 (baseline=%v guarded=%v)", penalty, baseline.DispatchScore, guarded.DispatchScore)
 	}
 }
@@ -268,7 +274,7 @@ func TestQuotaAutoPause5hGuardDoesNotReduceDispatchScoreOutsideBandOrDisabled(t 
 		setAutoPauseThresholdsWithGuard(baseline, 0)
 		recomputeTestAccount(baseline, 4)
 
-		if guarded.DispatchScore != baseline.DispatchScore {
+		if !nearlyEqualFloat64(guarded.DispatchScore, baseline.DispatchScore) {
 			t.Fatalf("DispatchScore = %v, want baseline %v outside guard band", guarded.DispatchScore, baseline.DispatchScore)
 		}
 	})
@@ -286,7 +292,7 @@ func TestQuotaAutoPause5hGuardDoesNotReduceDispatchScoreOutsideBandOrDisabled(t 
 		setAutoPauseThresholdsWithGuard(baseline, 0)
 		recomputeTestAccount(baseline, 4)
 
-		if acc.DispatchScore != baseline.DispatchScore {
+		if !nearlyEqualFloat64(acc.DispatchScore, baseline.DispatchScore) {
 			t.Fatalf("DispatchScore = %v, want baseline %v when guard band is disabled", acc.DispatchScore, baseline.DispatchScore)
 		}
 	})
