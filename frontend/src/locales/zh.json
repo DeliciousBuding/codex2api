@@ -1753,6 +1753,11 @@
     "globalAutoPauseDesc": "为所有账号设置默认的自动暂停阈值。账号级别或分组级别的设置优先于全局设置。",
     "globalAutoPause5h": "全局 5h 阈值(%)",
     "globalAutoPause7d": "全局 7d 阈值(%)",
+    "autoPause5hGuardBand": "5h 保护带(%)",
+    "autoPause5hGuardBandHint": "5h 用量接近暂停线时提前降并发，减慢额度消耗。填写提前多少个百分点开始保护；0 表示关闭。",
+    "autoPause5hGuardBandPlaceholder": "留空或 0 表示不启用",
+    "autoPause5hGuardConcurrency": "5h 保护带并发上限",
+    "autoPause5hGuardConcurrencyHint": "账号进入 5h 保护带后并发上限降到该值，默认 1。填 0 表示不启用保护带降并发。",
     "globalAutoPausePlaceholder": "留空或 0 表示不启用",
     "globalAutoPauseHint": "填 0 表示不启用全局默认阈值。优先级: 账号 > 分组 > 全局。"
   },

@@ -702,6 +702,8 @@ export interface SystemSettings {
   image_s3_force_path_style: boolean
   auto_pause_5h_threshold: number
   auto_pause_7d_threshold: number
+  auto_pause_5h_guard_band_percent: number
+  auto_pause_5h_guard_concurrency: number
 }
 
 export interface SetupHintsResponse {

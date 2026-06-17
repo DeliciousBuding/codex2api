@@ -5146,6 +5146,8 @@ type settingsResponse struct {
 	ImageS3ForcePathStyle              bool    `json:"image_s3_force_path_style"`
 	AutoPause5hThreshold               float64 `json:"auto_pause_5h_threshold"`
 	AutoPause7dThreshold               float64 `json:"auto_pause_7d_threshold"`
+	AutoPause5hGuardBandPercent        float64 `json:"auto_pause_5h_guard_band_percent"`
+	AutoPause5hGuardConcurrency        int     `json:"auto_pause_5h_guard_concurrency"`
 }
 
 type updateSettingsReq struct {
@@ -5229,6 +5231,8 @@ type updateSettingsReq struct {
 	ImageS3ForcePathStyle              *bool    `json:"image_s3_force_path_style"`
 	AutoPause5hThreshold               *float64 `json:"auto_pause_5h_threshold"`
 	AutoPause7dThreshold               *float64 `json:"auto_pause_7d_threshold"`
+	AutoPause5hGuardBandPercent        *float64 `json:"auto_pause_5h_guard_band_percent"`
+	AutoPause5hGuardConcurrency        *int     `json:"auto_pause_5h_guard_concurrency"`
 }
 
 type brandingResponse struct {
@@ -5805,6 +5809,8 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		ImageS3ForcePathStyle:              imgCfg.ForcePathStyle,
 		AutoPause5hThreshold:               h.store.GetGlobalAutoPause5hThreshold(),
 		AutoPause7dThreshold:               h.store.GetGlobalAutoPause7dThreshold(),
+		AutoPause5hGuardBandPercent:        h.store.GetAutoPause5hGuardBandPercent(),
+		AutoPause5hGuardConcurrency:        h.store.GetAutoPause5hGuardConcurrency(),
 	})
 }
 
@@ -5824,6 +5830,19 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.AutoPause7dThreshold != nil {
 		if err := validateAutoPauseThreshold("auto_pause_7d_threshold", *req.AutoPause7dThreshold); err != nil {
 			writeError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	if req.AutoPause5hGuardBandPercent != nil {
+		if *req.AutoPause5hGuardBandPercent < 0 || *req.AutoPause5hGuardBandPercent > 100 {
+			writeError(c, http.StatusBadRequest, "auto_pause_5h_guard_band_percent 需在 0 到 100 之间")
+			return
+		}
+	}
+	if req.AutoPause5hGuardConcurrency != nil {
+		if *req.AutoPause5hGuardConcurrency < 0 || *req.AutoPause5hGuardConcurrency > 1000 {
+			writeError(c, http.StatusBadRequest, "auto_pause_5h_guard_concurrency 需在 0 到 1000 之间")
 			return
 		}
 	}
@@ -6214,6 +6233,14 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		h.store.SetGlobalAutoPauseThresholds(t5h, t7d)
 		log.Printf("设置已更新: auto_pause thresholds 5h=%.4f 7d=%.4f", t5h, t7d)
 	}
+	if req.AutoPause5hGuardBandPercent != nil {
+		h.store.SetAutoPause5hGuardBandPercent(*req.AutoPause5hGuardBandPercent)
+		log.Printf("设置已更新: auto_pause_5h_guard_band_percent = %.2f", *req.AutoPause5hGuardBandPercent)
+	}
+	if req.AutoPause5hGuardConcurrency != nil {
+		h.store.SetAutoPause5hGuardConcurrency(*req.AutoPause5hGuardConcurrency)
+		log.Printf("设置已更新: auto_pause_5h_guard_concurrency = %d", *req.AutoPause5hGuardConcurrency)
+	}
 	runtimeCfg = proxy.ApplyRuntimeSettings(runtimeCfg)
 
 	usageLogChanged := false
@@ -6482,6 +6509,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		BackgroundConfig:                   encodeBackgroundConfig(bgCfg),
 		AutoPause5hThreshold:               h.store.GetGlobalAutoPause5hThreshold(),
 		AutoPause7dThreshold:               h.store.GetGlobalAutoPause7dThreshold(),
+		AutoPause5hGuardBandPercent:        h.store.GetAutoPause5hGuardBandPercent(),
+		AutoPause5hGuardConcurrency:        h.store.GetAutoPause5hGuardConcurrency(),
 	})
 	if err != nil {
 		log.Printf("无法持久化保存设置: %v", err)
@@ -6575,6 +6604,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		StreamFlushIntervalMS:              runtimeCfg.StreamFlushIntervalMS,
 		FirstTokenMode:                     runtimeCfg.FirstTokenMode,
 		FirstTokenTimeoutSeconds:           runtimeCfg.FirstTokenTimeoutSec,
+		BillingTierPolicy:                  runtimeCfg.BillingTierPolicy,
 		ShowFullUsageNumbers:               showFullUsageNumbers,
 		ImageStorageBackend:                imgCfg.Backend,
 		ImageS3Endpoint:                    imgCfg.Endpoint,
@@ -6586,6 +6616,8 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ImageS3ForcePathStyle:              imgCfg.ForcePathStyle,
 		AutoPause5hThreshold:               h.store.GetGlobalAutoPause5hThreshold(),
 		AutoPause7dThreshold:               h.store.GetGlobalAutoPause7dThreshold(),
+		AutoPause5hGuardBandPercent:        h.store.GetAutoPause5hGuardBandPercent(),
+		AutoPause5hGuardConcurrency:        h.store.GetAutoPause5hGuardConcurrency(),
 	})
 }
 

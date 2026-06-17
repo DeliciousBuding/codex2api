@@ -367,5 +367,7 @@ func defaultBootstrapSettings() *database.SystemSettings {
 		CodexWSHideUpstreamErrors:        true,
 		CodexWSSilentRetryEnabled:        true,
 		CodexWSSilentMaxRetries:          2,
+		AutoPause5hGuardBandPercent:      5,
+		AutoPause5hGuardConcurrency:      1,
 	}
 }

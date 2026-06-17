@@ -736,6 +736,8 @@ export default function Settings() {
     image_s3_force_path_style: false,
     auto_pause_5h_threshold: 0,
     auto_pause_7d_threshold: 0,
+    auto_pause_5h_guard_band_percent: 5,
+    auto_pause_5h_guard_concurrency: 1,
   })
   const lazyModeActive = settingsForm.lazy_mode
   const [savingSettings, setSavingSettings] = useState(false)
@@ -1373,6 +1375,44 @@ export default function Settings() {
                   }}
                   onBlur={() => {
                     void autoSaveSettingsPatch({ auto_pause_7d_threshold: settingsForm.auto_pause_7d_threshold })
+                  }}
+                />
+              </SettingField>
+              <SettingField label={t('settings.autoPause5hGuardBand')} description={t('settings.autoPause5hGuardBandHint')}>
+                <Input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  inputMode="decimal"
+                  placeholder={t('settings.autoPause5hGuardBandPlaceholder')}
+                  value={settingsForm.auto_pause_5h_guard_band_percent > 0 ? settingsForm.auto_pause_5h_guard_band_percent : ''}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const raw = e.target.value
+                    const value = raw === '' ? 0 : Math.max(0, Math.min(100, parseFloat(raw)))
+                    setSettingsForm(f => ({ ...f, auto_pause_5h_guard_band_percent: isNaN(value) ? 5 : value }))
+                  }}
+                  onBlur={() => {
+                    void autoSaveSettingsPatch({ auto_pause_5h_guard_band_percent: settingsForm.auto_pause_5h_guard_band_percent })
+                  }}
+                />
+              </SettingField>
+              <SettingField label={t('settings.autoPause5hGuardConcurrency')} description={t('settings.autoPause5hGuardConcurrencyHint')}>
+                <Input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  step={1}
+                  inputMode="numeric"
+                  value={settingsForm.auto_pause_5h_guard_concurrency ?? 1}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                    const raw = e.target.value
+                    const parsed = raw === '' ? 0 : Math.floor(parseFloat(raw))
+                    const value = Math.max(0, Math.min(1000, parsed))
+                    setSettingsForm(f => ({ ...f, auto_pause_5h_guard_concurrency: isNaN(value) ? 1 : value }))
+                  }}
+                  onBlur={() => {
+                    void autoSaveSettingsPatch({ auto_pause_5h_guard_concurrency: settingsForm.auto_pause_5h_guard_concurrency })
                   }}
                 />
               </SettingField>

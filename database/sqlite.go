@@ -455,6 +455,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"system_settings", "affinity_mode", "TEXT DEFAULT 'bounded'"},
 		{"system_settings", "auto_pause_5h_threshold", "REAL DEFAULT 0"},
 		{"system_settings", "auto_pause_7d_threshold", "REAL DEFAULT 0"},
+		{"system_settings", "auto_pause_5h_guard_band_percent", "REAL DEFAULT 5"},
+		{"system_settings", "auto_pause_5h_guard_concurrency", "INTEGER DEFAULT 1"},
 		{"account_groups", "auto_pause_5h_threshold", "REAL DEFAULT 0"},
 		{"account_groups", "auto_pause_7d_threshold", "REAL DEFAULT 0"},
 		{"accounts", "enabled", "INTEGER DEFAULT 1"},
