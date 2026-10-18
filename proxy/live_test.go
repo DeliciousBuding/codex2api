@@ -163,7 +163,8 @@ func TestLiveCreateForwardsSDPAndLocation(t *testing.T) {
 
 	body := []byte(`{"sdp":"v=0\r\n","session":{"model":"gpt-live-1"}}`)
 	c, rec := liveTestContext(t, http.MethodPost, "/v1/live", body, &database.APIKeyRow{
-		ID: 11, Limits: database.APIKeyLimits{AllowLive: true},
+		// Live permission is independent of the ordinary model allowlist.
+		ID: 11, Limits: database.APIKeyLimits{AllowLive: true, ModelAllow: []string{"gpt-5.5"}},
 	})
 	handler.LiveCreate(c)
 	if rec.Code != http.StatusOK {

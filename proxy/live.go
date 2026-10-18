@@ -147,6 +147,9 @@ func ValidateLiveCallRequest(request *liveCallRequest) error {
 	if err := json.Unmarshal(request.Session, &sessionObject); err != nil || sessionObject == nil {
 		return errors.New("session must be a JSON object")
 	}
+	if _, err := requestPolicyModel(request.Session); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -224,6 +227,13 @@ func (h *Handler) LiveCreate(c *gin.Context) {
 	request, err := parseLiveCallRequest(c)
 	if err != nil {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, err.Error(), api.ErrorTypeInvalidRequest))
+		return
+	}
+	// AllowLive grants access independently of ModelAllow, matching /models.
+	// Explicit denials still apply, including the default model when omitted.
+	model := liveSessionModel(request.Session)
+	if row := apiKeyRowFromContext(c); row != nil && liveModelExplicitlyDenied(model, row.Limits.ModelDeny) {
+		SendAPIKeyLimitError(c, http.StatusForbidden, fmt.Sprintf("Model %q is denied for this API key", model))
 		return
 	}
 	if h.enforceAPIKeyLimitsAndReply(c, "") {

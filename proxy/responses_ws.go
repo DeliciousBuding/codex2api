@@ -319,7 +319,7 @@ func (h *Handler) forwardResponsesWebSocketTurn(c *gin.Context, conn *websocket.
 	resetPromptPolicyRequestCorrelationID(c)
 	resetUpstreamRequestTrace(c)
 	quotaParentRequest := c.Request
-	if err := h.refreshAPIKeyModelRequestQuotaTurn(c); err != nil {
+	if err := h.refreshAPIKeyWebSocketTurn(c); err != nil {
 		return writeResponsesWSErrorForContext(c, conn, apiKeyModelRequestError(err).apiErr)
 	}
 	defer func() { c.Request = quotaParentRequest }()
