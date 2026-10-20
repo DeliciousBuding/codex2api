@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { RefreshCw } from 'lucide-react'
+import { Loader2, RefreshCw } from 'lucide-react'
 import { api } from '../api'
 import OpsTabs from '../components/OpsTabs'
 import PageHeader from '../components/PageHeader'
+import { StatTile } from '../components/StatTile'
 import Pagination from '../components/Pagination'
 import StateShell from '../components/StateShell'
 import { useDataLoader } from '../hooks/useDataLoader'
 import StatusBadge from '../components/StatusBadge'
-import type { AccountRow, OpsOverviewResponse } from '../types'
+import type { AccountListSummary, AccountRow, OpsOverviewResponse } from '../types'
 import { formatCompactEmail } from '../lib/utils'
+import { formatLongUsageWindowLabel, getAccountStatusBadgeStatus } from '../lib/usageFormat'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
+import { getTimezone } from '../utils/time'
 
 const DEFAULT_PAGE_SIZE = 12
 const PAGE_SIZE_OPTIONS = [12, 20, 50, 100]
@@ -21,29 +24,55 @@ const PAGE_SIZE_OPTIONS = [12, 20, 50, 100]
 export default function SchedulerBoard() {
   const { t } = useTranslation()
   const [tierFilter, setTierFilter] = useState('all')
+  const [channel, setChannel] = useState<'codex' | 'claude'>('codex')
   const [sortBy, setSortBy] = useState('risk')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const requestAbortRef = useRef<AbortController | null>(null)
 
   const loadSchedulerData = useCallback(async () => {
+    requestAbortRef.current?.abort()
+    const controller = new AbortController()
+    requestAbortRef.current = controller
+    const healthTier = tierFilter === 'everything'
+      ? undefined
+      : tierFilter === 'all'
+        ? 'attention' as const
+        : tierFilter as 'healthy' | 'warm' | 'risky' | 'banned'
+    const sort = sortBy === 'score_asc'
+      ? 'dispatch_score' as const
+      : sortBy === 'usage_desc'
+        ? 'usage' as const
+        : sortBy === 'latency_penalty'
+          ? 'latency_penalty' as const
+          : sortBy === 'unauthorized'
+            ? 'unauthorized' as const
+            : 'risk' as const
+    const order = sortBy === 'score_asc' ? 'asc' as const : 'desc' as const
     const [overview, accountsResponse] = await Promise.all([
-      api.getOpsOverview(),
-      api.getAccounts(),
+      api.getOpsOverview(controller.signal),
+      api.getAccountsPage({ channel, page, pageSize, healthTier, sort, order }, controller.signal),
     ])
 
     return {
       overview,
       accounts: accountsResponse.accounts ?? [],
+      total: accountsResponse.total,
+      summary: accountsResponse.summary,
     }
-  }, [])
+  }, [channel, page, pageSize, sortBy, tierFilter])
 
   const { data, loading, error, reload, reloadSilently } = useDataLoader<{
     overview: OpsOverviewResponse | null
     accounts: AccountRow[]
+    total: number
+    summary: AccountListSummary | null
   }>({
     initialData: {
       overview: null,
       accounts: [],
+      total: 0,
+      summary: null,
     },
     load: loadSchedulerData,
   })
@@ -56,80 +85,33 @@ export default function SchedulerBoard() {
     return () => window.clearInterval(timer)
   }, [reloadSilently])
 
+  useEffect(() => () => requestAbortRef.current?.abort(), [])
+
   const overview = data.overview
   const accounts = data.accounts
   const updatedLabel = overview?.updated_at ? formatTimeLabel(overview.updated_at) : '--:--:--'
-  const schedulerCounts = useMemo(() => ({
-    healthy: accounts.filter((account) => account.health_tier === 'healthy').length,
-    warm: accounts.filter((account) => account.health_tier === 'warm').length,
-    risky: accounts.filter((account) => account.health_tier === 'risky').length,
-    banned: accounts.filter((account) => account.health_tier === 'banned' || account.status === 'unauthorized').length,
-  }), [accounts])
-  const recentIssueCounts = useMemo(() => {
-    const now = Date.now()
-    const withinWindow = (iso?: string, minutes = 60) => {
-      if (!iso) return false
-      const ts = new Date(iso).getTime()
-      if (Number.isNaN(ts)) return false
-      return now - ts <= minutes * 60 * 1000
-    }
-
-    return {
-      unauthorized24h: accounts.filter((account) => withinWindow(account.last_unauthorized_at, 24 * 60)).length,
-      rateLimited1h: accounts.filter((account) => withinWindow(account.last_rate_limited_at, 60)).length,
-      timeout15m: accounts.filter((account) => withinWindow(account.last_timeout_at, 15)).length,
-    }
-  }, [accounts])
-  const spotlightAccounts = useMemo(() => {
-    const priority = (account: AccountRow) => {
-      if (account.health_tier === 'banned' || account.status === 'unauthorized') return 3
-      if (account.health_tier === 'risky') return 2
-      if (account.health_tier === 'warm') return 1
-      return 0
-    }
-
-    return [...accounts]
-      .filter((account) => {
-        if (tierFilter === 'everything') return true
-        if (tierFilter === 'all') {
-          return priority(account) > 0
-        }
-        if (tierFilter === 'healthy') {
-          return account.health_tier === 'healthy'
-        }
-        if (tierFilter === 'banned') {
-          return account.health_tier === 'banned' || account.status === 'unauthorized'
-        }
-        return account.health_tier === tierFilter
-      })
-      .sort((left, right) => {
-        switch (sortBy) {
-          case 'score_asc':
-            return getDispatchScore(left) - getDispatchScore(right)
-          case 'usage_desc':
-            return (right.usage_percent_7d ?? -1) - (left.usage_percent_7d ?? -1)
-          case 'latency_penalty':
-            return (right.scheduler_breakdown?.latency_penalty ?? 0) - (left.scheduler_breakdown?.latency_penalty ?? 0)
-          case 'unauthorized':
-            return Number(Boolean(right.last_unauthorized_at)) - Number(Boolean(left.last_unauthorized_at))
-          case 'risk':
-          default: {
-            const priorityDiff = priority(right) - priority(left)
-            if (priorityDiff !== 0) return priorityDiff
-            return getDispatchScore(left) - getDispatchScore(right)
-          }
-        }
-      })
-  }, [accounts, tierFilter, sortBy])
-
-  const totalPages = Math.max(1, Math.ceil(spotlightAccounts.length / pageSize))
+  const schedulerCounts = {
+    healthy: data.summary?.healthy ?? 0,
+    warm: data.summary?.warm ?? 0,
+    risky: data.summary?.risky ?? 0,
+    banned: data.summary?.banned ?? 0,
+  }
+  const recentIssueCounts = {
+    unauthorized24h: data.summary?.unauthorized_24h ?? 0,
+    rateLimited1h: data.summary?.rate_limited_1h ?? 0,
+    timeout15m: data.summary?.timeout_15m ?? 0,
+  }
+  const spotlightAccounts = accounts
+  const totalPages = Math.max(1, Math.ceil(data.total / pageSize))
   const currentPage = Math.min(page, totalPages)
-  const pagedAccounts = spotlightAccounts.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+  const pagedAccounts = spotlightAccounts
+  const selectedTotal = data.summary?.total ?? 0
+  const selectedAvailable = data.summary?.active ?? 0
 
   // 筛选/排序变更时重置页码
   useEffect(() => {
     setPage(1)
-  }, [tierFilter, sortBy])
+  }, [channel, tierFilter, sortBy])
 
   useEffect(() => {
     if (page > totalPages) {
@@ -145,8 +127,8 @@ export default function SchedulerBoard() {
   return (
     <StateShell
       variant="page"
-      loading={loading}
-      error={error}
+      loading={loading && accounts.length === 0}
+      error={accounts.length === 0 ? error : null}
       onRetry={() => void reload()}
       loadingTitle={t('scheduler.loadingTitle')}
       loadingDescription={t('scheduler.loadingDesc')}
@@ -156,10 +138,9 @@ export default function SchedulerBoard() {
         <PageHeader
           title={t('scheduler.title')}
           description={t('scheduler.description')}
-          actionMeta={t('scheduler.lastUpdated', { time: updatedLabel })}
           actions={
-            <div className="flex flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start">
-              <OpsTabs compact />
+            <div className="flex items-center gap-3 max-sm:w-full max-sm:flex-col max-sm:items-stretch">
+              <span className="text-sm text-muted-foreground max-sm:text-center">{t('scheduler.lastUpdated', { time: updatedLabel })}</span>
               <Button variant="outline" onClick={() => void reload()}>
                 <RefreshCw className="size-3.5" />
                 {t('common.refresh')}
@@ -167,28 +148,45 @@ export default function SchedulerBoard() {
             </div>
           }
         />
+        <OpsTabs />
+
+        {error && accounts.length > 0 ? (
+          <div className="mb-2 flex items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive" role="alert">
+            <span className="truncate">{error}</span>
+            <Button variant="outline" size="sm" onClick={() => void reload()}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : null}
+
+        {loading && accounts.length > 0 ? (
+          <div className="mb-2 flex items-center justify-end gap-1.5 text-xs text-muted-foreground" role="status">
+            <Loader2 className="size-3 animate-spin" />
+            {t('common.loading')}
+          </div>
+        ) : null}
 
         {overview ? (
           <>
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-4 mb-6">
-              <SummaryPill label={t('scheduler.totalAccounts')} value={formatNumber(accounts.length)} />
-              <SummaryPill label={t('scheduler.availableAccounts')} value={`${overview.runtime.available_accounts} / ${overview.runtime.total_accounts}`} />
-              <SummaryPill label="Healthy + Warm" value={formatNumber(schedulerCounts.healthy + schedulerCounts.warm)} />
-              <SummaryPill label={t('scheduler.highRiskAccounts')} value={formatNumber(schedulerCounts.risky + schedulerCounts.banned)} />
+            <div className="mb-6 grid grid-cols-2 gap-2.5 sm:gap-4 xl:grid-cols-4">
+              <StatTile label={t('scheduler.totalAccounts')} value={formatNumber(data.summary?.total ?? 0)} />
+              <StatTile label={t('scheduler.availableAccounts')} value={`${selectedAvailable} / ${selectedTotal}`} />
+              <StatTile label="Healthy + Warm" value={formatNumber(schedulerCounts.healthy + schedulerCounts.warm)} />
+              <StatTile label={t('scheduler.highRiskAccounts')} value={formatNumber(schedulerCounts.risky + schedulerCounts.banned)} />
             </div>
 
-            <Card className="mb-6 py-0">
-              <CardContent className="p-4">
+            <Card className="mb-6">
+              <CardContent className="p-6">
                 <div className="flex items-center justify-between gap-4 max-sm:flex-col max-sm:items-start">
                   <div>
                     <h3 className="text-base font-semibold text-foreground">{t('scheduler.globalView')}</h3>
                     <p className="mt-1 text-sm text-muted-foreground">{t('scheduler.globalViewDesc')}</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <SchedulerPill label="Healthy" value={schedulerCounts.healthy} tone="success" />
-                    <SchedulerPill label="Warm" value={schedulerCounts.warm} tone="warning" />
-                    <SchedulerPill label="Risky" value={schedulerCounts.risky} tone="danger" />
-                    <SchedulerPill label="Banned" value={schedulerCounts.banned} tone="neutral" />
+                    <SchedulerPill label={t('scheduler.healthHealthy')} value={schedulerCounts.healthy} tone="success" />
+                    <SchedulerPill label={t('scheduler.healthWarm')} value={schedulerCounts.warm} tone="warning" />
+                    <SchedulerPill label={t('scheduler.healthRisky')} value={schedulerCounts.risky} tone="danger" />
+                    <SchedulerPill label={t('scheduler.healthBanned')} value={schedulerCounts.banned} tone="neutral" />
                   </div>
                 </div>
 
@@ -213,24 +211,32 @@ export default function SchedulerBoard() {
                   />
                 </div>
 
-                <div className="mt-5 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card/75 px-4 py-3">
+                <div className="mt-5 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card/75 p-3 sm:px-4 sm:py-3">
+                  <span className="text-[12px] font-semibold text-muted-foreground">{t('scheduler.channel')}</span>
+                  <div className="w-full sm:w-[180px]">
+                    <Select
+                      value={channel}
+                      onValueChange={(value) => setChannel(value as 'codex' | 'claude')}
+                      options={[{ label: 'Codex', value: 'codex' }, { label: 'Claude', value: 'claude' }]}
+                    />
+                  </div>
                   <span className="text-[12px] font-semibold text-muted-foreground">{t('scheduler.filter')}</span>
-                  <div className="w-[180px]">
+                  <div className="w-full sm:w-[180px]">
                     <Select
                       value={tierFilter}
                       onValueChange={setTierFilter}
                       options={[
                         { label: t('scheduler.filterAllRisk'), value: 'all' },
                         { label: t('scheduler.filterAll'), value: 'everything' },
-                        { label: 'Healthy', value: 'healthy' },
-                        { label: 'Warm', value: 'warm' },
-                        { label: 'Risky', value: 'risky' },
-                        { label: 'Banned', value: 'banned' },
+                        { label: t('scheduler.healthHealthy'), value: 'healthy' },
+                        { label: t('scheduler.healthWarm'), value: 'warm' },
+                        { label: t('scheduler.healthRisky'), value: 'risky' },
+                        { label: t('scheduler.healthBanned'), value: 'banned' },
                       ]}
                     />
                   </div>
                   <span className="text-[12px] font-semibold text-muted-foreground">{t('scheduler.sort')}</span>
-                  <div className="w-[200px]">
+                  <div className="w-full sm:w-[200px]">
                     <Select
                       value={sortBy}
                       onValueChange={setSortBy}
@@ -259,7 +265,7 @@ export default function SchedulerBoard() {
                               {t('scheduler.score')} {Math.round(getDispatchScore(account))} · {t('scheduler.concurrency')} {account.dynamic_concurrency_limit ?? '-'} · {t('scheduler.plan')} {account.plan_type || '-'}
                             </div>
                           </div>
-                          <StatusBadge status={account.status} />
+                          <StatusBadge status={getAccountStatusBadgeStatus(account)} />
                         </div>
                         <div className="mt-3 flex flex-wrap items-center gap-2">
                           <Badge variant="outline" className={getHealthTierClassName(account.health_tier)}>
@@ -267,7 +273,7 @@ export default function SchedulerBoard() {
                           </Badge>
                           {account.usage_percent_7d !== null && account.usage_percent_7d !== undefined ? (
                             <Badge variant="outline" className="text-[12px]">
-                              7d {account.usage_percent_7d.toFixed(1)}%
+                              {formatLongUsageWindowLabel(account)} {account.usage_percent_7d.toFixed(1)}%
                             </Badge>
                           ) : null}
                         </div>
@@ -286,7 +292,7 @@ export default function SchedulerBoard() {
                         page={currentPage}
                         totalPages={totalPages}
                         onPageChange={setPage}
-                        totalItems={spotlightAccounts.length}
+                        totalItems={data.total}
                         pageSize={pageSize}
                         pageSizeOptions={PAGE_SIZE_OPTIONS}
                         onPageSizeChange={handlePageSizeChange}
@@ -304,15 +310,6 @@ export default function SchedulerBoard() {
         ) : null}
       </>
     </StateShell>
-  )
-}
-
-function SummaryPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-border bg-card/85 px-3 py-2.5 shadow-sm">
-      <div className="text-[12px] font-bold uppercase text-muted-foreground">{label}</div>
-      <div className="mt-2 text-[20px] font-bold text-foreground">{value}</div>
-    </div>
   )
 }
 
@@ -423,7 +420,7 @@ function buildScoreReasonTags(account: AccountRow, t: any) {
     tags.push({ label: `${t('scheduler.reasonFailure')} -${Math.round(breakdown.failure_penalty)}`, className: 'border-transparent bg-slate-500/10 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300' })
   }
   if (breakdown.usage_penalty_7d > 0) {
-    tags.push({ label: `7d -${Math.round(breakdown.usage_penalty_7d)}`, className: 'border-transparent bg-fuchsia-500/10 text-fuchsia-600 dark:bg-fuchsia-500/20 dark:text-fuchsia-300' })
+    tags.push({ label: `${formatLongUsageWindowLabel(account)} -${Math.round(breakdown.usage_penalty_7d)}`, className: 'border-transparent bg-fuchsia-500/10 text-fuchsia-600 dark:bg-fuchsia-500/20 dark:text-fuchsia-300' })
   }
   if ((breakdown.usage_urgency_bonus_5h ?? 0) > 0) {
     tags.push({ label: `${t('scheduler.reason5hUrgency')} +${Math.round(breakdown.usage_urgency_bonus_5h ?? 0)}`, className: 'border-transparent bg-teal-500/10 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300' })
@@ -456,5 +453,6 @@ function formatTimeLabel(iso: string): string {
   }
   return date.toLocaleTimeString('zh-CN', {
     hour12: false,
+    timeZone: getTimezone(),
   })
 }

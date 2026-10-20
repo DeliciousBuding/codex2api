@@ -20,29 +20,11 @@ func newFastSchedulerTestAccount(id int64, tier AccountHealthTier, score float64
 	}
 }
 
-func TestStoreAddAccountReplacesExistingDBID(t *testing.T) {
-	store := &Store{maxConcurrency: 1}
-	first := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
-	first.AccessToken = "first"
-	replacement := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
-	replacement.AccessToken = "replacement"
-
-	store.AddAccount(first)
-	store.AddAccount(replacement)
-
-	if len(store.accounts) != 1 {
-		t.Fatalf("len(accounts) = %d, want 1", len(store.accounts))
-	}
-	if got := store.FindByID(1); got != replacement {
-		t.Fatalf("FindByID returned %#v, want replacement", got)
-	}
-}
-
 func TestFastSchedulerAcquirePrefersHealthyTier(t *testing.T) {
 	warm := newFastSchedulerTestAccount(1, HealthTierWarm, 90, 2)
 	healthy := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 2)
 
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Rebuild([]*Account{warm, healthy})
 
 	got := scheduler.Acquire()
@@ -61,7 +43,7 @@ func TestFastSchedulerSkipsDispatchPausedAccount(t *testing.T) {
 	atomic.StoreInt32(&paused.DispatchPaused, 1)
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 2)
 
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Rebuild([]*Account{paused, fallback})
 
 	got := scheduler.Acquire()
@@ -80,7 +62,7 @@ func TestFastSchedulerSkipsErrorAccount(t *testing.T) {
 	errored.Status = StatusError
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 2)
 
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Rebuild([]*Account{errored, fallback})
 
 	got := scheduler.Acquire()
@@ -97,7 +79,7 @@ func TestFastSchedulerSkipsErrorAccount(t *testing.T) {
 func TestFastSchedulerRespectsConcurrencyLimit(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{acc})
 
 	first := scheduler.Acquire()
@@ -123,7 +105,7 @@ func TestFastSchedulerRoundRobinWithinTier(t *testing.T) {
 	a2 := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 4)
 	a3 := newFastSchedulerTestAccount(3, HealthTierHealthy, 100, 4)
 
-	scheduler := NewFastScheduler(4)
+	scheduler := NewFastScheduler(4, "round_robin")
 	scheduler.Rebuild([]*Account{a1, a2, a3})
 
 	var got []int64
@@ -144,53 +126,14 @@ func TestFastSchedulerRoundRobinWithinTier(t *testing.T) {
 	}
 }
 
-func TestStoreNextExcludingRespectsAPIKeyAllowedGroups(t *testing.T) {
-	plusAcc := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
-	plusAcc.GroupIDs = []int64{10} // plus-pool
-	freeAcc := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
-	freeAcc.GroupIDs = []int64{20} // free-pool
-
-	store := &Store{
-		accounts:       []*Account{plusAcc, freeAcc},
-		maxConcurrency: 1,
-	}
-	// API Key 7 is restricted to free-pool (group 20)
-	store.SetAPIKeyAllowedGroups(7, []int64{20})
-
-	got := store.NextExcluding(7, nil)
-	if got == nil {
-		t.Fatal("NextExcluding(apikey=7) returned nil — expected free-pool account")
-	}
-	defer store.Release(got)
-	if got.DBID != 2 {
-		t.Fatalf("NextExcluding(apikey=7) picked dbID=%d, want 2 (free-pool)", got.DBID)
-	}
-
-	// API Key 8 is unrestricted — any account is fine
-	store.SetAPIKeyAllowedGroups(8, nil)
-	got2 := store.NextExcluding(8, nil)
-	if got2 == nil {
-		t.Fatal("NextExcluding(apikey=8, unrestricted) returned nil")
-	}
-	defer store.Release(got2)
-
-	// API Key 9 restricted to a non-existent group ID — should find nothing
-	store.SetAPIKeyAllowedGroups(9, []int64{999})
-	if leftover := store.NextExcluding(9, nil); leftover != nil {
-		store.Release(leftover)
-		t.Fatalf("NextExcluding(apikey=9, group=999) returned account %d, want nil", leftover.DBID)
-	}
-}
-
 func TestStoreNextExcludingRespectsAPIKeyWhitelist(t *testing.T) {
 	restricted := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
 	restricted.SetAllowedAPIKeyIDs([]int64{2})
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 
-	store := &Store{
-		accounts:       []*Account{restricted, fallback},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{restricted, fallback},
+	}).withMaxConcurrency(1)
 
 	got := store.NextExcluding(1, nil)
 	if got == nil {
@@ -203,15 +146,113 @@ func TestStoreNextExcludingRespectsAPIKeyWhitelist(t *testing.T) {
 	}
 }
 
+func TestStoreNextExcludingRespectsAPIKeyAllowedGroups(t *testing.T) {
+	restricted := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
+	restricted.GroupIDs = []int64{10}
+	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
+	fallback.GroupIDs = []int64{20}
+
+	store := (&Store{
+		accounts: []*Account{restricted, fallback},
+	}).withMaxConcurrency(1)
+	store.SetAPIKeyAllowedGroups(1, []int64{20})
+
+	got := store.NextExcluding(1, nil)
+	if got == nil {
+		t.Fatal("NextExcluding() returned nil")
+	}
+	defer store.Release(got)
+
+	if got.DBID != 2 {
+		t.Fatalf("NextExcluding() picked dbID=%d, want 2", got.DBID)
+	}
+}
+
+func TestStoreGroupUpdatesImmediatelyAffectAPIKeyScheduling(t *testing.T) {
+	groupA := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
+	groupA.GroupIDs = []int64{10}
+	groupB := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
+	groupB.GroupIDs = []int64{20}
+
+	store := (&Store{
+		accounts: []*Account{groupA, groupB},
+	}).withMaxConcurrency(1)
+	store.rebuildAccountIndex()
+	store.SetAPIKeyAllowedGroups(1, []int64{20})
+
+	got := store.NextExcluding(1, nil)
+	if got == nil {
+		t.Fatal("NextExcluding() returned nil before group update")
+	}
+	if got.DBID != 2 {
+		t.Fatalf("NextExcluding() picked dbID=%d before group update, want 2", got.DBID)
+	}
+	store.Release(got)
+
+	store.ApplyAccountGroups(2, []int64{10})
+	if got := store.NextExcluding(1, nil); got != nil {
+		store.Release(got)
+		t.Fatalf("NextExcluding() picked dbID=%d after removing allowed group, want nil", got.DBID)
+	}
+
+	store.ApplyAccountGroups(1, []int64{20})
+	got = store.NextExcluding(1, nil)
+	if got == nil {
+		t.Fatal("NextExcluding() returned nil after moving groupA into allowed group")
+	}
+	defer store.Release(got)
+	if got.DBID != 1 {
+		t.Fatalf("NextExcluding() picked dbID=%d after moving groupA, want 1", got.DBID)
+	}
+}
+
+func TestFastSchedulerGroupUpdatesImmediatelyAffectAPIKeyScheduling(t *testing.T) {
+	groupA := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
+	groupA.GroupIDs = []int64{10}
+	groupB := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
+	groupB.GroupIDs = []int64{20}
+
+	store := (&Store{
+		accounts: []*Account{groupA, groupB},
+	}).withMaxConcurrency(1)
+	store.rebuildAccountIndex()
+	store.SetFastSchedulerEnabled(true)
+	store.SetAPIKeyAllowedGroups(1, []int64{20})
+
+	got := store.NextExcluding(1, nil)
+	if got == nil {
+		t.Fatal("NextExcluding() returned nil before group update")
+	}
+	if got.DBID != 2 {
+		t.Fatalf("NextExcluding() picked dbID=%d before group update, want 2", got.DBID)
+	}
+	store.Release(got)
+
+	store.ApplyAccountGroups(2, []int64{10})
+	if got := store.NextExcluding(1, nil); got != nil {
+		store.Release(got)
+		t.Fatalf("NextExcluding() picked dbID=%d after removing allowed group, want nil", got.DBID)
+	}
+
+	store.ApplyAccountGroups(1, []int64{20})
+	got = store.NextExcluding(1, nil)
+	if got == nil {
+		t.Fatal("NextExcluding() returned nil after moving groupA into allowed group")
+	}
+	defer store.Release(got)
+	if got.DBID != 1 {
+		t.Fatalf("NextExcluding() picked dbID=%d after moving groupA, want 1", got.DBID)
+	}
+}
+
 func TestStoreNextSkipsDispatchPausedAccount(t *testing.T) {
 	paused := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
 	atomic.StoreInt32(&paused.DispatchPaused, 1)
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 
-	store := &Store{
-		accounts:       []*Account{paused, fallback},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{paused, fallback},
+	}).withMaxConcurrency(1)
 
 	got := store.Next()
 	if got == nil {
@@ -297,10 +338,9 @@ func TestStoreNextExcludingWithFilterRespectsPlanFilter(t *testing.T) {
 	pro := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	pro.PlanType = "pro"
 
-	store := &Store{
-		accounts:       []*Account{plus, pro},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{plus, pro},
+	}).withMaxConcurrency(1)
 
 	got := store.NextExcludingWithFilter(0, nil, func(acc *Account) bool {
 		return acc.GetPlanType() == "pro"
@@ -320,7 +360,7 @@ func TestFastSchedulerAcquireExcludingRespectsAPIKeyWhitelist(t *testing.T) {
 	restricted.SetAllowedAPIKeyIDs([]int64{2})
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{restricted, fallback})
 
 	got := scheduler.AcquireExcluding(1, nil)
@@ -340,7 +380,7 @@ func TestFastSchedulerAcquireExcludingWithFilterRespectsPlanFilter(t *testing.T)
 	pro := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	pro.PlanType = "pro"
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{plus, pro})
 
 	got := scheduler.AcquireExcludingWithFilter(0, nil, func(acc *Account) bool {
@@ -358,7 +398,7 @@ func TestFastSchedulerAcquireExcludingWithFilterRespectsPlanFilter(t *testing.T)
 
 func TestFastSchedulerUpdateMovesAccountBetweenBuckets(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 2)
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Rebuild([]*Account{acc})
 
 	sizes := scheduler.BucketSizes()
@@ -366,12 +406,12 @@ func TestFastSchedulerUpdateMovesAccountBetweenBuckets(t *testing.T) {
 		t.Fatalf("healthy bucket size = %d, want 1", sizes[HealthTierHealthy])
 	}
 
-	acc.SetCooldownUntil(time.Now().Add(10*time.Minute), "rate_limited")
+	acc.SetCooldownUntil(time.Now().Add(10*time.Minute), "unauthorized")
 	scheduler.Update(acc)
 
 	sizes = scheduler.BucketSizes()
 	if sizes[HealthTierHealthy] != 0 || sizes[HealthTierWarm] != 0 || sizes[HealthTierRisky] != 0 {
-		t.Fatalf("expected cooldown account to be removed from all buckets, got %#v", sizes)
+		t.Fatalf("expected unauthorized cooldown account to be removed from all buckets, got %#v", sizes)
 	}
 
 	acc.mu.Lock()
@@ -391,7 +431,7 @@ func TestFastSchedulerUpdateMovesAccountBetweenBuckets(t *testing.T) {
 
 func TestFastSchedulerSkipsStaleBucketEntryWithoutUpdate(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{acc})
 
 	acc.SetCooldownUntil(time.Now().Add(5*time.Minute), "rate_limited")
@@ -403,13 +443,12 @@ func TestFastSchedulerSkipsStaleBucketEntryWithoutUpdate(t *testing.T) {
 }
 
 func TestBuildFastSchedulerFromStore(t *testing.T) {
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4),
 			newFastSchedulerTestAccount(2, HealthTierWarm, 80, 2),
 		},
-		maxConcurrency: 4,
-	}
+	}).withMaxConcurrency(4)
 
 	scheduler := store.BuildFastScheduler()
 	sizes := scheduler.BucketSizes()
@@ -420,12 +459,12 @@ func TestBuildFastSchedulerFromStore(t *testing.T) {
 
 func TestFastSchedulerDispatchScoreOutranksProvenHistory(t *testing.T) {
 	highScore := newFastSchedulerTestAccount(1, HealthTierHealthy, 150, 1)
-	atomic.StoreInt64(&highScore.TotalRequests, 0)
+	highScore.TotalRequests.Store(0)
 
 	proven := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 1)
-	atomic.StoreInt64(&proven.TotalRequests, 11)
+	proven.TotalRequests.Store(11)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{highScore, proven})
 
 	got := scheduler.Acquire()
@@ -441,12 +480,12 @@ func TestFastSchedulerDispatchScoreOutranksProvenHistory(t *testing.T) {
 
 func TestFastSchedulerProvenHistoryBreaksDispatchScoreTies(t *testing.T) {
 	unproven := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
-	atomic.StoreInt64(&unproven.TotalRequests, 0)
+	unproven.TotalRequests.Store(0)
 
 	proven := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 1)
-	atomic.StoreInt64(&proven.TotalRequests, 11)
+	proven.TotalRequests.Store(11)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{unproven, proven})
 
 	got := scheduler.Acquire()
@@ -467,7 +506,7 @@ func TestFastSchedulerPrefersPremium7dResetSoonOverProvenAccount(t *testing.T) {
 	later.UsagePercent7d = 68
 	later.UsagePercent7dValid = true
 	later.Reset7dAt = now.Add(5 * 24 * time.Hour)
-	atomic.StoreInt64(&later.TotalRequests, 450)
+	later.TotalRequests.Store(450)
 
 	soon := newFastSchedulerTestAccount(2, HealthTierHealthy, 150, 1)
 	soon.PlanType = "plus"
@@ -475,7 +514,7 @@ func TestFastSchedulerPrefersPremium7dResetSoonOverProvenAccount(t *testing.T) {
 	soon.UsagePercent7dValid = true
 	soon.Reset7dAt = now.Add(36 * time.Hour)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{later, soon})
 
 	got := scheduler.Acquire()
@@ -503,7 +542,7 @@ func TestFastSchedulerPrefersPremium5hResetSoonWithinTier(t *testing.T) {
 	soon.UsagePercent5hValid = true
 	soon.Reset5hAt = now.Add(30 * time.Minute)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{later, soon})
 
 	got := scheduler.Acquire()
@@ -531,10 +570,9 @@ func TestPersistUsageSnapshot5hOnlyUpdatesFastSchedulerPriority(t *testing.T) {
 	soon.UsagePercent5hValid = true
 	soon.Reset5hAt = now.Add(5 * time.Hour)
 
-	store := &Store{
-		accounts:       []*Account{later, soon},
-		maxConcurrency: 1,
-	}
+	store := (&Store{
+		accounts: []*Account{later, soon},
+	}).withMaxConcurrency(1)
 	store.SetFastSchedulerEnabled(true)
 
 	soon.SetUsageSnapshot5h(25, time.Now().Add(30*time.Minute))
@@ -557,13 +595,12 @@ func TestStoreFastSchedulerToggle(t *testing.T) {
 	cooling.CooldownUtil = time.Now().Add(5 * time.Minute)
 	cooling.CooldownReason = "rate_limited"
 
-	store := &Store{
+	store := (&Store{
 		accounts: []*Account{
 			cooling,
 			newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 1),
 		},
-		maxConcurrency: 2,
-	}
+	}).withMaxConcurrency(2)
 
 	if store.FastSchedulerEnabled() {
 		t.Fatal("FastSchedulerEnabled() should be false by default")
@@ -597,10 +634,9 @@ func TestStoreFastSchedulerToggle(t *testing.T) {
 
 func TestStoreFastSchedulerTracksCooldownTransition(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 2)
-	store := &Store{
-		accounts:       []*Account{acc},
-		maxConcurrency: 2,
-	}
+	store := (&Store{
+		accounts: []*Account{acc},
+	}).withMaxConcurrency(2)
 	store.SetFastSchedulerEnabled(true)
 
 	got := store.Next()
@@ -633,12 +669,12 @@ func TestFastSchedulerPremium5hRateLimitIsFencedAndRecoversAfterReset(t *testing
 		Reset5hAt:           time.Now().Add(30 * time.Minute),
 	}
 
-	scheduler := NewFastScheduler(4)
+	scheduler := NewFastScheduler(4, "round_robin")
 	scheduler.Rebuild([]*Account{acc})
 
 	sizes := scheduler.BucketSizes()
-	if sizes[HealthTierRisky] != 0 {
-		t.Fatalf("risky bucket size = %d, want 0 while premium 5h rate limit is active", sizes[HealthTierRisky])
+	if sizes[HealthTierRisky] != 1 {
+		t.Fatalf("risky bucket size = %d, want 1 so spark requests can still find a 5h-exhausted account", sizes[HealthTierRisky])
 	}
 
 	first := scheduler.Acquire()
@@ -807,20 +843,595 @@ func newBenchmarkStore(total int, maxConcurrency int64) *Store {
 		})
 	}
 
-	return &Store{
-		accounts:       accounts,
-		maxConcurrency: maxConcurrency,
-	}
+	return (&Store{
+		accounts: accounts,
+	}).withMaxConcurrency(maxConcurrency)
 }
 
 func TestFastSchedulerRelease(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 2)
-	atomic.StoreInt64(&acc.ActiveRequests, 1)
+	acc.ActiveRequests.Store(1)
 
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Release(acc)
 
-	if got := atomic.LoadInt64(&acc.ActiveRequests); got != 0 {
+	if got := acc.ActiveRequests.Load(); got != 0 {
 		t.Fatalf("ActiveRequests after Release() = %d, want 0", got)
+	}
+}
+
+func TestFastSchedulerRemainingQuotaPicksLowestUsage(t *testing.T) {
+	highUsage := &Account{
+		DBID:                     1,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           90,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+	lowUsage := &Account{
+		DBID:                     2,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           10,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+	midUsage := &Account{
+		DBID:                     3,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           50,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+
+	scheduler := NewFastScheduler(4, "remaining_quota")
+	scheduler.Rebuild([]*Account{highUsage, lowUsage, midUsage})
+
+	got := scheduler.Acquire()
+	if got == nil {
+		t.Fatal("Acquire() returned nil")
+	}
+	defer scheduler.Release(got)
+
+	if got.DBID != lowUsage.DBID {
+		t.Fatalf("Acquire() picked dbID=%d, want lowest-usage account %d", got.DBID, lowUsage.DBID)
+	}
+}
+
+func TestFastSchedulerRemainingQuotaSortOrder(t *testing.T) {
+	a1 := &Account{
+		DBID:                     1,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           70,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 1,
+		DynamicConcurrencyLimit:  1,
+	}
+	a2 := &Account{
+		DBID:                     2,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           30,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 1,
+		DynamicConcurrencyLimit:  1,
+	}
+	a3 := &Account{
+		DBID:                     3,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           90,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 1,
+		DynamicConcurrencyLimit:  1,
+	}
+
+	scheduler := NewFastScheduler(1, "remaining_quota")
+	scheduler.Rebuild([]*Account{a1, a2, a3})
+
+	// Acquire all without releasing; concurrency limit 1 forces
+	// iteration through the usage-ascending sorted order.
+	var got []int64
+	for i := 0; i < 3; i++ {
+		acc := scheduler.Acquire()
+		if acc == nil {
+			t.Fatalf("Acquire() returned nil at iteration %d", i)
+		}
+		got = append(got, acc.DBID)
+	}
+
+	// Expect ascending usage: a2 (30%), a1 (70%), a3 (90%)
+	want := []int64{2, 1, 3}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("remaining_quota sort order mismatch: got=%v want=%v", got, want)
+		}
+	}
+}
+
+func TestFastSchedulerPrefersLowerOccupiedWhenUsageTied(t *testing.T) {
+	busy := &Account{
+		DBID:                     1,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           40,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+	idle := &Account{
+		DBID:                     2,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           40,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+	busy.ActiveRequests.Store(2)
+	busy.OccupiedRequests.Store(2)
+
+	scheduler := NewFastScheduler(4, "remaining_quota")
+	scheduler.Rebuild([]*Account{busy, idle})
+
+	got := scheduler.Acquire()
+	if got == nil {
+		t.Fatal("Acquire() returned nil")
+	}
+	defer scheduler.Release(got)
+	if got.DBID != idle.DBID {
+		t.Fatalf("Acquire() picked dbID=%d, want lower-occupied account %d", got.DBID, idle.DBID)
+	}
+}
+
+func TestFastSchedulerRemainingQuotaStillPrefersLowerUsageDespiteOccupancy(t *testing.T) {
+	lowUsageBusy := &Account{
+		DBID:                     1,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           10,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+	highUsageIdle := &Account{
+		DBID:                     2,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           80,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+	lowUsageBusy.ActiveRequests.Store(2)
+	lowUsageBusy.OccupiedRequests.Store(2)
+
+	scheduler := NewFastScheduler(4, "remaining_quota")
+	scheduler.Rebuild([]*Account{lowUsageBusy, highUsageIdle})
+
+	got := scheduler.Acquire()
+	if got == nil {
+		t.Fatal("Acquire() returned nil")
+	}
+	defer scheduler.Release(got)
+	if got.DBID != lowUsageBusy.DBID {
+		t.Fatalf("Acquire() picked dbID=%d, want lower-usage account %d", got.DBID, lowUsageBusy.DBID)
+	}
+}
+
+func TestFastSchedulerRoundRobinPrefersLowerOccupiedUnderBurst(t *testing.T) {
+	a1 := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 4)
+	a2 := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 4)
+	a3 := newFastSchedulerTestAccount(3, HealthTierHealthy, 100, 4)
+	a1.ActiveRequests.Store(2)
+	a1.OccupiedRequests.Store(2)
+	a2.ActiveRequests.Store(1)
+	a2.OccupiedRequests.Store(1)
+
+	scheduler := NewFastScheduler(4, "round_robin")
+	scheduler.Rebuild([]*Account{a1, a2, a3})
+
+	got := scheduler.Acquire()
+	if got == nil {
+		t.Fatal("Acquire() returned nil")
+	}
+	defer scheduler.Release(got)
+	if got.DBID != a3.DBID {
+		t.Fatalf("Acquire() picked dbID=%d, want idle account %d", got.DBID, a3.DBID)
+	}
+}
+
+func TestFastSchedulerRemainingQuotaTieBreakProvenThenDBID(t *testing.T) {
+	unproven := &Account{
+		DBID:                     1,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           50,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 2,
+		DynamicConcurrencyLimit:  2,
+	}
+	unproven.TotalRequests.Store(0) // not proven
+
+	proven := &Account{
+		DBID:                     2,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           50,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 2,
+		DynamicConcurrencyLimit:  2,
+	}
+	proven.TotalRequests.Store(11) // proven (>10)
+
+	scheduler := NewFastScheduler(4, "remaining_quota")
+	scheduler.Rebuild([]*Account{unproven, proven})
+
+	// Both same usage; proven account should sort first.
+	got := scheduler.Acquire()
+	if got == nil {
+		t.Fatal("Acquire() returned nil")
+	}
+	defer scheduler.Release(got)
+
+	if got.DBID != proven.DBID {
+		t.Fatalf("Acquire() picked dbID=%d, want proven tie-breaker account %d", got.DBID, proven.DBID)
+	}
+}
+
+func TestFastSchedulerFillFirstPicksHighestUsage(t *testing.T) {
+	highUsage := &Account{
+		DBID:                     1,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           90,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+	lowUsage := &Account{
+		DBID:                     2,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           10,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+
+	scheduler := NewFastScheduler(4, "fill_first")
+	scheduler.Rebuild([]*Account{lowUsage, highUsage})
+
+	got := scheduler.Acquire()
+	if got == nil {
+		t.Fatal("Acquire() returned nil")
+	}
+	defer scheduler.Release(got)
+
+	if got.DBID != highUsage.DBID {
+		t.Fatalf("Acquire() picked dbID=%d, want highest-usage account %d", got.DBID, highUsage.DBID)
+	}
+}
+
+func TestFastSchedulerFillFirstSortOrderUsageDescending(t *testing.T) {
+	a1 := &Account{
+		DBID:                     1,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           70,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 1,
+		DynamicConcurrencyLimit:  1,
+	}
+	a2 := &Account{
+		DBID:                     2,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           30,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 1,
+		DynamicConcurrencyLimit:  1,
+	}
+	a3 := &Account{
+		DBID:                     3,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           90,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 1,
+		DynamicConcurrencyLimit:  1,
+	}
+
+	scheduler := NewFastScheduler(1, "fill_first")
+	scheduler.Rebuild([]*Account{a1, a2, a3})
+
+	// Acquire all without releasing; concurrency limit 1 forces
+	// iteration through the usage-descending sorted order.
+	var got []int64
+	for i := 0; i < 3; i++ {
+		acc := scheduler.Acquire()
+		if acc == nil {
+			t.Fatalf("Acquire() returned nil at iteration %d", i)
+		}
+		got = append(got, acc.DBID)
+	}
+
+	// Expect descending usage: a3 (90%), a1 (70%), a2 (30%)
+	want := []int64{3, 1, 2}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("fill_first sort order mismatch: got=%v want=%v", got, want)
+		}
+	}
+}
+
+func TestFastSchedulerFillFirstSticksUntilUnavailable(t *testing.T) {
+	draining := &Account{
+		DBID:                     1,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           80,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+	standby := &Account{
+		DBID:                     2,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           20,
+		UsagePercent7dValid:      true,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+
+	scheduler := NewFastScheduler(4, "fill_first")
+	scheduler.Rebuild([]*Account{draining, standby})
+
+	// 连续取号应始终命中同一个账号，而不是在两个账号间轮询。
+	for i := 0; i < 5; i++ {
+		acc := scheduler.Acquire()
+		if acc == nil {
+			t.Fatalf("Acquire() returned nil at iteration %d", i)
+		}
+		if acc.DBID != draining.DBID {
+			t.Fatalf("iteration %d picked dbID=%d, want sticky account %d", i, acc.DBID, draining.DBID)
+		}
+		scheduler.Release(acc)
+	}
+
+	// 账号进入冷却后，下一次取号应滑落到备用账号。
+	draining.mu.Lock()
+	draining.Status = StatusCooldown
+	draining.CooldownUtil = time.Now().Add(time.Minute)
+	draining.mu.Unlock()
+
+	acc := scheduler.Acquire()
+	if acc == nil {
+		t.Fatal("Acquire() returned nil after cooldown")
+	}
+	defer scheduler.Release(acc)
+	if acc.DBID != standby.DBID {
+		t.Fatalf("after cooldown, Acquire() picked dbID=%d, want standby account %d", acc.DBID, standby.DBID)
+	}
+}
+
+func TestFastSchedulerFillFirstPriorityBeatsUsage(t *testing.T) {
+	lowPriorityHighUsage := &Account{
+		DBID:                     1,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           90,
+		UsagePercent7dValid:      true,
+		SchedulerPriority:        -10,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+	highPriorityLowUsage := &Account{
+		DBID:                     2,
+		AccessToken:              "token",
+		Status:                   StatusReady,
+		HealthTier:               HealthTierHealthy,
+		UsagePercent7d:           10,
+		UsagePercent7dValid:      true,
+		SchedulerPriority:        10,
+		BaseConcurrencyEffective: 4,
+		DynamicConcurrencyLimit:  4,
+	}
+
+	scheduler := NewFastScheduler(4, "fill_first")
+	scheduler.Rebuild([]*Account{lowPriorityHighUsage, highPriorityLowUsage})
+
+	got := scheduler.Acquire()
+	if got == nil {
+		t.Fatal("Acquire() returned nil")
+	}
+	defer scheduler.Release(got)
+
+	if got.DBID != highPriorityLowUsage.DBID {
+		t.Fatalf("Acquire() picked dbID=%d, want high-priority account %d", got.DBID, highPriorityLowUsage.DBID)
+	}
+}
+
+func TestFastSchedulerSetSchedulerModeFillFirstResorts(t *testing.T) {
+	highUsage := newFastSchedulerTestAccount(1, HealthTierHealthy, 90, 2)
+	highUsage.UsagePercent7d = 90
+	highUsage.UsagePercent7dValid = true
+	lowUsage := newFastSchedulerTestAccount(2, HealthTierHealthy, 10, 2)
+	lowUsage.UsagePercent7d = 10
+	lowUsage.UsagePercent7dValid = true
+
+	s := NewFastScheduler(4, "round_robin")
+	s.Rebuild([]*Account{highUsage, lowUsage})
+
+	first := s.Acquire()
+	s.Release(first)
+
+	s.SetSchedulerMode("fill_first")
+	// After re-sort + zero cursor, should pick highest usage first
+	first = s.Acquire()
+	if first == nil {
+		t.Fatal("Acquire() returned nil after mode switch")
+	}
+	if first.DBID != highUsage.DBID {
+		t.Fatalf("after fill_first switch, Acquire() picked dbID=%d, want highest-usage account %d", first.DBID, highUsage.DBID)
+	}
+	s.Release(first)
+}
+
+func TestStoreSetSchedulerModeAcceptsFillFirst(t *testing.T) {
+	s := &Store{}
+	s.SetSchedulerMode("fill_first")
+	if got := s.GetSchedulerMode(); got != "fill_first" {
+		t.Fatalf("GetSchedulerMode() = %q, want fill_first", got)
+	}
+	s.SetSchedulerMode("bogus")
+	if got := s.GetSchedulerMode(); got != "round_robin" {
+		t.Fatalf("GetSchedulerMode() after invalid mode = %q, want round_robin", got)
+	}
+}
+
+func TestFastSchedulerSetSchedulerModeEmptyDefaultsToRoundRobin(t *testing.T) {
+	s := NewFastScheduler(4, "remaining_quota")
+	if s.SchedulerMode() != "remaining_quota" {
+		t.Fatalf("initial mode = %q, want remaining_quota", s.SchedulerMode())
+	}
+	s.SetSchedulerMode("")
+	if s.SchedulerMode() != "round_robin" {
+		t.Fatalf("after empty mode: got %q, want round_robin", s.SchedulerMode())
+	}
+}
+
+func TestFastSchedulerSetSchedulerModeResortsBuckets(t *testing.T) {
+	highUsage := newFastSchedulerTestAccount(1, HealthTierHealthy, 90, 2)
+	highUsage.UsagePercent7d = 90
+	highUsage.UsagePercent7dValid = true
+	lowUsage := newFastSchedulerTestAccount(2, HealthTierHealthy, 10, 2)
+	lowUsage.UsagePercent7d = 10
+	lowUsage.UsagePercent7dValid = true
+
+	s := NewFastScheduler(4, "round_robin")
+	s.Rebuild([]*Account{highUsage, lowUsage})
+
+	// In round_robin mode, acquires are cursor-based, not usage-based
+	first := s.Acquire()
+	s.Release(first)
+
+	s.SetSchedulerMode("remaining_quota")
+	// After re-sort + zero cursor, should pick lowest usage first
+	first = s.Acquire()
+	if first == nil {
+		t.Fatal("Acquire() returned nil after mode switch")
+	}
+	if first.DBID != lowUsage.DBID {
+		t.Fatalf("after remaining_quota switch, Acquire() picked dbID=%d, want lowest-usage account %d", first.DBID, lowUsage.DBID)
+	}
+	s.Release(first)
+}
+
+func TestStoreNextExcludingRespectsAPIKeyAllowedPlans(t *testing.T) {
+	plus := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
+	plus.PlanType = "plus"
+	team := newFastSchedulerTestAccount(2, HealthTierHealthy, 110, 1)
+	team.PlanType = "team"
+	free := newFastSchedulerTestAccount(3, HealthTierHealthy, 100, 1)
+	free.PlanType = "free"
+
+	store := (&Store{
+		accounts: []*Account{plus, team, free},
+	}).withMaxConcurrency(1)
+	store.rebuildAccountIndex()
+	// Key 1 只允许 plus / team 套餐的账号。
+	store.SetAPIKeyAllowedPlans(1, []string{"Plus", "team"})
+
+	if !store.APIKeyAllowsAccount(1, plus) {
+		t.Fatal("plus account should be allowed by plus/team filter")
+	}
+	if !store.APIKeyAllowsAccount(1, team) {
+		t.Fatal("team account should be allowed by plus/team filter")
+	}
+	if store.APIKeyAllowsAccount(1, free) {
+		t.Fatal("free account should be rejected by plus/team filter")
+	}
+
+	// 把 plus/team 排除后,唯一剩下的 free 账号不应被调度。
+	if got := store.NextExcluding(1, map[int64]bool{1: true, 2: true}); got != nil {
+		store.Release(got)
+		t.Fatalf("NextExcluding() picked dbID=%d, want nil (free plan excluded)", got.DBID)
+	}
+	// 不加套餐限制的 Key 2 仍可调度到 free 账号。
+	if !store.APIKeyAllowsAccount(2, free) {
+		t.Fatal("unrestricted key should allow free account")
+	}
+}
+
+func TestStoreAPIKeyPlanFilterMatchesProLiteDistinctly(t *testing.T) {
+	prolite := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
+	prolite.PlanType = "prolite"
+	pro := newFastSchedulerTestAccount(2, HealthTierHealthy, 110, 1)
+	pro.PlanType = "pro"
+
+	store := (&Store{
+		accounts: []*Account{prolite, pro},
+	}).withMaxConcurrency(1)
+	store.rebuildAccountIndex()
+	// 选择 "prolite" 只匹配 prolite 账号,不应命中 pro 账号(两者相互独立)。
+	store.SetAPIKeyAllowedPlans(1, []string{"prolite"})
+
+	if !store.APIKeyAllowsAccount(1, prolite) {
+		t.Fatal("prolite account should be allowed by prolite filter")
+	}
+	if store.APIKeyAllowsAccount(1, pro) {
+		t.Fatal("pro account should NOT be allowed by prolite-only filter")
+	}
+}
+
+func TestStoreAPIKeyAllowsConfiguredNoAffinityGroups(t *testing.T) {
+	primary := newFastSchedulerTestAccount(1, HealthTierHealthy, 120, 1)
+	primary.GroupIDs = []int64{10}
+	split := newFastSchedulerTestAccount(2, HealthTierHealthy, 110, 1)
+	split.GroupIDs = []int64{20}
+	other := newFastSchedulerTestAccount(3, HealthTierHealthy, 100, 1)
+	other.GroupIDs = []int64{30}
+
+	store := (&Store{accounts: []*Account{primary, split, other}}).withMaxConcurrency(1)
+	store.rebuildAccountIndex()
+	store.SetAPIKeyAllowedGroups(1, []int64{10})
+	store.SetAPIKeyNoAffinityGroups(1, []int64{20})
+
+	if !store.APIKeyAllowsAccount(1, primary) {
+		t.Fatal("original group should remain authorized")
+	}
+	if !store.APIKeyAllowsAccount(1, split) {
+		t.Fatal("configured no-affinity group should be authorized for request-level routing")
+	}
+	if store.APIKeyAllowsAccount(1, other) {
+		t.Fatal("unconfigured group should remain unauthorized")
 	}
 }

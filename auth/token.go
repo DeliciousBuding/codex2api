@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -42,9 +43,11 @@ type TokenData struct {
 
 // AccountInfo 解析 id_token 获得的账号信息
 type AccountInfo struct {
-	Email            string `json:"email"`
-	ChatGPTAccountID string `json:"chatgpt_account_id"`
-	PlanType         string `json:"chatgpt_plan_type"`
+	Email                 string    `json:"email"`
+	ChatGPTAccountID      string    `json:"chatgpt_account_id"`
+	UserID                string    `json:"user_id"`
+	PlanType              string    `json:"chatgpt_plan_type"`
+	SubscriptionExpiresAt time.Time `json:"-"`
 }
 
 // RefreshAccessToken 用 RT 换取 AT
@@ -88,17 +91,21 @@ func RefreshAccessToken(ctx context.Context, refreshToken string, proxyURL strin
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("刷新请求失败: %w", err)
+		var opErr *net.OpError
+		if errors.As(err, &opErr) && opErr.Op == "dial" {
+			return nil, nil, fmt.Errorf("刷新连接失败: %w", err)
+		}
+		return nil, nil, &oauthRefreshUncertainError{fmt.Errorf("刷新请求结果未知: %w", err)}
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, nil, fmt.Errorf("读取响应失败: %w", err)
+		return nil, nil, &oauthRefreshUncertainError{fmt.Errorf("读取刷新响应失败: %w", err)}
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("刷新失败 (status %d): %s", resp.StatusCode, string(body))
+		return nil, nil, newOAuthRefreshHTTPError(resp.StatusCode, body, refreshToken)
 	}
 
 	var tokenResp struct {
@@ -108,13 +115,13 @@ func RefreshAccessToken(ctx context.Context, refreshToken string, proxyURL strin
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, nil, fmt.Errorf("解析响应失败: %w", err)
+		return nil, nil, &oauthRefreshUncertainError{fmt.Errorf("解析刷新响应失败: %w", err)}
 	}
 	tokenResp.AccessToken = strings.TrimSpace(tokenResp.AccessToken)
 	tokenResp.RefreshToken = strings.TrimSpace(tokenResp.RefreshToken)
 	tokenResp.IDToken = strings.TrimSpace(tokenResp.IDToken)
 	if tokenResp.AccessToken == "" {
-		return nil, nil, fmt.Errorf("刷新响应缺少 access_token")
+		return nil, nil, &oauthRefreshUncertainError{fmt.Errorf("刷新响应缺少 access_token")}
 	}
 	if tokenResp.ExpiresIn <= 0 {
 		tokenResp.ExpiresIn = 3600
@@ -136,10 +143,10 @@ func RefreshAccessToken(ctx context.Context, refreshToken string, proxyURL strin
 	// 解析 id_token 获取账号信息
 	info := parseIDToken(tokenResp.IDToken)
 
-	// 回退：如果 id_token 中缺少 plan_type，尝试从 access_token 提取
-	if info.PlanType == "" && tokenResp.AccessToken != "" {
+	// 回退：如果 id_token 中缺少字段，尝试从 access_token 提取
+	if tokenResp.AccessToken != "" && (info.PlanType == "" || info.SubscriptionExpiresAt.IsZero()) {
 		if atInfo := ParseAccessToken(tokenResp.AccessToken); atInfo != nil {
-			if atInfo.PlanType != "" {
+			if info.PlanType == "" && atInfo.PlanType != "" {
 				log.Printf("[token] id_token 缺少 plan_type，从 access_token 回退获取: %s", atInfo.PlanType)
 				info.PlanType = atInfo.PlanType
 			}
@@ -149,6 +156,9 @@ func RefreshAccessToken(ctx context.Context, refreshToken string, proxyURL strin
 			}
 			if info.ChatGPTAccountID == "" && atInfo.ChatGPTAccountID != "" {
 				info.ChatGPTAccountID = atInfo.ChatGPTAccountID
+			}
+			if info.SubscriptionExpiresAt.IsZero() && !atInfo.SubscriptionExpiresAt.IsZero() {
+				info.SubscriptionExpiresAt = atInfo.SubscriptionExpiresAt
 			}
 		}
 	}
@@ -176,7 +186,7 @@ func RefreshWithRetry(ctx context.Context, refreshToken string, proxyURL string,
 		}
 
 		// 不可重试错误直接返回
-		if isNonRetryable(err) {
+		if isNonRetryable(err) || isOAuthRefreshUncertain(err) {
 			return nil, nil, err
 		}
 		lastErr = err
@@ -205,7 +215,11 @@ func RefreshWithSessionToken(ctx context.Context, sessionToken string, proxyURL 
 		return nil, nil, fmt.Errorf("创建 session 请求失败: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "CodexProxy/1.9")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.AddCookie(&http.Cookie{Name: "__Secure-next-auth.session-token", Value: sessionToken})
 	if ResinRequestDecorator != nil && accountID != "" {
 		req.Header.Set("X-Resin-Account", accountID)
@@ -215,7 +229,7 @@ func RefreshWithSessionToken(ctx context.Context, sessionToken string, proxyURL 
 	if ResinRequestDecorator != nil && accountID != "" {
 		client = &http.Client{Timeout: 30 * time.Second}
 	} else {
-		client = buildHTTPClient(proxyURL)
+		client = buildUTLSHTTPClient(proxyURL)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -265,6 +279,7 @@ func RefreshWithSessionToken(ctx context.Context, sessionToken string, proxyURL 
 		info.Email = atInfo.Email
 		info.ChatGPTAccountID = atInfo.ChatGPTAccountID
 		info.PlanType = atInfo.PlanType
+		info.SubscriptionExpiresAt = atInfo.SubscriptionExpiresAt
 	}
 	if info.Email == "" {
 		info.Email = strings.TrimSpace(sessionResp.User.Email)
@@ -305,13 +320,83 @@ func parseSessionExpiresAt(raw string) time.Time {
 	return time.Time{}
 }
 
+// IsPermanentRefreshFailure 判断 RT/session 刷新是否已经不可恢复。
+// 这类错误再试也换不出 AT，账号应标未授权，不能停在「刷新中」。
+func IsPermanentRefreshFailure(err error) bool {
+	return isNonRetryable(err)
+}
+
+type permanentRefreshFailureClassifier interface {
+	PermanentRefreshFailure() bool
+}
+
+type oauthRefreshUncertainError struct{ err error }
+
+func (e *oauthRefreshUncertainError) Error() string { return e.err.Error() }
+func (e *oauthRefreshUncertainError) Unwrap() error { return e.err }
+
+func isOAuthRefreshUncertain(err error) bool {
+	var uncertain *oauthRefreshUncertainError
+	return errors.As(err, &uncertain)
+}
+
+type oauthRefreshHTTPError struct {
+	status int
+	code   string
+	body   string
+}
+
+func newOAuthRefreshHTTPError(status int, body []byte, rt string) error {
+	var payload struct {
+		Error json.RawMessage `json:"error"`
+	}
+	var code string
+	if json.Unmarshal(body, &payload) == nil {
+		if json.Unmarshal(payload.Error, &code) != nil {
+			var detail struct {
+				Code string `json:"code"`
+			}
+			if json.Unmarshal(payload.Error, &detail) == nil {
+				code = detail.Code
+			}
+		}
+	}
+	return &oauthRefreshHTTPError{status: status, code: strings.ToLower(strings.TrimSpace(code)), body: strings.ReplaceAll(string(body), rt, "[REDACTED]")}
+}
+
+func (e *oauthRefreshHTTPError) Error() string {
+	return fmt.Sprintf("刷新失败 (status %d): %s", e.status, e.body)
+}
+func (e *oauthRefreshHTTPError) PermanentRefreshFailure() bool {
+	if e.code != "" {
+		return permanentOAuthRefreshCode(e.code)
+	}
+	return isNonRetryable(errors.New(e.body))
+}
+
+func permanentOAuthRefreshCode(code string) bool {
+	switch code {
+	case "invalid_grant", "invalid_client", "unauthorized_client", "access_denied", "refresh_token_reused", "refresh_token_invalidated", "refresh_token_expired", "refresh_token_revoked", "token_invalidated":
+		return true
+	}
+	return false
+}
+
 // isNonRetryable 判断是否不可重试的认证错误
 func isNonRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
+	var classified permanentRefreshFailureClassifier
+	if errors.As(err, &classified) {
+		return classified.PermanentRefreshFailure()
+	}
 	msg := strings.ToLower(err.Error())
-	for _, needle := range []string{"invalid_grant", "invalid_client", "unauthorized_client", "access_denied"} {
+	for _, needle := range []string{
+		"invalid_grant", "invalid_client", "unauthorized_client", "access_denied",
+		"refresh_token_reused", "refresh_token_invalidated", "refresh_token_expired", "refresh_token_revoked", "token_invalidated",
+		"session has ended",
+	} {
 		if strings.Contains(msg, needle) {
 			return true
 		}
@@ -349,8 +434,11 @@ func parseIDToken(idToken string) *AccountInfo {
 	var claims struct {
 		Email      string `json:"email"`
 		OpenAIAuth *struct {
-			ChatGPTAccountID string `json:"chatgpt_account_id"`
-			PlanType         string `json:"chatgpt_plan_type"`
+			ChatGPTAccountID               string `json:"chatgpt_account_id"`
+			UserID                         string `json:"user_id"`
+			ChatGPTUserID                  string `json:"chatgpt_user_id"`
+			PlanType                       string `json:"chatgpt_plan_type"`
+			ChatGPTSubscriptionActiveUntil string `json:"chatgpt_subscription_active_until"`
 		} `json:"https://api.openai.com/auth"`
 	}
 	if err := json.Unmarshal(decoded, &claims); err != nil {
@@ -360,17 +448,34 @@ func parseIDToken(idToken string) *AccountInfo {
 	info := &AccountInfo{Email: claims.Email}
 	if claims.OpenAIAuth != nil {
 		info.ChatGPTAccountID = claims.OpenAIAuth.ChatGPTAccountID
+		info.UserID = firstNonEmptyTrimmed(claims.OpenAIAuth.UserID, claims.OpenAIAuth.ChatGPTUserID)
 		info.PlanType = claims.OpenAIAuth.PlanType
+		if s := claims.OpenAIAuth.ChatGPTSubscriptionActiveUntil; s != "" {
+			if t, err := time.Parse(time.RFC3339, s); err == nil {
+				info.SubscriptionExpiresAt = t
+			}
+		}
 	}
 	return info
 }
 
 // AccessTokenInfo AT JWT 解析结果
 type AccessTokenInfo struct {
-	Email            string
-	ChatGPTAccountID string
-	PlanType         string
-	ExpiresAt        time.Time
+	Email                 string
+	ChatGPTAccountID      string
+	UserID                string
+	PlanType              string
+	ExpiresAt             time.Time
+	SubscriptionExpiresAt time.Time
+}
+
+func firstNonEmptyTrimmed(values ...string) string {
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // ParseAccessToken 解析 Access Token 的 JWT payload（不验签）
@@ -404,8 +509,11 @@ func ParseAccessToken(accessToken string) *AccessTokenInfo {
 	var claims struct {
 		Exp        int64 `json:"exp"`
 		OpenAIAuth *struct {
-			ChatGPTAccountID string `json:"chatgpt_account_id"`
-			PlanType         string `json:"chatgpt_plan_type"`
+			ChatGPTAccountID               string `json:"chatgpt_account_id"`
+			UserID                         string `json:"user_id"`
+			ChatGPTUserID                  string `json:"chatgpt_user_id"`
+			PlanType                       string `json:"chatgpt_plan_type"`
+			ChatGPTSubscriptionActiveUntil string `json:"chatgpt_subscription_active_until"`
 		} `json:"https://api.openai.com/auth"`
 		OpenAIProfile *struct {
 			Email string `json:"email"`
@@ -421,7 +529,13 @@ func ParseAccessToken(accessToken string) *AccessTokenInfo {
 	}
 	if claims.OpenAIAuth != nil {
 		info.ChatGPTAccountID = claims.OpenAIAuth.ChatGPTAccountID
+		info.UserID = firstNonEmptyTrimmed(claims.OpenAIAuth.UserID, claims.OpenAIAuth.ChatGPTUserID)
 		info.PlanType = claims.OpenAIAuth.PlanType
+		if s := claims.OpenAIAuth.ChatGPTSubscriptionActiveUntil; s != "" {
+			if t, err := time.Parse(time.RFC3339, s); err == nil {
+				info.SubscriptionExpiresAt = t
+			}
+		}
 	}
 	if claims.Exp > 0 {
 		info.ExpiresAt = time.Unix(claims.Exp, 0)
@@ -478,10 +592,27 @@ func evictExpiredAuthClients() {
 
 // buildHTTPClient 构建支持代理的 HTTP 客户端（连接池复用，带 TTL 清理）
 func buildHTTPClient(proxyURL string) *http.Client {
+	client, _ := buildHTTPClientChecked(proxyURL, false)
+	return client
+}
+
+// buildHTTPClientChecked constructs a pooled auth client. When strict is true,
+// an invalid proxy configuration is returned to the caller instead of silently
+// falling back to a direct connection. Existing callers retain the historical
+// best-effort behavior through buildHTTPClient.
+func buildHTTPClientChecked(proxyURL string, strict bool) (*http.Client, error) {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if strict && proxyURL != "" {
+		probe := &http.Transport{}
+		if err := ConfigureTransportProxy(probe, proxyURL, &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}); err != nil {
+			return nil, fmt.Errorf("configure proxy: %w", err)
+		}
+		probe.CloseIdleConnections()
+	}
 	if v, ok := authClientPool.Load(proxyURL); ok {
 		entry := v.(*authPoolEntry)
 		entry.touch()
-		return entry.client
+		return entry.client, nil
 	}
 
 	transport := &http.Transport{
@@ -495,6 +626,9 @@ func buildHTTPClient(proxyURL string) *http.Client {
 	transport.DialContext = baseDialer.DialContext
 	if proxyURL != "" {
 		if err := ConfigureTransportProxy(transport, proxyURL, baseDialer); err != nil {
+			if strict {
+				return nil, fmt.Errorf("configure proxy: %w", err)
+			}
 			transport.Proxy = nil
 			transport.DialContext = baseDialer.DialContext
 		}
@@ -511,14 +645,20 @@ func buildHTTPClient(proxyURL string) *http.Client {
 	if v, loaded := authClientPool.LoadOrStore(proxyURL, entry); loaded {
 		e := v.(*authPoolEntry)
 		e.touch()
-		return e.client
+		return e.client, nil
 	}
-	return client
+	return client, nil
 }
 
 // BuildHTTPClient builds a proxy-aware HTTP client (exported for admin OAuth flow).
 func BuildHTTPClient(proxyURL string) *http.Client {
 	return buildHTTPClient(proxyURL)
+}
+
+// BuildHTTPClientChecked is the strict variant used by protocol adapters that
+// must never silently bypass a configured account proxy.
+func BuildHTTPClientChecked(proxyURL string) (*http.Client, error) {
+	return buildHTTPClientChecked(proxyURL, true)
 }
 
 // ParseIDToken parses a JWT id_token payload (exported for admin OAuth flow).

@@ -4,6 +4,7 @@ import {
   AlertCircle,
   Clock3,
   Copy,
+  Download,
   RefreshCw,
   RotateCcw,
   Search,
@@ -15,11 +16,13 @@ import {
 import { api } from '../api'
 import OpsTabs from '../components/OpsTabs'
 import PageHeader from '../components/PageHeader'
+import { StatTile } from '../components/StatTile'
+import { SegmentedTabs } from '../components/SegmentedTabs'
 import Pagination from '../components/Pagination'
 import StateShell from '../components/StateShell'
-import ToastNotice from '../components/ToastNotice'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useToast } from '../hooks/useToast'
+import { DEFAULT_PAGE_SIZE_OPTIONS, usePersistedPageSize } from '../hooks/usePersistedPageSize'
 import { getTimeRangeISO, type TimeRangeKey } from '../lib/timeRange'
 import { formatCompactEmail } from '../lib/utils'
 import { formatBeijingTime } from '../utils/time'
@@ -46,18 +49,18 @@ import {
 } from '@/components/ui/table'
 
 const ERROR_TIME_RANGES: TimeRangeKey[] = ['1h', '6h', '24h', '7d', '30d']
-const pageSizeOptions = [10, 20, 50, 100]
+const pageSizeOptions = DEFAULT_PAGE_SIZE_OPTIONS
 
 const errorTableHeadClass = 'text-[12px] font-semibold'
 const errorTableTextClass = 'text-[14px]'
-const errorTableMonoClass = 'text-[13px] font-medium font-mono tabular-nums'
+const errorTableMonoClass = 'font-geist-mono text-[13px] tabular-nums'
 
 export default function OperationsErrors() {
   const { t } = useTranslation()
   const { toast, showToast } = useToast()
   const [timeRange, setTimeRange] = useState<TimeRangeKey>('1h')
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  const [pageSize, setPageSize] = usePersistedPageSize('ops_errors', 20, pageSizeOptions)
   const [statusFilter, setStatusFilter] = useState('')
   const [errorKindFilter, setErrorKindFilter] = useState('')
   const [endpointFilter, setEndpointFilter] = useState('')
@@ -65,6 +68,9 @@ export default function OperationsErrors() {
   const [streamFilter, setStreamFilter] = useState<'' | 'true' | 'false'>('')
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [exportDedupe, setExportDedupe] = useState(true)
+  const [exportExcludeAuthRateLimit, setExportExcludeAuthRateLimit] = useState(true)
+  const [exporting, setExporting] = useState(false)
   const [selectedLog, setSelectedLog] = useState<UsageLog | null>(null)
   const searchTimer = useRef<ReturnType<typeof setTimeout>>(null)
 
@@ -85,9 +91,9 @@ export default function OperationsErrors() {
     }
   }, [])
 
-  const loadErrorData = useCallback(async () => {
+  const buildBaseParams = useCallback(() => {
     const range = getTimeRangeISO(timeRange)
-    const baseParams = {
+    return {
       start: range.start,
       end: range.end,
       status: statusFilter,
@@ -97,6 +103,10 @@ export default function OperationsErrors() {
       stream: streamFilter,
       q: searchQuery,
     }
+  }, [apiKeyFilter, endpointFilter, errorKindFilter, searchQuery, statusFilter, streamFilter, timeRange])
+
+  const loadErrorData = useCallback(async () => {
+    const baseParams = buildBaseParams()
     const [summary, pageResult, apiKeysResult] = await Promise.all([
       api.getOpsErrorSummary(baseParams),
       api.getOpsErrors({
@@ -104,7 +114,7 @@ export default function OperationsErrors() {
         page,
         pageSize,
       }),
-      api.getAPIKeys().catch(() => ({ keys: [] as APIKeyRow[] })),
+      api.getAPIKeys({ view: 'lite' }).catch(() => ({ keys: [] as APIKeyRow[] })),
     ])
 
     return {
@@ -113,7 +123,7 @@ export default function OperationsErrors() {
       total: pageResult.total ?? 0,
       apiKeys: apiKeysResult.keys ?? [],
     }
-  }, [apiKeyFilter, endpointFilter, errorKindFilter, page, pageSize, searchQuery, statusFilter, streamFilter, timeRange])
+  }, [buildBaseParams, page, pageSize])
 
   const { data, loading, error, reload, reloadSilently } = useDataLoader<{
     summary: OpsErrorSummary | null
@@ -166,6 +176,23 @@ export default function OperationsErrors() {
     setPage(1)
   }
 
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const blob = await api.downloadOpsErrors({
+        ...buildBaseParams(),
+        dedupe: exportDedupe,
+        excludeStatus: exportExcludeAuthRateLimit ? '401,429' : '',
+      })
+      downloadBlob(blob, buildOpsErrorExportFilename(timeRange, exportDedupe, exportExcludeAuthRateLimit))
+      showToast(t('opsErrors.exportSuccess'))
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('opsErrors.exportFailed'), 'error')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const copyLog = async (log: UsageLog) => {
     const text = JSON.stringify({
       id: log.id,
@@ -174,6 +201,7 @@ export default function OperationsErrors() {
       error_kind: log.upstream_error_kind,
       error_message: log.error_message,
       account_id: log.account_id,
+      account_name: log.account_name,
       account_email: log.account_email,
       api_key_id: log.api_key_id,
       api_key_name: log.api_key_name,
@@ -210,48 +238,46 @@ export default function OperationsErrors() {
           title={t('opsErrors.title')}
           description={t('opsErrors.description')}
           actions={
-            <div className="flex flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start">
-              <OpsTabs compact />
-              <Button variant="outline" onClick={() => void reload()}>
-                <RefreshCw className="size-3.5" />
-                {t('common.refresh')}
-              </Button>
-            </div>
+            <Button variant="outline" onClick={() => void reload()}>
+              <RefreshCw className="size-3.5" />
+              {t('common.refresh')}
+            </Button>
           }
         />
+        <OpsTabs />
 
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-4 mb-6">
-          <SummaryPill
+        <div className="mb-6 grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
+          <StatTile
             label={t('opsErrors.totalErrors')}
             value={formatNumber(data.summary?.total_errors ?? 0)}
             icon={<AlertCircle className="size-4" />}
             tone="danger"
           />
-          <SummaryPill
+          <StatTile
             label="5xx"
             value={formatNumber(data.summary?.status_5xx ?? 0)}
             icon={<ServerCrash className="size-4" />}
             tone="danger"
           />
-          <SummaryPill
+          <StatTile
             label="401"
             value={formatNumber(data.summary?.unauthorized ?? 0)}
             icon={<ShieldAlert className="size-4" />}
             tone="danger"
           />
-          <SummaryPill
+          <StatTile
             label="429"
             value={formatNumber(data.summary?.rate_limited ?? 0)}
             icon={<TimerReset className="size-4" />}
             tone="warning"
           />
-          <SummaryPill
+          <StatTile
             label={t('opsErrors.timeouts')}
             value={formatNumber(data.summary?.timeouts ?? 0)}
             icon={<Clock3 className="size-4" />}
             tone="warning"
           />
-          <SummaryPill
+          <StatTile
             label={t('opsErrors.retryAttempts')}
             value={formatNumber(data.summary?.retry_attempts ?? 0)}
             icon={<RotateCcw className="size-4" />}
@@ -259,29 +285,22 @@ export default function OperationsErrors() {
           />
         </div>
 
-        <Card className="py-0">
-          <CardContent className="p-4">
+        <Card>
+          <CardContent className="p-6">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold text-foreground">{t('opsErrors.tableTitle')}</h3>
                 <p className="mt-1 text-sm text-muted-foreground">{t('opsErrors.tableDesc')}</p>
               </div>
-              <div className="inline-flex rounded-lg border border-border bg-muted/50 p-0.5">
-                {ERROR_TIME_RANGES.map((key) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => { setTimeRange(key); setPage(1) }}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-200 ${
-                      timeRange === key
-                        ? 'bg-background text-foreground shadow-sm border border-border'
-                        : 'text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    {t(`dashboard.timeRange${key.toUpperCase()}`)}
-                  </button>
-                ))}
-              </div>
+              <SegmentedTabs
+                size="sm"
+                tabs={ERROR_TIME_RANGES.map((key) => ({
+                  value: key,
+                  label: t(`dashboard.timeRange${key.toUpperCase()}`),
+                }))}
+                value={timeRange}
+                onValueChange={(value) => { setTimeRange(value as TimeRangeKey); setPage(1) }}
+              />
             </div>
 
             <div className="toolbar-surface mb-4 flex flex-wrap items-center gap-2">
@@ -360,6 +379,28 @@ export default function OperationsErrors() {
                   { label: 'Sync', value: 'false' },
                 ]}
               />
+              <label className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-[13px] text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={exportDedupe}
+                  onChange={(event) => setExportDedupe(event.target.checked)}
+                  className="size-3.5 rounded border-border"
+                />
+                {t('opsErrors.exportDedupe')}
+              </label>
+              <label className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 text-[13px] text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={exportExcludeAuthRateLimit}
+                  onChange={(event) => setExportExcludeAuthRateLimit(event.target.checked)}
+                  className="size-3.5 rounded border-border"
+                />
+                {t('opsErrors.exclude401429')}
+              </label>
+              <Button variant="outline" size="sm" onClick={() => void handleExport()} disabled={exporting}>
+                <Download className="size-3.5" />
+                {exporting ? t('opsErrors.exporting') : t('opsErrors.exportJson')}
+              </Button>
               {hasActiveFilters && (
                 <button
                   type="button"
@@ -381,7 +422,56 @@ export default function OperationsErrors() {
               emptyTitle={t('opsErrors.emptyTitle')}
               emptyDescription={hasActiveFilters ? t('opsErrors.emptyFilteredDesc') : t('opsErrors.emptyDesc')}
             >
-              <div className="data-table-shell">
+              <div className="grid gap-3 lg:hidden">
+                {data.logs.map((log) => (
+                  <Card key={log.id} className="p-3.5 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                        <Badge variant="outline" className={`text-[12px] ${getStatusBadgeClassName(log.status_code)}`}>
+                          {log.status_code}
+                        </Badge>
+                        <Badge variant="outline" className="border-transparent bg-slate-500/10 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300 text-[12px]">
+                          {log.upstream_error_kind || classifyStatus(log.status_code)}
+                        </Badge>
+                        <Badge variant="outline" className="text-[12px] truncate max-w-[140px]">{log.model || '-'}</Badge>
+                      </div>
+                      <span className="shrink-0 font-geist-mono text-[11px] text-muted-foreground">
+                        {formatDuration(log.duration_ms)}
+                      </span>
+                    </div>
+
+                    <div className="text-xs space-y-1">
+                      <div className="font-geist-mono text-muted-foreground truncate" title={formatEndpoint(log)}>
+                        {formatEndpoint(log)}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
+                        <span title={formatAccountTitle(log)}>{formatAccountLabel(log)}</span>
+                        {formatAPIKeyLabel(log) ? (
+                          <>
+                            <span>·</span>
+                            <span title={formatAPIKeyLabel(log)}>{formatAPIKeyLabel(log)}</span>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {log.error_message ? (
+                      <div className="rounded-lg bg-destructive/5 border border-destructive/20 p-2 text-xs text-destructive line-clamp-3 leading-relaxed">
+                        {log.error_message}
+                      </div>
+                    ) : null}
+
+                    <div className="flex items-center justify-between pt-1 border-t border-border/50 text-[11px] text-muted-foreground">
+                      <span>{formatBeijingTime(log.created_at)}</span>
+                      <Button variant="outline" size="xs" onClick={() => setSelectedLog(log)}>
+                        {t('opsErrors.details')}
+                      </Button>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+
+              <div className="data-table-shell hidden lg:block">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -427,7 +517,9 @@ export default function OperationsErrors() {
                           </div>
                         </TableCell>
                         <TableCell className={`${errorTableTextClass} text-muted-foreground`}>
-                          {formatCompactEmail(log.account_email) || `ID ${log.account_id}`}
+                          <span className="block max-w-[180px] truncate whitespace-nowrap" title={formatAccountTitle(log)}>
+                            {formatAccountLabel(log)}
+                          </span>
                         </TableCell>
                         <TableCell className={`${errorTableTextClass} text-muted-foreground`}>
                           <span className="block max-w-[160px] truncate" title={formatAPIKeyLabel(log)}>
@@ -491,7 +583,7 @@ export default function OperationsErrors() {
 
               <div className="rounded-lg border border-border bg-muted/30 p-4">
                 <div className="mb-2 text-[12px] font-semibold uppercase text-muted-foreground">{t('opsErrors.fullError')}</div>
-                <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed text-foreground" style={{ fontFamily: 'var(--font-mono)' }}>
+                <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words font-geist-mono text-[12px] leading-relaxed text-foreground">
                   {selectedLog.error_message || t('opsErrors.noErrorMessage')}
                 </pre>
               </div>
@@ -505,11 +597,13 @@ export default function OperationsErrors() {
                   <DetailRow label="Reasoning" value={selectedLog.reasoning_effort || '-'} />
                 </DetailPanel>
                 <DetailPanel title={t('opsErrors.runtimeContext')}>
-                  <DetailRow label={t('usage.tableAccount')} value={`${formatCompactEmail(selectedLog.account_email) || '-'} · ID ${selectedLog.account_id}`} />
+                  <DetailRow label={t('usage.tableAccount')} value={formatAccountDetail(selectedLog)} />
                   <DetailRow label={t('usage.tableApiKey')} value={formatAPIKeyLabel(selectedLog) || t('usage.unknownApiKey')} />
                   <DetailRow label={t('usage.tableDuration')} value={formatDuration(selectedLog.duration_ms)} mono />
                   <DetailRow label={t('usage.tableFirstToken')} value={selectedLog.first_token_ms > 0 ? formatDuration(selectedLog.first_token_ms) : '-'} mono />
                   <DetailRow label="Tokens" value={`${selectedLog.input_tokens} / ${selectedLog.output_tokens} / ${selectedLog.reasoning_tokens}`} mono />
+                  <DetailRow label={t('usage.injectedTurnState')} value={selectedLog.injected_turn_state || '-'} mono />
+                  <DetailRow label={t('usage.upstreamTurnState')} value={selectedLog.upstream_turn_state || '-'} mono />
                 </DetailPanel>
               </div>
 
@@ -522,39 +616,8 @@ export default function OperationsErrors() {
             </DialogContent>
           ) : null}
         </Dialog>
-        <ToastNotice toast={toast} />
       </>
     </StateShell>
-  )
-}
-
-function SummaryPill({
-  label,
-  value,
-  icon,
-  tone,
-}: {
-  label: string
-  value: string
-  icon: ReactNode
-  tone: 'danger' | 'warning' | 'info'
-}) {
-  const toneStyle = {
-    danger: 'bg-red-500/10 text-red-600 dark:bg-red-500/20 dark:text-red-300',
-    warning: 'bg-amber-500/10 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300',
-    info: 'bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-300',
-  }[tone]
-
-  return (
-    <div className="rounded-lg border border-border bg-card/85 px-3 py-3 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-[12px] font-bold uppercase text-muted-foreground">{label}</div>
-        <div className={`flex size-8 items-center justify-center rounded-lg ${toneStyle}`}>
-          {icon}
-        </div>
-      </div>
-      <div className="mt-3 text-[24px] font-bold leading-none text-foreground">{value}</div>
-    </div>
   )
 }
 
@@ -571,7 +634,7 @@ function DetailRow({ label, value, mono = false }: { label: string; value: strin
   return (
     <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-3 text-sm">
       <span className="text-muted-foreground">{label}</span>
-      <span className={`min-w-0 break-words text-foreground ${mono ? 'text-[13px] font-medium font-mono tabular-nums' : ''}`}>{value}</span>
+      <span className={`min-w-0 break-words text-foreground ${mono ? 'font-geist-mono text-[13px] tabular-nums' : ''}`}>{value}</span>
     </div>
   )
 }
@@ -593,6 +656,31 @@ function formatAPIKeyLabel(log: UsageLog): string {
   if (!masked) return ''
   if (masked.length <= 8) return masked
   return `${masked.slice(0, 4)}...${masked.slice(-4)}`
+}
+
+function formatAccountLabel(log: UsageLog): string {
+  // 邮箱优先：身份账号一律显示邮箱，账号名仅作为无邮箱账号（如 relay API-key 账号）的兜底。
+  // 避免 AT 导入未命名时的占位名（at-account-N 等）盖过真实邮箱身份。
+  const accountEmail = log.account_email?.trim()
+  if (accountEmail) return formatCompactEmail(accountEmail)
+  const accountName = log.account_name?.trim()
+  if (accountName) return accountName
+  return log.account_id > 0 ? `ID ${log.account_id}` : '-'
+}
+
+function formatAccountTitle(log: UsageLog): string {
+  const accountEmail = log.account_email?.trim()
+  const accountName = log.account_name?.trim()
+  if (accountEmail && accountName && accountEmail !== accountName) {
+    return `${accountEmail} · ${accountName}`
+  }
+  return accountEmail || accountName || (log.account_id > 0 ? `ID ${log.account_id}` : '-')
+}
+
+function formatAccountDetail(log: UsageLog): string {
+  const title = formatAccountTitle(log)
+  if (log.account_id <= 0) return title
+  return title === `ID ${log.account_id}` ? title : `${title} · ID ${log.account_id}`
 }
 
 function formatEndpoint(log: UsageLog): string {
@@ -628,6 +716,26 @@ async function copyTextToClipboard(text: string) {
   if (!copied) {
     throw new Error('copy failed')
   }
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+function buildOpsErrorExportFilename(timeRange: TimeRangeKey, dedupe: boolean, excludeAuthRateLimit: boolean) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const options = [
+    dedupe ? 'deduped' : 'raw',
+    excludeAuthRateLimit ? 'no-401-429' : 'all-status',
+  ].join('-')
+  return `ops-errors-${timeRange}-${options}-${timestamp}.json`
 }
 
 function classifyStatus(statusCode: number): string {

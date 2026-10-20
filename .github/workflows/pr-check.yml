@@ -2,10 +2,18 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
   push:
     branches:
       - main
       - codex/**
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
 
 permissions:
   contents: read
@@ -17,12 +25,13 @@ concurrency:
 jobs:
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -32,9 +41,25 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+
       - name: Typecheck frontend
         working-directory: frontend
         run: npm run typecheck
+
+      - name: Install Chromium for SVG export regression tests
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Test SVG export in the browser
+        working-directory: frontend
+        run: npm run test:svg
+
+      - name: Test intelligence checks in the browser
+        working-directory: frontend
+        run: npm run test:intelligence
 
       - name: Build frontend
         working-directory: frontend
@@ -44,12 +69,13 @@ jobs:
 
   golangci-lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -64,12 +90,13 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -77,4 +104,65 @@ jobs:
         run: mkdir -p frontend/dist && touch frontend/dist/placeholder
 
       - name: Run Go tests
-        run: go test ./...
+        run: go test -count=1 -timeout 8m ./...
+
+  postgres-compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: codex2api_test
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: codex2api_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U codex2api_test -d codex2api_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Test PostgreSQL compatibility and pending-account transactions
+        env:
+          CODEX2API_TEST_POSTGRES_DSN: postgres://codex2api_test:test-only@localhost:5432/codex2api_test?sslmode=disable
+        run: go test -race -count=1 ./database -run '^(TestPostgresTraceAndCapabilities|TestIntelligenceCheckPostgres|TestPendingAccountTransaction)$'
+
+  test-race:
+    name: test-race (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: proxy-a-g
+          - name: proxy-h-z
+          - name: admin
+          - name: database
+          - name: promptfilter
+          - name: rest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Create frontend dist placeholder
+        run: mkdir -p frontend/dist && touch frontend/dist/placeholder
+
+      # 重包各占一台 2 核 runner,避免互相抢核。分片大小见 go-race-packages.sh:
+      # 测试建库走 SQLite schema 模板(database.PrepareSQLiteSchemaTemplate)后,
+      # admin/database 整包 -race 都在 1 分钟量级;proxy 是最重的包,按测试名首字母拆两片。
+      - name: Run Go tests with race detector
+        run: |
+          set -euo pipefail
+          args="$(bash .github/scripts/go-race-packages.sh '${{ matrix.name }}')"
+          # shellcheck disable=SC2086
+          go test -race -count=1 -timeout 12m $args

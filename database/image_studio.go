@@ -48,19 +48,25 @@ type ImagePromptTemplateInput struct {
 }
 
 type ImageGenerationJob struct {
-	ID           int64        `json:"id"`
-	Status       string       `json:"status"`
-	Prompt       string       `json:"prompt"`
-	ParamsJSON   string       `json:"params_json"`
-	APIKeyID     int64        `json:"api_key_id"`
-	APIKeyName   string       `json:"api_key_name"`
-	APIKeyMasked string       `json:"api_key_masked"`
-	ErrorMessage string       `json:"error_message"`
-	DurationMs   int          `json:"duration_ms"`
-	CreatedAt    time.Time    `json:"created_at"`
-	StartedAt    *time.Time   `json:"started_at,omitempty"`
-	CompletedAt  *time.Time   `json:"completed_at,omitempty"`
-	Assets       []ImageAsset `json:"assets,omitempty"`
+	ID           int64  `json:"id"`
+	Status       string `json:"status"`
+	Prompt       string `json:"prompt"`
+	ParamsJSON   string `json:"params_json"`
+	APIKeyID     int64  `json:"api_key_id"`
+	APIKeyName   string `json:"api_key_name"`
+	APIKeyMasked string `json:"api_key_masked"`
+	ErrorMessage string `json:"error_message"`
+	// Warning carries the notice attached to a job that finished successfully,
+	// for example a batch where one output could not be upscaled. It is not a
+	// separate column: the notice shares error_message on disk and is split out
+	// on read so a caller polling this API can keep treating a non-empty
+	// error_message as a failure.
+	Warning     string       `json:"warning,omitempty"`
+	DurationMs  int          `json:"duration_ms"`
+	CreatedAt   time.Time    `json:"created_at"`
+	StartedAt   *time.Time   `json:"started_at,omitempty"`
+	CompletedAt *time.Time   `json:"completed_at,omitempty"`
+	Assets      []ImageAsset `json:"assets,omitempty"`
 }
 
 type ImageGenerationJobInput struct {
@@ -72,42 +78,46 @@ type ImageGenerationJobInput struct {
 }
 
 type ImageAsset struct {
-	ID            int64     `json:"id"`
-	JobID         int64     `json:"job_id"`
-	TemplateID    int64     `json:"template_id"`
-	Filename      string    `json:"filename"`
-	StoragePath   string    `json:"-"`
-	ProxyURL      string    `json:"proxy_url,omitempty"`
-	ThumbnailURL  string    `json:"thumbnail_url,omitempty"`
-	MimeType      string    `json:"mime_type"`
-	Bytes         int       `json:"bytes"`
-	Width         int       `json:"width"`
-	Height        int       `json:"height"`
-	Model         string    `json:"model"`
-	RequestedSize string    `json:"requested_size"`
-	ActualSize    string    `json:"actual_size"`
-	Quality       string    `json:"quality"`
-	OutputFormat  string    `json:"output_format"`
-	RevisedPrompt string    `json:"revised_prompt"`
-	CreatedAt     time.Time `json:"created_at"`
-	CacheB64JSON  string    `json:"cache_b64_json,omitempty"`
+	ID              int64     `json:"id"`
+	JobID           int64     `json:"job_id"`
+	TemplateID      int64     `json:"template_id"`
+	Filename        string    `json:"filename"`
+	StoragePath     string    `json:"-"`
+	ProxyURL        string    `json:"proxy_url,omitempty"`
+	ThumbnailURL    string    `json:"thumbnail_url,omitempty"`
+	MimeType        string    `json:"mime_type"`
+	Bytes           int       `json:"bytes"`
+	Width           int       `json:"width"`
+	Height          int       `json:"height"`
+	Model           string    `json:"model"`
+	RequestedSize   string    `json:"requested_size"`
+	ActualSize      string    `json:"actual_size"`
+	Quality         string    `json:"quality"`
+	OutputFormat    string    `json:"output_format"`
+	RevisedPrompt   string    `json:"revised_prompt"`
+	CreatedAt       time.Time `json:"created_at"`
+	CacheB64JSON    string    `json:"cache_b64_json,omitempty"`
+	ExpiresAt       int64     `json:"expires_at,omitempty"`
+	DeleteAfterRead bool      `json:"delete_after_read,omitempty"`
 }
 
 type ImageAssetInput struct {
-	JobID         int64
-	TemplateID    int64
-	Filename      string
-	StoragePath   string
-	MimeType      string
-	Bytes         int
-	Width         int
-	Height        int
-	Model         string
-	RequestedSize string
-	ActualSize    string
-	Quality       string
-	OutputFormat  string
-	RevisedPrompt string
+	ExpiresAt       int64
+	DeleteAfterRead bool
+	JobID           int64
+	TemplateID      int64
+	Filename        string
+	StoragePath     string
+	MimeType        string
+	Bytes           int
+	Width           int
+	Height          int
+	Model           string
+	RequestedSize   string
+	ActualSize      string
+	Quality         string
+	OutputFormat    string
+	RevisedPrompt   string
 }
 
 type ImageAssetPage struct {
@@ -318,6 +328,18 @@ func (db *DB) MarkImageJobSucceeded(ctx context.Context, id int64, durationMs in
 	return err
 }
 
+func (db *DB) MarkImageJobSucceededWithWarning(ctx context.Context, id int64, message string, durationMs int) error {
+	if len([]rune(message)) > 2000 {
+		message = string([]rune(message)[:2000])
+	}
+	_, err := db.conn.ExecContext(ctx, `
+		UPDATE image_generation_jobs
+		SET status=$1, duration_ms=$2, completed_at=CURRENT_TIMESTAMP, error_message=$3
+		WHERE id=$4
+	`, ImageJobSucceeded, durationMs, message, id)
+	return err
+}
+
 func (db *DB) MarkImageJobFailed(ctx context.Context, id int64, message string, durationMs int) error {
 	if len([]rune(message)) > 2000 {
 		message = string([]rune(message)[:2000])
@@ -365,19 +387,38 @@ func (db *DB) GetImageGenerationJob(ctx context.Context, id int64) (*ImageGenera
 	return job, nil
 }
 
-func (db *DB) ListImageGenerationJobs(ctx context.Context, page, pageSize int) (*ImageJobPage, error) {
+// ListImageGenerationJobs returns image jobs newest-first.
+// When apiKeyID > 0, only jobs for that API key are returned (portal isolation).
+// When apiKeyID == 0, all jobs are returned (admin global list).
+func (db *DB) ListImageGenerationJobs(ctx context.Context, page, pageSize int, apiKeyID int64) (*ImageJobPage, error) {
 	page, pageSize = normalizePage(page, pageSize)
 	var total int64
-	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_generation_jobs`).Scan(&total); err != nil {
-		return nil, err
+	var rows *sql.Rows
+	var err error
+	if apiKeyID > 0 {
+		if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_generation_jobs WHERE api_key_id=$1`, apiKeyID).Scan(&total); err != nil {
+			return nil, err
+		}
+		rows, err = db.conn.QueryContext(ctx, `
+			SELECT id, status, prompt, params_json, api_key_id, api_key_name, api_key_masked, error_message,
+				duration_ms, created_at, started_at, completed_at
+			FROM image_generation_jobs
+			WHERE api_key_id=$1
+			ORDER BY created_at DESC, id DESC
+			LIMIT $2 OFFSET $3
+		`, apiKeyID, pageSize, (page-1)*pageSize)
+	} else {
+		if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_generation_jobs`).Scan(&total); err != nil {
+			return nil, err
+		}
+		rows, err = db.conn.QueryContext(ctx, `
+			SELECT id, status, prompt, params_json, api_key_id, api_key_name, api_key_masked, error_message,
+				duration_ms, created_at, started_at, completed_at
+			FROM image_generation_jobs
+			ORDER BY created_at DESC, id DESC
+			LIMIT $1 OFFSET $2
+		`, pageSize, (page-1)*pageSize)
 	}
-	rows, err := db.conn.QueryContext(ctx, `
-		SELECT id, status, prompt, params_json, api_key_id, api_key_name, api_key_masked, error_message,
-			duration_ms, created_at, started_at, completed_at
-		FROM image_generation_jobs
-		ORDER BY created_at DESC, id DESC
-		LIMIT $1 OFFSET $2
-	`, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -407,6 +448,30 @@ func (db *DB) ListImageGenerationJobs(ctx context.Context, page, pageSize int) (
 	return &ImageJobPage{Jobs: jobs, Total: total}, nil
 }
 
+func (db *DB) DeleteImageGenerationJob(ctx context.Context, id int64) error {
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM image_assets WHERE job_id=$1`, id); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM image_generation_jobs WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
 func scanImageGenerationJob(scanner interface {
 	Scan(dest ...interface{}) error
 }) (*ImageGenerationJob, error) {
@@ -417,6 +482,10 @@ func scanImageGenerationJob(scanner interface {
 		&job.ErrorMessage, &job.DurationMs, &createdRaw, &startedRaw, &completedRaw,
 	); err != nil {
 		return nil, err
+	}
+	if job.Status == ImageJobSucceeded && job.ErrorMessage != "" {
+		job.Warning = job.ErrorMessage
+		job.ErrorMessage = ""
 	}
 	var err error
 	job.CreatedAt, err = parseDBTimeValue(createdRaw)
@@ -446,19 +515,19 @@ func (db *DB) InsertImageAsset(ctx context.Context, input ImageAssetInput) (int6
 	return db.insertRowID(ctx,
 		`INSERT INTO image_assets (
 			job_id, template_id, filename, storage_path, mime_type, bytes, width, height,
-			model, requested_size, actual_size, quality, output_format, revised_prompt
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+			model, requested_size, actual_size, quality, output_format, revised_prompt, expires_at, delete_after_read
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
 		`INSERT INTO image_assets (
 			job_id, template_id, filename, storage_path, mime_type, bytes, width, height,
-			model, requested_size, actual_size, quality, output_format, revised_prompt
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			model, requested_size, actual_size, quality, output_format, revised_prompt, expires_at, delete_after_read
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		input.JobID, input.TemplateID, input.Filename, input.StoragePath, input.MimeType, input.Bytes, input.Width, input.Height,
-		input.Model, input.RequestedSize, input.ActualSize, input.Quality, input.OutputFormat, input.RevisedPrompt,
+		input.Model, input.RequestedSize, input.ActualSize, input.Quality, input.OutputFormat, input.RevisedPrompt, input.ExpiresAt, input.DeleteAfterRead,
 	)
 }
 
 func (db *DB) GetImageAsset(ctx context.Context, id int64) (*ImageAsset, error) {
-	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL()+` WHERE id=$1`, id)
+	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL("")+` WHERE id=$1`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -469,16 +538,37 @@ func (db *DB) GetImageAsset(ctx context.Context, id int64) (*ImageAsset, error) 
 	return scanImageAsset(rows)
 }
 
-func (db *DB) ListImageAssets(ctx context.Context, page, pageSize int) (*ImageAssetPage, error) {
+// ListImageAssets returns assets newest-first.
+// When apiKeyID > 0, only assets belonging to jobs of that API key are returned.
+// When apiKeyID == 0, all assets are returned (admin global list).
+func (db *DB) ListImageAssets(ctx context.Context, page, pageSize int, apiKeyID int64) (*ImageAssetPage, error) {
 	page, pageSize = normalizePage(page, pageSize)
 	var total int64
-	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_assets`).Scan(&total); err != nil {
-		return nil, err
+	var rows *sql.Rows
+	var err error
+	if apiKeyID > 0 {
+		if err := db.conn.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM image_assets a
+			INNER JOIN image_generation_jobs j ON j.id = a.job_id
+			WHERE j.api_key_id=$1
+		`, apiKeyID).Scan(&total); err != nil {
+			return nil, err
+		}
+		rows, err = db.conn.QueryContext(ctx, imageAssetSelectSQL("a")+`
+			INNER JOIN image_generation_jobs j ON j.id = a.job_id
+			WHERE j.api_key_id=$1
+			ORDER BY a.created_at DESC, a.id DESC
+			LIMIT $2 OFFSET $3
+		`, apiKeyID, pageSize, (page-1)*pageSize)
+	} else {
+		if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM image_assets`).Scan(&total); err != nil {
+			return nil, err
+		}
+		rows, err = db.conn.QueryContext(ctx, imageAssetSelectSQL("")+`
+			ORDER BY created_at DESC, id DESC
+			LIMIT $1 OFFSET $2
+		`, pageSize, (page-1)*pageSize)
 	}
-	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL()+`
-		ORDER BY created_at DESC, id DESC
-		LIMIT $1 OFFSET $2
-	`, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +581,7 @@ func (db *DB) ListImageAssets(ctx context.Context, page, pageSize int) (*ImageAs
 }
 
 func (db *DB) ListImageAssetsByJobID(ctx context.Context, jobID int64) ([]ImageAsset, error) {
-	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL()+`
+	rows, err := db.conn.QueryContext(ctx, imageAssetSelectSQL("")+`
 		WHERE job_id=$1
 		ORDER BY id ASC
 	`, jobID)
@@ -502,15 +592,40 @@ func (db *DB) ListImageAssetsByJobID(ctx context.Context, jobID int64) ([]ImageA
 	return scanImageAssets(rows)
 }
 
+// GetImageAssetJobAPIKeyID returns the owning API key id for an asset via its job.
+// Returns 0 when the asset has no job linkage.
+func (db *DB) GetImageAssetJobAPIKeyID(ctx context.Context, assetID int64) (int64, error) {
+	var apiKeyID int64
+	err := db.conn.QueryRowContext(ctx, `
+		SELECT COALESCE(j.api_key_id, 0)
+		FROM image_assets a
+		LEFT JOIN image_generation_jobs j ON j.id = a.job_id
+		WHERE a.id=$1
+	`, assetID).Scan(&apiKeyID)
+	if err != nil {
+		return 0, err
+	}
+	return apiKeyID, nil
+}
+
 func (db *DB) DeleteImageAsset(ctx context.Context, id int64) error {
 	_, err := db.conn.ExecContext(ctx, `DELETE FROM image_assets WHERE id=$1`, id)
 	return err
 }
 
-func imageAssetSelectSQL() string {
-	return `SELECT id, job_id, template_id, filename, storage_path, mime_type, bytes, width, height,
-		model, requested_size, actual_size, quality, output_format, revised_prompt, created_at
-		FROM image_assets`
+// imageAssetSelectSQL builds the asset SELECT. When tableAlias is non-empty (e.g. "a"),
+// columns are qualified and FROM uses that alias.
+func imageAssetSelectSQL(tableAlias string) string {
+	alias := strings.TrimSpace(tableAlias)
+	prefix := ""
+	from := "image_assets"
+	if alias != "" {
+		prefix = alias + "."
+		from = "image_assets " + alias
+	}
+	return `SELECT ` + prefix + `id, ` + prefix + `job_id, ` + prefix + `template_id, ` + prefix + `filename, ` + prefix + `storage_path, ` + prefix + `mime_type, ` + prefix + `bytes, ` + prefix + `width, ` + prefix + `height,
+		` + prefix + `model, ` + prefix + `requested_size, ` + prefix + `actual_size, ` + prefix + `quality, ` + prefix + `output_format, ` + prefix + `revised_prompt, ` + prefix + `created_at, ` + prefix + `expires_at, ` + prefix + `delete_after_read
+		FROM ` + from
 }
 
 func scanImageAssets(rows *sql.Rows) ([]ImageAsset, error) {
@@ -533,7 +648,7 @@ func scanImageAsset(scanner interface {
 	if err := scanner.Scan(
 		&asset.ID, &asset.JobID, &asset.TemplateID, &asset.Filename, &asset.StoragePath, &asset.MimeType,
 		&asset.Bytes, &asset.Width, &asset.Height, &asset.Model, &asset.RequestedSize, &asset.ActualSize,
-		&asset.Quality, &asset.OutputFormat, &asset.RevisedPrompt, &createdRaw,
+		&asset.Quality, &asset.OutputFormat, &asset.RevisedPrompt, &createdRaw, &asset.ExpiresAt, &asset.DeleteAfterRead,
 	); err != nil {
 		return nil, err
 	}
@@ -559,7 +674,7 @@ func normalizePage(page, pageSize int) (int, int) {
 }
 
 func (db *DB) GetAPIKeyByID(ctx context.Context, id int64) (*APIKeyRow, error) {
-	rows, err := db.conn.QueryContext(ctx, `SELECT id, name, key, allowed_group_ids, created_at FROM api_keys WHERE id=$1`, id)
+	rows, err := db.conn.QueryContext(ctx, `SELECT `+apiKeySelectColumns+` FROM api_keys WHERE id=$1`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -571,7 +686,7 @@ func (db *DB) GetAPIKeyByID(ctx context.Context, id int64) (*APIKeyRow, error) {
 }
 
 func (db *DB) FirstAPIKey(ctx context.Context) (*APIKeyRow, error) {
-	rows, err := db.conn.QueryContext(ctx, `SELECT id, name, key, allowed_group_ids, created_at FROM api_keys ORDER BY id LIMIT 1`)
+	rows, err := db.conn.QueryContext(ctx, `SELECT `+apiKeySelectColumns+` FROM api_keys ORDER BY id LIMIT 1`)
 	if err != nil {
 		return nil, err
 	}
@@ -586,16 +701,55 @@ func scanAPIKeyRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (*APIKeyRow, error) {
 	row := &APIKeyRow{}
-	var createdAtRaw interface{}
-	var allowedGroupsRaw interface{}
-	if err := scanner.Scan(&row.ID, &row.Name, &row.Key, &allowedGroupsRaw, &createdAtRaw); err != nil {
+	var createdAtRaw, expiresAtRaw, lastResetAtRaw, allowedGroupsRaw, limitsRaw interface{}
+	if err := scanner.Scan(&row.ID, &row.Name, &row.Key, &createdAtRaw, &row.QuotaLimit, &row.QuotaUsed, &row.TotalUsed, &row.ResetCount, &lastResetAtRaw, &expiresAtRaw, &allowedGroupsRaw, &limitsRaw, &row.Enabled); err != nil {
 		return nil, err
 	}
-	row.AllowedGroupIDs = decodeInt64SliceValue(allowedGroupsRaw)
 	createdAt, err := parseDBTimeValue(createdAtRaw)
 	if err != nil {
 		return nil, fmt.Errorf("解析 API Key 创建时间失败: %w", err)
 	}
+	expiresAt, err := parseDBNullTimeValue(expiresAtRaw)
+	if err != nil {
+		return nil, fmt.Errorf("解析 API Key 过期时间失败: %w", err)
+	}
+	lastResetAt, err := parseDBNullTimeValue(lastResetAtRaw)
+	if err != nil {
+		return nil, fmt.Errorf("解析 API Key 重置时间失败: %w", err)
+	}
 	row.CreatedAt = createdAt
+	row.ExpiresAt = expiresAt
+	row.LastResetAt = lastResetAt
+	row.AllowedGroupIDs = decodeInt64SliceValue(allowedGroupsRaw)
+	row.Limits = decodeAPIKeyLimits(limitsRaw)
 	return row, nil
+}
+
+// decodeAPIKeyLimits 把 SQL 取出来的 JSONB / TEXT 值解到 APIKeyLimits。
+// 空值 / 非法 JSON 一律返回零值,避免 nil panic。
+func decodeAPIKeyLimits(raw interface{}) APIKeyLimits {
+	data := bytesFromDBValue(raw)
+	if len(data) == 0 {
+		return APIKeyLimits{}
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "{}" || trimmed == "null" {
+		return APIKeyLimits{}
+	}
+	var out APIKeyLimits
+	if err := json.Unmarshal(data, &out); err != nil {
+		return APIKeyLimits{}
+	}
+	return out
+}
+
+func encodeAPIKeyLimits(l APIKeyLimits) string {
+	if l.IsZero() {
+		return "{}"
+	}
+	b, err := json.Marshal(l)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }

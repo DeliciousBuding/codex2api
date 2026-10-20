@@ -3,15 +3,101 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/url"
 	"sort"
+	"strings"
 	"time"
 )
 
+const (
+	defaultSQLiteMaxOpenConns = 8
+	maxSQLiteOpenConns        = 16
+	sqliteBusyTimeoutMillis   = 15000
+)
+
+func sqliteConnectDSN(dsn string) string {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" || dsn == ":memory:" {
+		return dsn
+	}
+
+	q := url.Values{}
+	// deferred 事务（BeginTx 默认）从读锁升级写锁遇忙会立刻 SQLITE_BUSY，
+	// busy_timeout 拦不住；immediate 让写事务在 BEGIN 就拿写锁、正常走等待。
+	q.Add("_txlock", "immediate")
+	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMillis))
+	q.Add("_pragma", "journal_mode(WAL)")
+	q.Add("_pragma", "synchronous(NORMAL)")
+
+	if strings.HasPrefix(strings.ToLower(dsn), "file:") {
+		sep := "?"
+		if strings.Contains(dsn, "?") {
+			sep = "&"
+		}
+		return dsn + sep + q.Encode()
+	}
+
+	return "file:" + dsn + "?" + q.Encode()
+}
+
+func applySQLiteConnLimits(conn *sql.DB, n int) {
+	if conn == nil {
+		return
+	}
+	if n <= 0 {
+		n = defaultSQLiteMaxOpenConns
+	}
+	if n > maxSQLiteOpenConns {
+		n = maxSQLiteOpenConns
+	}
+	if n < 2 {
+		n = 2
+	}
+	conn.SetMaxOpenConns(n)
+	conn.SetMaxIdleConns(n)
+	conn.SetConnMaxLifetime(0)
+}
+
+func (db *DB) withSQLiteWriteLock(ctx context.Context, fn func() error) error {
+	if !db.isSQLite() || db.sqliteWriteSem == nil {
+		return fn()
+	}
+	select {
+	case db.sqliteWriteSem <- struct{}{}:
+		defer func() { <-db.sqliteWriteSem }()
+		return fn()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// withWriteTx serializes top-level SQLite mutations while preserving the
+// normal transaction behavior for PostgreSQL. Callers pass all nested writes
+// through the same transaction to avoid writer-gate re-entry deadlocks.
+func (db *DB) withWriteTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	if db == nil || db.conn == nil {
+		return errors.New("database is not initialized")
+	}
+	run := func() error {
+		tx, err := db.conn.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := fn(tx); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	return db.withSQLiteWriteLock(ctx, run)
+}
+
 func (db *DB) configureSQLite(ctx context.Context) error {
 	pragmas := []string{
+		fmt.Sprintf(`PRAGMA busy_timeout=%d;`, sqliteBusyTimeoutMillis),
 		`PRAGMA journal_mode=WAL;`,
-		`PRAGMA busy_timeout=15000;`,
 		`PRAGMA synchronous=NORMAL;`,
 	}
 	for _, pragma := range pragmas {
@@ -24,6 +110,7 @@ func (db *DB) configureSQLite(ctx context.Context) error {
 
 func (db *DB) migrateSQLite(ctx context.Context) error {
 	statements := []string{
+		codexClientVersionCacheSchema,
 		`CREATE TABLE IF NOT EXISTS accounts (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT DEFAULT '',
@@ -36,14 +123,45 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			cooldown_until TIMESTAMP NULL,
 			score_bias_override INTEGER NULL,
 			base_concurrency_override INTEGER NULL,
+			skip_warm_tier INTEGER DEFAULT 0,
+			note TEXT DEFAULT '',
 			error_message TEXT DEFAULT '',
 			deleted_at TIMESTAMP NULL,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS scheduler_outbox (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT NOT NULL,
+			entity_id INTEGER NOT NULL DEFAULT 0,
+			event_type TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduler_outbox_created ON scheduler_outbox(created_at, id);`,
+		`CREATE TABLE IF NOT EXISTS maintenance_jobs (
+			entity_id INTEGER NOT NULL,
+			job_kind TEXT NOT NULL,
+			due_at TIMESTAMP NOT NULL,
+			lease_owner TEXT NOT NULL DEFAULT '',
+			lease_until TIMESTAMP NULL,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY(entity_id, job_kind)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_maintenance_jobs_due ON maintenance_jobs(job_kind, due_at, entity_id);`,
 		`CREATE TABLE IF NOT EXISTS usage_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			account_id INTEGER DEFAULT 0,
+			credential_generation INTEGER NOT NULL DEFAULT 0,
+			client_ip TEXT DEFAULT '',
+			client_user_agent TEXT DEFAULT '',
+			upstream_user_agent TEXT DEFAULT '',
+			user_agent_overridden INTEGER DEFAULT 0,
+			turn_state_overridden INTEGER DEFAULT 0,
+			turn_state_rewrite_note TEXT DEFAULT '',
+			internal_reason TEXT DEFAULT '',
+			parent_request_id TEXT DEFAULT '',
 			endpoint TEXT DEFAULT '',
 			model TEXT DEFAULT '',
 			prompt_tokens INTEGER DEFAULT 0,
@@ -56,14 +174,30 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			output_tokens INTEGER DEFAULT 0,
 			reasoning_tokens INTEGER DEFAULT 0,
 			first_token_ms INTEGER DEFAULT 0,
+			ws_acquire_ms INTEGER DEFAULT 0,
 			reasoning_effort TEXT DEFAULT '',
 			effective_model TEXT DEFAULT '',
+			daybreak_program TEXT NOT NULL DEFAULT '',
+			upstream_response_model TEXT,
+			upstream_model_mismatch INTEGER,
 			inbound_endpoint TEXT DEFAULT '',
 			upstream_endpoint TEXT DEFAULT '',
-			stream INTEGER DEFAULT 0,
-			cached_tokens INTEGER DEFAULT 0,
-			service_tier TEXT DEFAULT '',
-			api_key_id INTEGER DEFAULT 0,
+				stream INTEGER DEFAULT 0,
+				compact INTEGER DEFAULT 0,
+				has_compaction_history INTEGER DEFAULT 0,
+				ultra INTEGER DEFAULT 0,
+				via_websocket INTEGER DEFAULT 0,
+				cached_tokens INTEGER DEFAULT 0,
+				image_input_tokens INTEGER DEFAULT 0,
+				image_output_tokens INTEGER DEFAULT 0,
+				cached_image_input_tokens INTEGER DEFAULT 0,
+				cache_write_5m_tokens INTEGER DEFAULT 0,
+				cache_write_1h_tokens INTEGER DEFAULT 0,
+				service_tier TEXT DEFAULT '',
+				requested_service_tier TEXT DEFAULT '',
+				actual_service_tier TEXT DEFAULT '',
+				billing_service_tier TEXT DEFAULT '',
+				api_key_id INTEGER DEFAULT 0,
 			api_key_name TEXT DEFAULT '',
 			api_key_masked TEXT DEFAULT '',
 			image_count INTEGER DEFAULT 0,
@@ -78,7 +212,60 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT DEFAULT '',
 			key TEXT NOT NULL UNIQUE,
+			quota_limit REAL DEFAULT 0,
+			quota_used REAL DEFAULT 0,
+			total_used REAL DEFAULT 0,
+			reset_count INTEGER DEFAULT 0,
+			last_reset_at TIMESTAMP NULL,
+			allowed_group_ids TEXT DEFAULT '[]',
+			expires_at TIMESTAMP NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS api_key_model_request_counters (
+			api_key_id INTEGER NOT NULL,
+			rule_id TEXT NOT NULL,
+			window_start INTEGER NOT NULL,
+			reset_at INTEGER NOT NULL,
+			used_requests INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (api_key_id, rule_id, window_start)
+		);`,
+		`CREATE TABLE IF NOT EXISTS api_key_model_request_ledger (
+			api_key_id INTEGER NOT NULL,
+			rule_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			window_start INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (api_key_id, rule_id, request_id)
+		);`,
+		`CREATE TABLE IF NOT EXISTS api_key_scope_counters (
+			api_key_id INTEGER NOT NULL,
+			scope_type TEXT NOT NULL,
+			scope_id INTEGER NOT NULL,
+			used_cost REAL DEFAULT 0,
+			used_tokens INTEGER DEFAULT 0,
+			used_requests INTEGER DEFAULT 0,
+			reset_count INTEGER DEFAULT 0,
+			last_reset_at TIMESTAMP NULL,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (api_key_id, scope_type, scope_id)
+		);`,
+		`CREATE TABLE IF NOT EXISTS account_groups (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			description TEXT DEFAULT '',
+			color TEXT DEFAULT '',
+			sort_order INTEGER DEFAULT 0,
+			base_concurrency_override INTEGER NULL,
+			proxy_urls TEXT DEFAULT '[]',
+			channel TEXT DEFAULT 'codex',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS account_group_members (
+			account_id INTEGER NOT NULL,
+			group_id INTEGER NOT NULL,
+			PRIMARY KEY (account_id, group_id)
 		);`,
 		`CREATE TABLE IF NOT EXISTS account_model_cooldowns (
 			account_id INTEGER NOT NULL,
@@ -92,9 +279,18 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 					id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
 					site_name TEXT DEFAULT 'CodexProxy',
 					site_logo TEXT DEFAULT '',
+					background_config TEXT DEFAULT '{}',
+					grok_config TEXT DEFAULT '{}',
+					claude_config TEXT DEFAULT '{}',
+					antigravity_oauth_config TEXT DEFAULT '{}',
+					invite_guide_config TEXT DEFAULT '{}',
+					visible_channels_config TEXT DEFAULT '{}',
+					channel_test_config TEXT DEFAULT '{}',
+					antigravity_config TEXT DEFAULT '{}',
 					max_concurrency INTEGER DEFAULT 2,
 				global_rpm INTEGER DEFAULT 0,
-				test_model TEXT DEFAULT 'gpt-5.4',
+				test_model TEXT DEFAULT 'gpt-5.5',
+				test_content TEXT DEFAULT 'hi',
 				test_concurrency INTEGER DEFAULT 50,
 				proxy_url TEXT DEFAULT '',
 				pg_max_conns INTEGER DEFAULT 50,
@@ -102,26 +298,110 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 				auto_clean_unauthorized INTEGER DEFAULT 0,
 				auto_clean_rate_limited INTEGER DEFAULT 0,
 				background_refresh_interval_minutes INTEGER DEFAULT 2,
-				usage_probe_max_age_minutes INTEGER DEFAULT 10,
-				recovery_probe_interval_minutes INTEGER DEFAULT 30,
+					usage_probe_max_age_minutes INTEGER DEFAULT 10,
+					usage_probe_concurrency INTEGER DEFAULT 16,
+					usage_probe_responses_fallback_enabled INTEGER DEFAULT 1,
+					recovery_probe_interval_minutes INTEGER DEFAULT 30,
 				admin_secret TEXT DEFAULT '',
 				auto_clean_full_usage INTEGER DEFAULT 0,
 				auto_clean_error INTEGER DEFAULT 0,
 				auto_clean_expired INTEGER DEFAULT 0,
+				lazy_mode INTEGER DEFAULT 0,
 				proxy_pool_enabled INTEGER DEFAULT 0,
 				fast_scheduler_enabled INTEGER DEFAULT 0,
+				scheduler_engine TEXT DEFAULT '',
 				max_retries INTEGER DEFAULT 2,
 				max_rate_limit_retries INTEGER DEFAULT 1,
+				reasoning_effort_models TEXT DEFAULT '[]',
 				allow_remote_migration INTEGER DEFAULT 0,
 				client_compat_mode TEXT DEFAULT 'preserve',
-				codex_min_cli_version TEXT DEFAULT '0.118.0',
+				codex_min_cli_version TEXT DEFAULT '0.160.0',
+				codex_user_agent_config TEXT DEFAULT '{}',
+				codex_images_main_model TEXT DEFAULT '',
 				usage_log_mode TEXT DEFAULT 'full',
 				usage_log_batch_size INTEGER DEFAULT 200,
 				usage_log_flush_interval_seconds INTEGER DEFAULT 5,
 				stream_flush_policy TEXT DEFAULT 'immediate',
 				stream_flush_interval_ms INTEGER DEFAULT 20,
-				image_storage_config TEXT DEFAULT '{}'
-			);`,
+				first_token_mode TEXT DEFAULT 'loose',
+				first_token_timeout_seconds INTEGER DEFAULT 0,
+				image_storage_config TEXT DEFAULT '{}',
+				show_full_usage_numbers INTEGER DEFAULT 0,
+				show_upstream_model_mismatch INTEGER DEFAULT 1,
+				public_key_usage_page_enabled INTEGER DEFAULT 1,
+				public_image_studio_page_enabled INTEGER DEFAULT 1,
+				public_account_portal_page_enabled INTEGER DEFAULT 0,
+				scheduler_mode TEXT DEFAULT 'round_robin',
+				affinity_mode TEXT DEFAULT 'bounded',
+				session_affinity_spread INTEGER DEFAULT 0,
+				session_slot_buffer_enabled INTEGER DEFAULT 0,
+				session_slot_buffer_seconds INTEGER DEFAULT 10,
+				models_list_read_max_bytes INTEGER NOT NULL DEFAULT 8388608,
+					codex_force_websocket INTEGER DEFAULT 0,
+					codex_telemetry_enabled INTEGER DEFAULT 0,
+					codex_turn_state_template_cache_enabled INTEGER DEFAULT 0,
+					codex_turn_state_account_mode TEXT DEFAULT 'auto',
+					codex_telemetry_timing_debug INTEGER DEFAULT 0,
+					codex_request_compression INTEGER DEFAULT 1,
+					codex_ws_weak_network_mode INTEGER DEFAULT 0,
+					codex_ws_keepalive_enabled INTEGER DEFAULT 0,
+					codex_ws_keepalive_interval_sec INTEGER DEFAULT 60,
+					codex_ws_hide_upstream_errors INTEGER DEFAULT 1,
+					codex_ws_silent_retry_enabled INTEGER DEFAULT 1,
+					codex_ws_silent_max_retries INTEGER DEFAULT 2,
+					codex_ws_size_router_enabled INTEGER DEFAULT 1,
+					codex_ws_busy_acquire_max_wait_sec INTEGER DEFAULT 30,
+					codex_ws_busy_overflow_enabled INTEGER DEFAULT 0,
+					codex_ws_busy_patience_sec INTEGER DEFAULT 2,
+					codex_ws_stateless_slots INTEGER DEFAULT 8,
+					codex_ws_downstream_keepalive_slots INTEGER DEFAULT 8,
+					github_token TEXT DEFAULT '',
+					github_proxy_url TEXT DEFAULT '',
+					codex_overload_pause_enabled INTEGER DEFAULT 0,
+					codex_overload_threshold_percent INTEGER DEFAULT 20,
+					codex_overload_pause_minutes INTEGER DEFAULT 30,
+					codex_overload_window_minutes INTEGER DEFAULT 5,
+					overflow_auto_compact_enabled INTEGER DEFAULT 0,
+					compact_via_responses_enabled INTEGER DEFAULT 0,
+					codex_preflight_sse_passthrough_enabled INTEGER DEFAULT 0,
+					first_token_excludes_ws_acquire INTEGER DEFAULT 0,
+					codex_continue_thinking_enabled INTEGER DEFAULT 0,
+					codex_continue_max_rounds INTEGER DEFAULT 8,
+					retry_interval_ms INTEGER DEFAULT 0,
+					transport_retry_policy TEXT DEFAULT 'rotate',
+					continuous_retry_policy TEXT DEFAULT '{"enabled":false,"catch_all":false,"categories":["transport","http_429","http_5xx","stream_error"],"status_codes":[],"error_codes":[],"max_duration_seconds":600}',
+					codex_synced_cli_version TEXT DEFAULT '',
+					codex_synced_desktop_mac_build TEXT DEFAULT '',
+					codex_synced_desktop_windows_build TEXT DEFAULT '',
+					codex_synced_vscode_build TEXT DEFAULT '',
+					codex_cli_version_sync_enabled INTEGER DEFAULT 1,
+					codex_cli_version_sync_interval_hours INTEGER DEFAULT 12,
+					claude_synced_cli_version TEXT DEFAULT '',
+					model_pricing_overrides TEXT DEFAULT '{}',
+					model_pricing_sync_url TEXT DEFAULT '',
+					ignore_usage_limit_status INTEGER DEFAULT 0,
+					auto_reset_credits_enabled INTEGER DEFAULT 0,
+					auto_reset_credits_on_exhaustion_enabled INTEGER DEFAULT 0,
+					codex_unified_client_identity_enabled INTEGER DEFAULT 0,
+					auto_reset_credits_before_expiry_min INTEGER DEFAULT 60,
+					auto_activate_5h_window_enabled INTEGER DEFAULT 0,
+					utls_shutdown_timeout_minutes INTEGER DEFAULT 30,
+					codex_fingerprint_default_mode TEXT DEFAULT 'off',
+					response_cache_local_max_bytes INTEGER NOT NULL DEFAULT 67108864,
+					response_cache_local_max_entry_bytes INTEGER NOT NULL DEFAULT 8388608,
+					response_cache_reconstruct_max_bytes INTEGER NOT NULL DEFAULT 67108864,
+					response_cache_write_policy TEXT NOT NULL DEFAULT 'always',
+					response_cache_config_generation INTEGER NOT NULL DEFAULT 1,
+					relay_model_cooldown_mode TEXT NOT NULL DEFAULT 'off',
+					relay_model_cooldown_seconds INTEGER NOT NULL DEFAULT 2,
+					relay_model_cooldown_backoff_enabled INTEGER NOT NULL DEFAULT 0,
+					oauth_model_cooldown_mode TEXT NOT NULL DEFAULT 'adaptive',
+					oauth_model_cooldown_seconds INTEGER NOT NULL DEFAULT 300,
+					oauth_model_cooldown_backoff_enabled INTEGER NOT NULL DEFAULT 1,
+					oauth_unsupported_model_cooldown_seconds INTEGER NOT NULL DEFAULT 1800
+				);`,
+		modelCapabilitiesSchema,
+		daybreakSchema,
 		`CREATE TABLE IF NOT EXISTS model_registry (
 			id TEXT PRIMARY KEY,
 			enabled INTEGER DEFAULT 1,
@@ -145,7 +425,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			test_ip TEXT DEFAULT '',
 			test_location TEXT DEFAULT '',
-			test_latency_ms INTEGER DEFAULT 0
+			test_latency_ms INTEGER DEFAULT 0,
+			test_status TEXT NOT NULL DEFAULT 'untested'
 		);`,
 		`CREATE TABLE IF NOT EXISTS account_events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -208,35 +489,52 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			source TEXT DEFAULT '',
 			endpoint TEXT DEFAULT '',
+			request_protocol TEXT DEFAULT '',
+			request_provider TEXT DEFAULT '',
 			model TEXT DEFAULT '',
 			action TEXT DEFAULT '',
 			mode TEXT DEFAULT '',
 			score INTEGER DEFAULT 0,
+			audit_score INTEGER DEFAULT 0,
 			threshold_value INTEGER DEFAULT 0,
+			policy_profile TEXT DEFAULT '',
+			reason_code TEXT DEFAULT '',
+			primary_origin TEXT DEFAULT '',
+			strike_eligible INTEGER DEFAULT 0,
 			matched_patterns TEXT DEFAULT '[]',
 			text_preview TEXT DEFAULT '',
+			match_context TEXT DEFAULT '',
 			api_key_id INTEGER DEFAULT 0,
 			api_key_name TEXT DEFAULT '',
 			api_key_masked TEXT DEFAULT '',
 			client_ip TEXT DEFAULT '',
-			error_code TEXT DEFAULT ''
+			error_code TEXT DEFAULT '',
+			review_model TEXT DEFAULT '',
+			review_flagged INTEGER DEFAULT 0,
+			review_error TEXT DEFAULT '',
+			reviewed INTEGER DEFAULT 0,
+			review_confidence REAL NULL,
+			review_threshold REAL NULL,
+			review_reason TEXT DEFAULT '',
+			review_endpoint TEXT DEFAULT '',
+			review_request_mode TEXT DEFAULT '',
+			review_latency_ms INTEGER NULL,
+			full_text TEXT DEFAULT ''
 		);`,
-		`CREATE TABLE IF NOT EXISTS account_groups (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			description TEXT DEFAULT '',
-			color TEXT DEFAULT '',
-			sort_order INTEGER DEFAULT 0,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		`CREATE TABLE IF NOT EXISTS prompt_review_profiles (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			base_url TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			request_mode TEXT NOT NULL DEFAULT 'moderations',
+			adapter_json TEXT NOT NULL DEFAULT '{}',
+			api_keys TEXT NOT NULL DEFAULT '',
+			timeout_seconds INTEGER NOT NULL DEFAULT 10,
+			active INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
-		`CREATE TABLE IF NOT EXISTS account_group_members (
-			account_id INTEGER NOT NULL,
-			group_id INTEGER NOT NULL,
-			PRIMARY KEY (account_id, group_id)
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_account_group_members_group ON account_group_members(group_id);`,
-		`CREATE INDEX IF NOT EXISTS idx_account_group_members_account ON account_group_members(account_id);`,
+		`DROP TABLE IF EXISTS prompt_filter_secrets;`,
 	}
 	for _, stmt := range statements {
 		if _, err := db.conn.ExecContext(ctx, stmt); err != nil {
@@ -253,21 +551,60 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"accounts", "cooldown_until", "TIMESTAMP NULL"},
 		{"accounts", "score_bias_override", "INTEGER NULL"},
 		{"accounts", "base_concurrency_override", "INTEGER NULL"},
+		{"accounts", "tags", "TEXT DEFAULT '[]'"},
+		{"accounts", "note", "TEXT DEFAULT ''"},
 		{"accounts", "deleted_at", "TIMESTAMP NULL"},
+		{"accounts", "credential_generation", "INTEGER NOT NULL DEFAULT 1"},
+		{"usage_logs", "channel", "TEXT DEFAULT ''"},
 		{"usage_logs", "input_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "output_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "reasoning_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "first_token_ms", "INTEGER DEFAULT 0"},
+		{"usage_logs", "ws_acquire_ms", "INTEGER DEFAULT 0"},
 		{"usage_logs", "reasoning_effort", "TEXT DEFAULT ''"},
 		{"usage_logs", "effective_model", "TEXT DEFAULT ''"},
+		{"usage_logs", "daybreak_program", "TEXT NOT NULL DEFAULT ''"},
+		{"usage_logs", "upstream_response_model", "TEXT"},
+		{"usage_logs", "upstream_model_mismatch", "INTEGER"},
 		{"usage_logs", "inbound_endpoint", "TEXT DEFAULT ''"},
 		{"usage_logs", "upstream_endpoint", "TEXT DEFAULT ''"},
 		{"usage_logs", "stream", "INTEGER DEFAULT 0"},
+		{"usage_logs", "via_websocket", "INTEGER DEFAULT 0"},
+		{"usage_logs", "compact", "INTEGER DEFAULT 0"},
+		{"usage_logs", "has_compaction_history", "INTEGER DEFAULT 0"},
+		{"usage_logs", "ultra", "INTEGER DEFAULT 0"},
 		{"usage_logs", "cached_tokens", "INTEGER DEFAULT 0"},
+		{"usage_logs", "image_input_tokens", "INTEGER DEFAULT 0"},
+		{"usage_logs", "image_output_tokens", "INTEGER DEFAULT 0"},
+		{"usage_logs", "cached_image_input_tokens", "INTEGER DEFAULT 0"},
+
+		{"usage_logs", "cache_write_5m_tokens", "INTEGER DEFAULT 0"},
+		{"usage_logs", "cache_write_1h_tokens", "INTEGER DEFAULT 0"},
 		{"usage_logs", "service_tier", "TEXT DEFAULT ''"},
+		{"usage_logs", "requested_service_tier", "TEXT DEFAULT ''"},
+		{"usage_logs", "actual_service_tier", "TEXT DEFAULT ''"},
+		{"usage_logs", "billing_service_tier", "TEXT DEFAULT ''"},
 		{"usage_logs", "api_key_id", "INTEGER DEFAULT 0"},
 		{"usage_logs", "api_key_name", "TEXT DEFAULT ''"},
 		{"usage_logs", "api_key_masked", "TEXT DEFAULT ''"},
+		{"usage_logs", "client_ip", "TEXT DEFAULT ''"},
+		{"usage_logs", "client_user_agent", "TEXT DEFAULT ''"},
+		{"usage_logs", "upstream_user_agent", "TEXT DEFAULT ''"},
+		{"usage_logs", "user_agent_overridden", "INTEGER DEFAULT 0"},
+		{"usage_logs", "turn_state_overridden", "INTEGER DEFAULT 0"},
+		{"usage_logs", "turn_state_rewrite_note", "TEXT DEFAULT ''"},
+		{"usage_logs", "internal_reason", "TEXT DEFAULT ''"},
+		{"usage_logs", "parent_request_id", "TEXT DEFAULT ''"},
+		{"usage_logs", "request_id", "TEXT DEFAULT ''"},
+		{"usage_logs", "upstream_request_id", "TEXT DEFAULT ''"},
+		{"usage_logs", "upstream_proxy_id", "INTEGER DEFAULT 0"},
+		{"usage_logs", "upstream_proxy_name", "TEXT DEFAULT ''"},
+		{"usage_logs", "injected_turn_state", "TEXT DEFAULT ''"},
+		{"usage_logs", "upstream_turn_state", "TEXT DEFAULT ''"},
+		{"usage_logs", "user_billing_mode", "TEXT DEFAULT ''"},
+		{"usage_logs", "image_unit_price", "REAL DEFAULT 0"},
+		{"usage_logs", "billed_image_count", "INTEGER DEFAULT 0"},
+		{"usage_logs", "video_seconds", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_count", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_width", "INTEGER DEFAULT 0"},
 		{"usage_logs", "image_height", "INTEGER DEFAULT 0"},
@@ -280,71 +617,265 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		{"usage_logs", "attempt_index", "INTEGER DEFAULT 0"},
 		{"usage_logs", "upstream_error_kind", "TEXT DEFAULT ''"},
 		{"usage_logs", "error_message", "TEXT DEFAULT ''"},
+		{"usage_logs", "credential_generation", "INTEGER NOT NULL DEFAULT 0"},
+		{"system_settings", "continuous_retry_policy", "TEXT DEFAULT '{\"enabled\":false,\"catch_all\":false,\"categories\":[\"transport\",\"http_429\",\"http_5xx\",\"stream_error\"],\"status_codes\":[],\"error_codes\":[]}'"},
+		{"api_keys", "quota_limit", "REAL DEFAULT 0"},
+		{"api_keys", "quota_used", "REAL DEFAULT 0"},
+		{"api_keys", "total_used", "REAL DEFAULT 0"},
+		{"api_keys", "reset_count", "INTEGER DEFAULT 0"},
+		{"api_keys", "last_reset_at", "TIMESTAMP NULL"},
+		{"api_keys", "allowed_group_ids", "TEXT DEFAULT '[]'"},
+		{"api_keys", "limits", "TEXT DEFAULT '{}'"},
+		{"api_keys", "expires_at", "TIMESTAMP NULL"},
+		{"api_keys", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"account_groups", "description", "TEXT DEFAULT ''"},
+		{"account_groups", "color", "TEXT DEFAULT ''"},
+		{"account_groups", "sort_order", "INTEGER DEFAULT 0"},
+		{"account_groups", "base_concurrency_override", "INTEGER NULL"},
+		{"account_groups", "proxy_urls", "TEXT DEFAULT '[]'"},
+		{"account_groups", "channel", "TEXT DEFAULT 'codex'"},
+		{"account_groups", "created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"},
+		{"account_groups", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"},
 		{"system_settings", "site_name", "TEXT DEFAULT 'CodexProxy'"},
 		{"system_settings", "site_logo", "TEXT DEFAULT ''"},
+		{"system_settings", "background_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "grok_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "claude_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "antigravity_oauth_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "invite_guide_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "visible_channels_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "channel_test_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "antigravity_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "test_content", "TEXT DEFAULT 'hi'"},
 		{"system_settings", "pg_max_conns", "INTEGER DEFAULT 50"},
 		{"system_settings", "redis_pool_size", "INTEGER DEFAULT 30"},
 		{"system_settings", "auto_clean_unauthorized", "INTEGER DEFAULT 0"},
 		{"system_settings", "auto_clean_rate_limited", "INTEGER DEFAULT 0"},
 		{"system_settings", "background_refresh_interval_minutes", "INTEGER DEFAULT 2"},
 		{"system_settings", "usage_probe_max_age_minutes", "INTEGER DEFAULT 10"},
+		{"system_settings", "usage_probe_concurrency", "INTEGER DEFAULT 16"},
+		{"system_settings", "usage_probe_responses_fallback_enabled", "INTEGER DEFAULT 1"},
 		{"system_settings", "recovery_probe_interval_minutes", "INTEGER DEFAULT 30"},
 		{"system_settings", "admin_secret", "TEXT DEFAULT ''"},
 		{"system_settings", "auto_clean_full_usage", "INTEGER DEFAULT 0"},
 		{"system_settings", "auto_clean_error", "INTEGER DEFAULT 0"},
 		{"system_settings", "auto_clean_expired", "INTEGER DEFAULT 0"},
+		{"system_settings", "lazy_mode", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_oauth_keepalive_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "proxy_pool_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "fast_scheduler_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "scheduler_engine", "TEXT DEFAULT ''"},
+		{"system_settings", "codex_force_websocket", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_telemetry_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_turn_state_template_cache_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_turn_state_account_mode", "TEXT DEFAULT 'auto'"},
+		{"system_settings", "codex_telemetry_timing_debug", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_request_compression", "INTEGER DEFAULT 1"},
+		{"system_settings", "codex_ws_weak_network_mode", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_ws_keepalive_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_ws_keepalive_interval_sec", "INTEGER DEFAULT 60"},
+		{"system_settings", "codex_ws_hide_upstream_errors", "INTEGER DEFAULT 1"},
+		{"system_settings", "codex_ws_silent_retry_enabled", "INTEGER DEFAULT 1"},
+		{"system_settings", "codex_ws_silent_max_retries", "INTEGER DEFAULT 2"},
+		{"system_settings", "codex_ws_size_router_enabled", "INTEGER DEFAULT 1"},
+		{"system_settings", "codex_ws_busy_acquire_max_wait_sec", "INTEGER DEFAULT 30"},
+		{"system_settings", "codex_ws_busy_overflow_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_ws_busy_patience_sec", "INTEGER DEFAULT 2"},
+		{"system_settings", "codex_ws_stateless_slots", "INTEGER DEFAULT 8"},
+		{"system_settings", "codex_ws_downstream_keepalive_slots", "INTEGER DEFAULT 8"},
+		{"system_settings", "github_token", "TEXT DEFAULT ''"},
+		{"system_settings", "github_proxy_url", "TEXT DEFAULT ''"},
+		{"system_settings", "codex_overload_pause_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_overload_threshold_percent", "INTEGER DEFAULT 20"},
+		{"system_settings", "codex_overload_pause_minutes", "INTEGER DEFAULT 30"},
+		{"system_settings", "codex_overload_window_minutes", "INTEGER DEFAULT 5"},
+		{"system_settings", "overflow_auto_compact_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "compact_via_responses_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_preflight_sse_passthrough_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "first_token_excludes_ws_acquire", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_continue_thinking_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_continue_max_rounds", "INTEGER DEFAULT 8"},
+		{"system_settings", "retry_interval_ms", "INTEGER DEFAULT 0"},
+		{"system_settings", "transport_retry_policy", "TEXT DEFAULT 'rotate'"},
+		{"system_settings", "codex_synced_cli_version", "TEXT DEFAULT ''"},
+		{"system_settings", "codex_synced_desktop_mac_build", "TEXT DEFAULT ''"},
+		{"system_settings", "codex_synced_desktop_windows_build", "TEXT DEFAULT ''"},
+		{"system_settings", "codex_synced_vscode_build", "TEXT DEFAULT ''"},
+		{"system_settings", "codex_cli_version_sync_enabled", "INTEGER DEFAULT 1"},
+		{"system_settings", "codex_cli_version_sync_interval_hours", "INTEGER DEFAULT 12"},
+		{"system_settings", "claude_synced_cli_version", "TEXT DEFAULT ''"},
+		{"system_settings", "model_pricing_overrides", "TEXT DEFAULT '{}'"},
+		{"system_settings", "model_pricing_sync_url", "TEXT DEFAULT ''"},
+		{"system_settings", "ignore_usage_limit_status", "INTEGER DEFAULT 0"},
+		{"system_settings", "auto_reset_credits_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "auto_reset_credits_on_exhaustion_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "codex_unified_client_identity_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "auto_reset_credits_before_expiry_min", "INTEGER DEFAULT 60"},
+		{"system_settings", "auto_activate_5h_window_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "utls_shutdown_timeout_minutes", "INTEGER DEFAULT 30"},
+		{"system_settings", "codex_fingerprint_default_mode", "TEXT DEFAULT 'off'"},
+		{"system_settings", "response_cache_local_max_bytes", "INTEGER NOT NULL DEFAULT 67108864"},
+		{"system_settings", "response_cache_local_max_entry_bytes", "INTEGER NOT NULL DEFAULT 8388608"},
+		{"system_settings", "response_cache_reconstruct_max_bytes", "INTEGER NOT NULL DEFAULT 67108864"},
+		{"system_settings", "response_cache_write_policy", "TEXT NOT NULL DEFAULT 'always'"},
+		{"system_settings", "response_cache_config_generation", "INTEGER NOT NULL DEFAULT 1"},
+		{"system_settings", "relay_model_cooldown_mode", "TEXT NOT NULL DEFAULT 'off'"},
+		{"system_settings", "relay_model_cooldown_seconds", "INTEGER NOT NULL DEFAULT 2"},
+		{"system_settings", "relay_model_cooldown_backoff_enabled", "INTEGER NOT NULL DEFAULT 0"},
+		{"system_settings", "oauth_model_cooldown_mode", "TEXT NOT NULL DEFAULT 'adaptive'"},
+		{"system_settings", "oauth_model_cooldown_seconds", "INTEGER NOT NULL DEFAULT 300"},
+		{"system_settings", "oauth_model_cooldown_backoff_enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"system_settings", "oauth_unsupported_model_cooldown_seconds", "INTEGER NOT NULL DEFAULT 1800"},
 		{"system_settings", "max_retries", "INTEGER DEFAULT 2"},
 		{"system_settings", "max_rate_limit_retries", "INTEGER DEFAULT 1"},
 		{"system_settings", "allow_remote_migration", "INTEGER DEFAULT 0"},
 		{"system_settings", "model_mapping", "TEXT DEFAULT '{}'"},
+		{"system_settings", "codex_model_mapping", "TEXT DEFAULT '{}'"},
+		{"system_settings", "payload_rules", "TEXT DEFAULT '{}'"},
+		{"system_settings", "reasoning_effort_models", "TEXT DEFAULT '[]'"},
 		{"system_settings", "resin_url", "TEXT DEFAULT ''"},
 		{"system_settings", "resin_platform_name", "TEXT DEFAULT ''"},
 		{"system_settings", "prompt_filter_enabled", "INTEGER DEFAULT 0"},
 		{"system_settings", "prompt_filter_mode", "TEXT DEFAULT 'monitor'"},
 		{"system_settings", "prompt_filter_threshold", "INTEGER DEFAULT 50"},
 		{"system_settings", "prompt_filter_strict_threshold", "INTEGER DEFAULT 90"},
+		{"system_settings", "prompt_filter_strict_terminal_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "prompt_filter_advanced_config", "TEXT DEFAULT '{}'"},
 		{"system_settings", "prompt_filter_log_matches", "INTEGER DEFAULT 1"},
 		{"system_settings", "prompt_filter_max_text_length", "INTEGER DEFAULT 81920"},
 		{"system_settings", "prompt_filter_sensitive_words", "TEXT DEFAULT ''"},
 		{"system_settings", "prompt_filter_custom_patterns", "TEXT DEFAULT '[]'"},
 		{"system_settings", "prompt_filter_disabled_patterns", "TEXT DEFAULT '[]'"},
+		{"system_settings", "prompt_filter_review_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "prompt_filter_review_api_key", "TEXT DEFAULT ''"},
+		{"system_settings", "prompt_filter_review_base_url", "TEXT DEFAULT 'https://api.deepseek.com'"},
+		{"system_settings", "prompt_filter_review_model", "TEXT DEFAULT 'deepseek-v4-flash'"},
+		{"system_settings", "prompt_filter_review_timeout_seconds", "INTEGER DEFAULT 10"},
+		{"system_settings", "prompt_filter_review_fail_closed", "INTEGER DEFAULT 1"},
+		{"prompt_filter_logs", "review_model", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "review_flagged", "INTEGER DEFAULT 0"},
+		{"prompt_filter_logs", "review_error", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "reviewed", "INTEGER DEFAULT 0"},
+		{"prompt_filter_logs", "review_confidence", "REAL NULL"},
+		{"prompt_filter_logs", "review_threshold", "REAL NULL"},
+		{"prompt_filter_logs", "review_reason", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "review_endpoint", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "review_request_mode", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "review_latency_ms", "INTEGER NULL"},
+		{"prompt_filter_logs", "full_text", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "match_context", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "audit_score", "INTEGER DEFAULT 0"},
+		{"prompt_filter_logs", "policy_profile", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "reason_code", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "primary_origin", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "strike_eligible", "INTEGER DEFAULT 0"},
+		{"prompt_filter_logs", "request_protocol", "TEXT DEFAULT ''"},
+		{"prompt_filter_logs", "request_provider", "TEXT DEFAULT ''"},
 		{"system_settings", "client_compat_mode", "TEXT DEFAULT 'preserve'"},
-		{"system_settings", "codex_min_cli_version", "TEXT DEFAULT '0.118.0'"},
+		{"system_settings", "codex_min_cli_version", "TEXT DEFAULT '0.160.0'"},
+		{"system_settings", "codex_user_agent_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "codex_images_main_model", "TEXT DEFAULT ''"},
 		{"system_settings", "usage_log_mode", "TEXT DEFAULT 'full'"},
 		{"system_settings", "usage_log_batch_size", "INTEGER DEFAULT 200"},
 		{"system_settings", "usage_log_flush_interval_seconds", "INTEGER DEFAULT 5"},
 		{"system_settings", "stream_flush_policy", "TEXT DEFAULT 'immediate'"},
 		{"system_settings", "stream_flush_interval_ms", "INTEGER DEFAULT 20"},
+		{"system_settings", "first_token_mode", "TEXT DEFAULT 'loose'"},
+		{"system_settings", "first_token_timeout_seconds", "INTEGER DEFAULT 0"},
+		{"system_settings", "billing_tier_policy", "TEXT DEFAULT 'actual'"},
 		{"system_settings", "image_storage_config", "TEXT DEFAULT '{}'"},
+		{"system_settings", "show_full_usage_numbers", "INTEGER DEFAULT 0"},
+		{"system_settings", "show_upstream_model_mismatch", "INTEGER DEFAULT 1"},
+		{"system_settings", "public_key_usage_page_enabled", "INTEGER DEFAULT 1"},
+		{"system_settings", "public_image_studio_page_enabled", "INTEGER DEFAULT 1"},
+		{"system_settings", "public_account_portal_page_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "scheduler_mode", "TEXT DEFAULT 'round_robin'"},
+		{"system_settings", "affinity_mode", "TEXT DEFAULT 'bounded'"},
+		{"system_settings", "session_affinity_spread", "INTEGER DEFAULT 0"},
+		{"system_settings", "session_slot_buffer_enabled", "INTEGER DEFAULT 0"},
+		{"system_settings", "session_slot_buffer_seconds", "INTEGER DEFAULT 10"},
+		{"system_settings", "models_list_read_max_bytes", "INTEGER NOT NULL DEFAULT 8388608"},
+		{"system_settings", "auto_pause_5h_threshold", "REAL DEFAULT 0"},
+		{"system_settings", "auto_pause_7d_threshold", "REAL DEFAULT 0"},
+		{"system_settings", "auto_pause_5h_guard_band_percent", "REAL DEFAULT 5"},
+		{"system_settings", "auto_pause_5h_guard_concurrency", "INTEGER DEFAULT 1"},
+		{"system_settings", "smart_pacing_enabled", "BOOLEAN DEFAULT 0"},
+		{"system_settings", "smart_pacing_min_concurrency", "INTEGER DEFAULT 1"},
+		{"system_settings", "smart_pacing_windows", "TEXT DEFAULT '5h,7d'"},
+		{"account_groups", "auto_pause_5h_threshold", "REAL DEFAULT 0"},
+		{"account_groups", "auto_pause_7d_threshold", "REAL DEFAULT 0"},
 		{"accounts", "enabled", "INTEGER DEFAULT 1"},
 		{"accounts", "locked", "INTEGER DEFAULT 0"},
+		{"accounts", "credit_enabled", "INTEGER DEFAULT 0"},
+		{"accounts", "credit_skip_usage_window", "INTEGER DEFAULT 0"},
+		{"accounts", "skip_warm_tier", "INTEGER DEFAULT 0"},
 		{"accounts", "image_quota_remaining", "INTEGER NULL"},
 		{"accounts", "image_quota_total", "INTEGER NULL"},
 		{"accounts", "today_used_count", "INTEGER DEFAULT 0"},
 		{"accounts", "image_quota_reset_at", "TEXT NULL"},
-		{"accounts", "tags", "TEXT DEFAULT '[]'"},
-		{"api_keys", "allowed_group_ids", "TEXT DEFAULT '[]'"},
 		{"proxies", "test_ip", "TEXT DEFAULT ''"},
 		{"proxies", "test_location", "TEXT DEFAULT ''"},
 		{"proxies", "test_latency_ms", "INTEGER DEFAULT 0"},
+		{"proxies", "test_status", "TEXT NOT NULL DEFAULT 'untested'"},
 	}
 	for _, column := range columns {
 		if err := db.ensureSQLiteColumn(ctx, column.table, column.name, column.def); err != nil {
 			return err
 		}
 	}
+	if _, err := db.conn.ExecContext(ctx, `
+		UPDATE proxies
+		SET test_status = 'success'
+		WHERE COALESCE(test_status, 'untested') = 'untested'
+		  AND (COALESCE(test_ip, '') <> '' OR COALESCE(test_location, '') <> '' OR COALESCE(test_latency_ms, 0) > 0)
+	`); err != nil {
+		return err
+	}
+
+	// 审查服务从未配置过(无 key、未启用)且仍是旧出厂默认时,迁移到新的
+	// DeepSeek 默认供应商;真在用 OpenAI 审核的部署不受影响。
+	if _, err := db.conn.ExecContext(ctx, `
+		UPDATE system_settings
+		SET prompt_filter_review_base_url = 'https://api.deepseek.com',
+			prompt_filter_review_model = 'deepseek-v4-flash'
+		WHERE COALESCE(prompt_filter_review_api_key, '') = ''
+		  AND COALESCE(prompt_filter_review_enabled, 0) = 0
+		  AND COALESCE(prompt_filter_review_base_url, '') = 'https://api.openai.com'
+		  AND COALESCE(prompt_filter_review_model, '') = 'omni-moderation-latest'
+	`); err != nil {
+		return err
+	}
+
+	// gpt-5.4 全系已下线(2026-09 上游 ChatGPT 账号 manifest 不再包含):仍指向它的
+	// 连通性测试模型改回出厂默认,否则测连必 400。
+	if _, err := db.conn.ExecContext(ctx, `
+		UPDATE system_settings
+		SET test_model = 'gpt-5.5'
+		WHERE LOWER(COALESCE(test_model, '')) IN ('gpt-5.4', 'gpt-5.4-mini')
+	`); err != nil {
+		return err
+	}
 
 	indexStatements := []string{
 		`CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);`,
 		`CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);`,
 		`CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_until ON accounts(cooldown_until);`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_upstream_type_id ON accounts(LOWER(COALESCE(json_extract(credentials, '$.upstream_type'), '')), id);`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_active_upstream_type_id ON accounts(LOWER(COALESCE(json_extract(credentials, '$.upstream_type'), '')), id) WHERE status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted';`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_created_id ON accounts(created_at, id);`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_updated_id ON accounts(updated_at, id);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_logs_request_id ON usage_logs(request_id) WHERE request_id <> '';`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_logs_upstream_request_id ON usage_logs(upstream_request_id) WHERE upstream_request_id <> '';`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_id ON usage_logs(account_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_created_at ON usage_logs(account_id, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_generation_created_at ON usage_logs(account_id, credential_generation, created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_created_status ON usage_logs(created_at, status_code);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_account_status ON usage_logs(account_id, status_code);`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_logs_api_key_created_at ON usage_logs(api_key_id, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_account_group_members_group ON account_group_members(group_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_account_group_members_account ON account_group_members(account_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_account_model_cooldowns_reset_at ON account_model_cooldowns(reset_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_account_events_created ON account_events(created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_account_events_type_created ON account_events(event_type, created_at);`,
@@ -356,6 +887,8 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_image_assets_job_id ON image_assets(job_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_created_at ON prompt_filter_logs(created_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_action_created_at ON prompt_filter_logs(action, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_source_id ON prompt_filter_logs(source, id DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_reviewed_id ON prompt_filter_logs(reviewed, id DESC);`,
 	}
 	for _, stmt := range indexStatements {
 		if _, err := db.conn.ExecContext(ctx, stmt); err != nil {
@@ -375,8 +908,11 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 	`); err != nil {
 		return err
 	}
+	if err := db.installSchedulerOutboxTriggers(ctx); err != nil {
+		return fmt.Errorf("install scheduler outbox triggers: %w", err)
+	}
 
-	return nil
+	return db.runDataMigrationsWithTimeout()
 }
 
 func (db *DB) ensureSQLiteColumn(ctx context.Context, table string, name string, columnDef string) error {
@@ -421,6 +957,7 @@ func (db *DB) getTrafficSnapshotSQLite(ctx context.Context) (*TrafficSnapshot, e
 		SELECT created_at, total_tokens
 		FROM usage_logs
 		WHERE created_at >= $1
+		  AND TRIM(COALESCE(internal_reason, '')) = ''
 	`, db.timeArg(time.Now().Add(-5*time.Minute)))
 	if err != nil {
 		return nil, err
@@ -475,165 +1012,80 @@ func (db *DB) getTrafficSnapshotSQLite(ctx context.Context) (*TrafficSnapshot, e
 	return result, nil
 }
 
-func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Time, bucketMinutes int) (*ChartAggregation, error) {
+func (db *DB) getChartAggregationSQLite(ctx context.Context, start, end time.Time, bucketMinutes int, channel string) (*ChartAggregation, error) {
 	startArg, endArg := db.timeRangeArgs(start, end)
-	rows, err := db.conn.QueryContext(ctx, `
-		SELECT created_at, duration_ms, input_tokens, prompt_tokens, output_tokens, reasoning_tokens, cached_tokens, model, status_code
+	if bucketMinutes < 1 {
+		bucketMinutes = 5
+	}
+	query := `
+		SELECT
+			datetime((CAST(strftime('%s', created_at) AS INTEGER) / ($3 * 60)) * ($3 * 60), 'unixepoch') AS bucket,
+			COUNT(*), COALESCE(AVG(duration_ms), 0),
+			COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cached_tokens), 0),
+			COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END), 0)
 		FROM usage_logs
-		WHERE created_at >= $1 AND created_at <= $2
+		WHERE created_at >= $1 AND created_at < $2
 		  AND status_code <> 499
-	`, startArg, endArg)
+		  AND TRIM(COALESCE(internal_reason, '')) = ''
+	`
+	args := []interface{}{startArg, endArg, bucketMinutes}
+	if channel != "" {
+		query += " AND channel = $4"
+		args = append(args, channel)
+	}
+	query += " GROUP BY 1 ORDER BY 1"
+	rows, err := db.conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	type bucketAgg struct {
-		requests        int64
-		totalLatency    float64
-		promptTokens    int64
-		inputTokens     int64
-		outputTokens    int64
-		reasoningTokens int64
-		cachedTokens    int64
-		errors4xx       int64
-		errors5xx       int64
-	}
-
 	result := &ChartAggregation{}
-	timelineMap := make(map[string]*bucketAgg)
-	type modelAgg struct {
-		model        string
-		requests     int64
-		totalLatency float64
-		inputTokens  int64
-		cachedTokens int64
-	}
-	modelMap := make(map[string]*modelAgg)
-
 	for rows.Next() {
-		var createdRaw interface{}
-		var durationMs int
-		var inputTokens int64
-		var promptTokens int64
-		var outputTokens int64
-		var reasoningTokens int64
-		var cachedTokens int64
-		var model sql.NullString
-		var statusCode int
-		if err := rows.Scan(&createdRaw, &durationMs, &inputTokens, &promptTokens, &outputTokens, &reasoningTokens, &cachedTokens, &model, &statusCode); err != nil {
+		var point ChartTimelinePoint
+		if err := rows.Scan(&point.Bucket, &point.Requests, &point.AvgLatency, &point.InputTokens,
+			&point.OutputTokens, &point.ReasoningTokens, &point.CachedTokens, &point.Errors4xx, &point.Errors5xx); err != nil {
 			return nil, err
 		}
-		createdAt, err := parseDBTimeValue(createdRaw)
-		if err != nil || createdAt.IsZero() {
-			continue
-		}
-
-		bucket := createdAt.Truncate(time.Duration(bucketMinutes) * time.Minute).Format("2006-01-02T15:04:05")
-		agg, ok := timelineMap[bucket]
-		if !ok {
-			agg = &bucketAgg{}
-			timelineMap[bucket] = agg
-		}
-		agg.requests++
-		agg.totalLatency += float64(durationMs)
-		agg.promptTokens += promptTokens
-		effectiveInputTokens := inputTokens
-		if inputTokens > 0 {
-			effectiveInputTokens = inputTokens
-		} else {
-			effectiveInputTokens = promptTokens
-		}
-		agg.inputTokens += effectiveInputTokens
-		agg.outputTokens += outputTokens
-		agg.reasoningTokens += reasoningTokens
-		agg.cachedTokens += cachedTokens
-		if statusCode >= 400 && statusCode < 500 {
-			agg.errors4xx++
-		}
-		if statusCode >= 500 && statusCode < 600 {
-			agg.errors5xx++
-		}
-
-		modelName := "unknown"
-		if model.Valid && model.String != "" {
-			modelName = model.String
-		}
-		mAgg, ok := modelMap[modelName]
-		if !ok {
-			mAgg = &modelAgg{model: modelName}
-			modelMap[modelName] = mAgg
-		}
-		mAgg.requests++
-		mAgg.totalLatency += float64(durationMs)
-		mAgg.inputTokens += effectiveInputTokens
-		mAgg.cachedTokens += cachedTokens
+		point.Bucket = strings.Replace(point.Bucket, " ", "T", 1) + "Z"
+		result.Timeline = append(result.Timeline, point)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	keys := make([]string, 0, len(timelineMap))
-	for key := range timelineMap {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		agg := timelineMap[key]
-		avgLatency := 0.0
-		if agg.requests > 0 {
-			avgLatency = agg.totalLatency / float64(agg.requests)
-		}
-		result.Timeline = append(result.Timeline, ChartTimelinePoint{
-			Bucket:          key,
-			Requests:        agg.requests,
-			AvgLatency:      avgLatency,
-			PromptTokens:    agg.promptTokens,
-			InputTokens:     agg.inputTokens,
-			OutputTokens:    agg.outputTokens,
-			ReasoningTokens: agg.reasoningTokens,
-			CachedTokens:    agg.cachedTokens,
-			CacheHitRate:    calculateCacheRate(agg.cachedTokens, agg.inputTokens),
-			Errors4xx:       agg.errors4xx,
-			Errors5xx:       agg.errors5xx,
-		})
-	}
 	if result.Timeline == nil {
 		result.Timeline = []ChartTimelinePoint{}
 	}
 
-	models := make([]modelAgg, 0, len(modelMap))
-	for _, agg := range modelMap {
-		models = append(models, *agg)
+	modelQuery := `SELECT COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown'), COUNT(*)
+		FROM usage_logs WHERE created_at >= $1 AND created_at < $2 AND status_code <> 499
+		  AND TRIM(COALESCE(internal_reason, '')) = ''`
+	modelArgs := []interface{}{startArg, endArg}
+	if channel != "" {
+		modelQuery += " AND channel = $3"
+		modelArgs = append(modelArgs, channel)
 	}
-	sort.Slice(models, func(i, j int) bool {
-		if models[i].requests == models[j].requests {
-			return models[i].model < models[j].model
-		}
-		return models[i].requests > models[j].requests
-	})
-	if len(models) > 10 {
-		models = models[:10]
+	modelQuery += " GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10"
+	modelRows, err := db.conn.QueryContext(ctx, modelQuery, modelArgs...)
+	if err != nil {
+		return nil, err
 	}
-	for _, model := range models {
-		avgLatency := 0.0
-		if model.requests > 0 {
-			avgLatency = model.totalLatency / float64(model.requests)
+	defer modelRows.Close()
+	for modelRows.Next() {
+		var point ChartModelPoint
+		if err := modelRows.Scan(&point.Model, &point.Requests); err != nil {
+			return nil, err
 		}
-		result.Models = append(result.Models, ChartModelPoint{
-			Model:        model.model,
-			Requests:     model.requests,
-			AvgLatency:   avgLatency,
-			InputTokens:  model.inputTokens,
-			CachedTokens: model.cachedTokens,
-			CacheHitRate: calculateCacheRate(model.cachedTokens, model.inputTokens),
-		})
+		result.Models = append(result.Models, point)
 	}
 	if result.Models == nil {
 		result.Models = []ChartModelPoint{}
 	}
 
-	return result, nil
+	return result, modelRows.Err()
 }
 
 // getAccountEventTrendSQLite SQLite 版账号事件趋势聚合（内存分桶）
@@ -710,118 +1162,4 @@ func (db *DB) getAccountEventTrendSQLite(ctx context.Context, start, end time.Ti
 		result = append(result, AccountEventPoint{Bucket: k, Added: agg.added, Deleted: agg.deleted})
 	}
 	return result, nil
-}
-
-// getUsageStatsSQLite SQLite 版使用统计（内存聚合，避免 PG 特有语法）
-func (db *DB) getUsageStatsSQLite(ctx context.Context) (*UsageStats, error) {
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	minuteAgo := now.Add(-1 * time.Minute)
-
-	rows, err := db.conn.QueryContext(ctx, `
-			SELECT created_at, total_tokens, prompt_tokens, completion_tokens,
-			       CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END,
-			       cached_tokens, duration_ms, first_token_ms, status_code, account_billed, user_billed
-			FROM usage_logs
-			WHERE created_at >= $1 AND status_code <> 499
-		`, db.timeArg(todayStart))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	stats := &UsageStats{}
-	var todayErrors int64
-	var totalDuration float64
-	var totalFirstToken float64
-	var firstTokenCount int64
-
-	for rows.Next() {
-		var createdRaw interface{}
-		var totalTokens, promptTokens, completionTokens, inputTokens, cachedTokens int64
-		var durationMs int
-		var firstTokenMs int
-		var statusCode int
-		var accountBilled, userBilled float64
-		if err := rows.Scan(&createdRaw, &totalTokens, &promptTokens, &completionTokens,
-			&inputTokens, &cachedTokens, &durationMs, &firstTokenMs, &statusCode, &accountBilled, &userBilled); err != nil {
-			return nil, err
-		}
-		createdAt, err := parseDBTimeValue(createdRaw)
-		if err != nil || createdAt.IsZero() {
-			continue
-		}
-
-		stats.TodayRequests++
-		stats.TodayTokens += totalTokens
-		stats.TotalPrompt += promptTokens
-		stats.TotalCompletion += completionTokens
-		stats.TodayInputTokens += inputTokens
-		stats.TodayCachedTokens += cachedTokens
-		stats.TodayAccountBilled += accountBilled
-		stats.TodayUserBilled += userBilled
-		totalDuration += float64(durationMs)
-		if firstTokenMs > 0 {
-			totalFirstToken += float64(firstTokenMs)
-			firstTokenCount++
-		}
-
-		if statusCode >= 400 {
-			todayErrors++
-		}
-		// 最近 1 分钟窗口：RPM / TPM
-		if !createdAt.Before(minuteAgo) {
-			stats.RPM++
-			stats.TPM += float64(totalTokens)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	if stats.TodayRequests > 0 {
-		stats.AvgDurationMs = totalDuration / float64(stats.TodayRequests)
-		stats.TodayCacheRate = calculateCacheRate(stats.TodayCachedTokens, stats.TodayInputTokens)
-		stats.ErrorRate = float64(todayErrors) / float64(stats.TodayRequests) * 100
-	}
-	if firstTokenCount > 0 {
-		stats.AvgFirstTokenMs = totalFirstToken / float64(firstTokenCount)
-	}
-
-	// 可见请求总数、Token 和计费总额（排除 499）
-	var visibleTotal int64
-	var currentTokens, currentPrompt, currentCompletion, currentInput, currentCached int64
-	var currentAccountBilled, currentUserBilled float64
-	_ = db.conn.QueryRowContext(ctx, `
-		SELECT COUNT(*),
-		       COALESCE(SUM(total_tokens), 0),
-		       COALESCE(SUM(prompt_tokens), 0),
-		       COALESCE(SUM(completion_tokens), 0),
-		       COALESCE(SUM(CASE WHEN input_tokens > 0 THEN input_tokens ELSE prompt_tokens END), 0),
-		       COALESCE(SUM(cached_tokens), 0),
-		       COALESCE(SUM(account_billed), 0),
-		       COALESCE(SUM(user_billed), 0)
-		FROM usage_logs
-		WHERE status_code <> 499
-	`).Scan(&visibleTotal, &currentTokens, &currentPrompt, &currentCompletion, &currentInput, &currentCached, &currentAccountBilled, &currentUserBilled)
-
-	// 基线值
-	var bReq, bTok, bPrompt, bComp, bCached int64
-	var bAccountBilled, bUserBilled float64
-	_ = db.conn.QueryRowContext(ctx, `
-		SELECT total_requests, total_tokens, prompt_tokens, completion_tokens, cached_tokens, account_billed, user_billed
-		FROM usage_stats_baseline WHERE id = 1
-	`).Scan(&bReq, &bTok, &bPrompt, &bComp, &bCached, &bAccountBilled, &bUserBilled)
-
-	stats.TotalRequests = visibleTotal + bReq
-	stats.TotalTokens = currentTokens + bTok
-	stats.TotalPrompt = currentPrompt + bPrompt
-	stats.TotalCompletion = currentCompletion + bComp
-	stats.TotalInputTokens = currentInput + bPrompt
-	stats.TotalCachedTokens = currentCached + bCached
-	stats.TotalCacheRate = calculateCacheRate(stats.TotalCachedTokens, stats.TotalInputTokens)
-	stats.TotalAccountBilled = currentAccountBilled + bAccountBilled
-	stats.TotalUserBilled = currentUserBilled + bUserBilled
-
-	return stats, nil
 }

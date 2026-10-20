@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -127,6 +128,19 @@ func (db *DB) UpsertModelRegistryRows(ctx context.Context, models []ModelRegistr
 	return nil
 }
 
+// DeleteModelRegistryRows removes the given model entries by ID. Missing IDs are ignored.
+func (db *DB) DeleteModelRegistryRows(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, err := db.conn.ExecContext(ctx, `DELETE FROM model_registry WHERE id = $1`, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetModelRegistrySyncState returns metadata about the latest upstream sync.
 func (db *DB) GetModelRegistrySyncState(ctx context.Context) (*ModelRegistrySyncState, error) {
 	var sourceURL string
@@ -134,7 +148,7 @@ func (db *DB) GetModelRegistrySyncState(ctx context.Context) (*ModelRegistrySync
 	err := db.conn.QueryRowContext(ctx, `
 		SELECT source_url, last_synced_at FROM model_registry_sync WHERE id = 1
 	`).Scan(&sourceURL, &syncedRaw)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

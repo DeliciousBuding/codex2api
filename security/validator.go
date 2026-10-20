@@ -11,18 +11,35 @@ import (
 
 // Validation constants
 const (
-	MaxModelLength         = 100
+	MaxModelLength         = 255
 	MaxEmailLength         = 255
 	MaxProxyURLLength      = 500
 	MaxTokenLength         = 8192
 	MaxHeaderSize          = 16 * 1024 // 16KB
-	AllowedModelPattern    = `^[a-zA-Z0-9._-]+$`
+	AllowedModelPattern    = `^[\p{L}\p{N}._:/@+-]+$`
 	AllowedEndpointPattern = `^[a-zA-Z0-9/_-]+$`
 )
 
-const DefaultMaxRequestBodySize = 32 * 1024 * 1024 // 32MB
+const DefaultMaxRequestBodySize = 48 * 1024 * 1024 // 48MB
 
 var MaxRequestBodySize = DefaultMaxRequestBodySize
+
+// DefaultMaxImportBodySize 是账号批量导入端点(multipart 文件上传)单独放宽的
+// 请求体上限。导入是低频管理操作,允许更大的单批载荷;其余端点保持
+// MaxRequestBodySize,避免把大 body 攻击面扩到 /v1/* 等高频推理端点。
+// 前端按大小分批发送,单批应控制在此上限内。
+const DefaultMaxImportBodySize = 200 * 1024 * 1024 // 200MB
+
+var MaxImportBodySize int64 = DefaultMaxImportBodySize
+
+// IsLargeImportUploadPath 判断请求路径是否为放宽体积上限的管理端导入端点。
+func IsLargeImportUploadPath(path string) bool {
+	if !strings.HasPrefix(path, "/api/admin/") {
+		return false
+	}
+	return strings.HasSuffix(path, "/import") ||
+		strings.HasSuffix(path, "/agent-identity/import")
+}
 
 // Dangerous patterns for XSS prevention
 var (
@@ -54,11 +71,16 @@ var (
 		regexp.MustCompile(`(?i)(refresh[_-]?token["']?\s*[:=]\s*["']?)([^"'\s&]+)`),
 		regexp.MustCompile(`(?i)(access[_-]?token["']?\s*[:=]\s*["']?)([^"'\s&]+)`),
 		regexp.MustCompile(`(?i)(id[_-]?token["']?\s*[:=]\s*["']?)([^"'\s&]+)`),
+		regexp.MustCompile(`(?i)(session[_-]?token["']?\s*[:=]\s*["']?)([^"'\s&]+)`),
 		regexp.MustCompile(`(?i)(bearer\s+)([^\s&]+)`),
 		regexp.MustCompile(`(?i)(["']?api[_-]?key["']?\s*[:=]\s*["']?)([^"'\s&]+)`),
+		regexp.MustCompile(`(?i)(["']?client[_-]?secret["']?\s*[:=]\s*["']?)([^"'\s&]+)`),
 		regexp.MustCompile(`(?i)(["']?secret["']?\s*[:=]\s*["']?)([^"'\s&]+)`),
 		regexp.MustCompile(`(?i)(["']?password["']?\s*[:=]\s*["']?)([^"'\s&]+)`),
-		regexp.MustCompile(`(?i)(sk-)([a-zA-Z0-9]{20,})`), // sk- 前缀单独作为组1
+		regexp.MustCompile(`(?i)(["']?agent[_-]?private[_-]?key["']?\s*[:=]\s*["']?)([^"'\s&]+)`),
+		regexp.MustCompile(`(?i)(sk-)([a-zA-Z0-9]{20,})`),                                    // sk- 前缀单独作为组1
+		regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`), // 裸 JWT
+		regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
 	}
 
 	// UUID pattern for token masking
@@ -112,26 +134,12 @@ func ValidateEmail(email string) error {
 }
 
 // ValidateProxyURL validates a proxy URL
-func ValidateProxyURL(rawURL string) error {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
+func ValidateProxyURL(url string) error {
+	if url == "" {
 		return nil
 	}
-	if utf8.RuneCountInString(rawURL) > MaxProxyURLLength {
+	if utf8.RuneCountInString(url) > MaxProxyURLLength {
 		return &ValidationError{Field: "proxy_url", Message: "proxy URL too long"}
-	}
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return &ValidationError{Field: "proxy_url", Message: "invalid proxy URL"}
-	}
-	if strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
-		return &ValidationError{Field: "proxy_url", Message: "proxy URL must include scheme and host"}
-	}
-	switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
-	case "http", "https", "socks5", "socks5h":
-		return nil
-	default:
-		return &ValidationError{Field: "proxy_url", Message: "unsupported proxy scheme"}
 	}
 	return nil
 }
@@ -193,18 +201,20 @@ func MaskSensitiveData(input string) string {
 	return result
 }
 
-// MaskURLCredentials masks password-like userinfo in URL strings for logs.
+// On malformed URLs prefer over-redaction: a slash can be part of the intended
+// userinfo, and cannot be treated as a trustworthy authority boundary.
+var embeddedURLCredentials = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^\s]*@`)
+
+// MaskURLCredentials masks userinfo in URLs, including URLs embedded in labels.
 func MaskURLCredentials(input string) string {
 	parsed, err := url.Parse(input)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User == nil {
-		return input
+		return embeddedURLCredentials.ReplaceAllString(input, "${1}redacted@")
 	}
-	username := parsed.User.Username()
-	if _, hasPassword := parsed.User.Password(); hasPassword {
-		parsed.User = url.UserPassword(username, "redacted")
-	} else {
-		parsed.User = url.User(username)
-	}
+	// Redact both username and password: username-only proxy credentials and
+	// malformed userinfo (which may contain further '@' characters) must not
+	// leak either half.
+	parsed.User = url.User("redacted")
 	return parsed.String()
 }
 

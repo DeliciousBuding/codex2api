@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { getTimezone } from '../utils/time'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -18,14 +19,13 @@ import {
 import { Card, CardContent } from '@/components/ui/card'
 import StateShell from './StateShell'
 import type { ChartAggregation } from '../types'
-import { TIME_RANGE_OPTIONS, getBucketConfig, type TimeRangeKey } from '../lib/timeRange'
+import { getBucketConfig, type TimeRangeKey } from '../lib/timeRange'
 
 interface DashboardUsageChartsProps {
   chartData: ChartAggregation | null
   refreshedAt: number | null
   refreshIntervalMs: number
   timeRange: TimeRangeKey
-  onTimeRangeChange: (range: TimeRangeKey) => void
   loading?: boolean
 }
 
@@ -35,11 +35,9 @@ interface TimelinePoint {
   requests: number
   avgLatency: number | null
   inputTokens: number
-  uncachedInputTokens: number
   outputTokens: number
   reasoningTokens: number
   cachedTokens: number
-  cacheHitRate: number
   errors4xx: number
   errors5xx: number
 }
@@ -48,10 +46,6 @@ interface ModelRankingPoint {
   model: string
   shortModel: string
   requests: number
-  avgLatency: number
-  inputTokens: number
-  cachedTokens: number
-  cacheHitRate: number
 }
 
 const chartMargin = { top: 8, right: 12, left: 8, bottom: 0 }
@@ -60,8 +54,9 @@ const axisColor = 'var(--color-muted-foreground)'
 const tooltipContentStyle = {
   backgroundColor: 'var(--color-card)',
   border: '1px solid var(--color-border)',
-  borderRadius: '16px',
-  boxShadow: '0 18px 40px rgba(0, 0, 0, 0.12)',
+  borderRadius: '12px',
+  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.12)',
+  padding: '10px 14px',
 }
 const tooltipLabelStyle = { color: 'var(--color-foreground)', fontWeight: 600 }
 const tooltipItemStyle = { color: 'var(--color-foreground)' }
@@ -76,7 +71,6 @@ export default function DashboardUsageCharts({
   refreshedAt,
   refreshIntervalMs,
   timeRange,
-  onTimeRangeChange,
   loading = false,
 }: DashboardUsageChartsProps) {
   const { t } = useTranslation()
@@ -99,11 +93,9 @@ export default function DashboardUsageCharts({
         requests: point.requests,
         avgLatency: point.avg_latency > 0 ? Math.round(point.avg_latency) : null,
         inputTokens: point.input_tokens,
-        uncachedInputTokens: Math.max(0, point.input_tokens - point.cached_tokens),
         outputTokens: point.output_tokens,
         reasoningTokens: point.reasoning_tokens,
         cachedTokens: point.cached_tokens,
-        cacheHitRate: point.cache_hit_rate,
         errors4xx: point.errors_4xx,
         errors5xx: point.errors_5xx,
       }
@@ -117,10 +109,6 @@ export default function DashboardUsageCharts({
         model: m.model,
         shortModel: truncateLabel(m.model, 22),
         requests: m.requests,
-        avgLatency: m.avg_latency,
-        inputTokens: m.input_tokens,
-        cachedTokens: m.cached_tokens,
-        cacheHitRate: m.cache_hit_rate,
       }))
 
     return { timelineData, modelData, sampleCount: totalRequests }
@@ -143,35 +131,11 @@ export default function DashboardUsageCharts({
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          {isLive && (
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-300 mr-2">
-              <span className="size-2 rounded-full bg-current animate-pulse" />
-              <span>{t('dashboard.liveBadge')}</span>
-            </div>
-          )}
-          <div className="inline-flex rounded-lg border border-border bg-muted/50 p-0.5">
-            {TIME_RANGE_OPTIONS.map((key) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => onTimeRangeChange(key)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200 ${
-                  timeRange === key
-                    ? 'bg-background text-foreground shadow-sm border border-border'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {t(`dashboard.timeRange${key.toUpperCase()}`)}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
 
       {loading ? (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {[0, 1, 2, 3, 4].map((i) => (
+          {[0, 1, 2, 3].map((i) => (
             <Card key={i} className="py-0">
               <CardContent className="p-6">
                 <div className="mb-5 space-y-2">
@@ -303,39 +267,11 @@ export default function DashboardUsageCharts({
                   itemStyle={tooltipItemStyle}
                 />
                 <Legend wrapperStyle={{ paddingTop: 12, fontSize: 12, color: axisColor }} />
-                <Bar dataKey="uncachedInputTokens" stackId="tokens" name={t('dashboard.seriesUncachedInputTokens')} fill="hsl(var(--info))" radius={[0, 0, 4, 4]} />
-                <Bar dataKey="cachedTokens" stackId="tokens" name={t('dashboard.seriesCachedTokens')} fill="hsl(262 83% 58%)" minPointSize={4} />
+                <Bar dataKey="inputTokens" stackId="tokens" name={t('dashboard.seriesInputTokens')} fill="hsl(var(--info))" radius={[0, 0, 4, 4]} />
                 <Bar dataKey="outputTokens" stackId="tokens" name={t('dashboard.seriesOutputTokens')} fill="hsl(var(--success))" minPointSize={4} />
-                <Bar dataKey="reasoningTokens" stackId="tokens" name={t('dashboard.seriesReasoningTokens')} fill="hsl(36 90% 55%)" radius={[4, 4, 0, 0]} minPointSize={4} />
+                <Bar dataKey="reasoningTokens" stackId="tokens" name={t('dashboard.seriesReasoningTokens')} fill="hsl(36 90% 55%)" minPointSize={4} />
+                <Bar dataKey="cachedTokens" stackId="tokens" name={t('dashboard.seriesCachedTokens')} fill="hsl(262 83% 58%)" radius={[4, 4, 0, 0]} />
               </BarChart>
-            </ResponsiveContainer>
-          </ChartCard>
-
-          <ChartCard title={t('dashboard.cacheHitRateTrend')} description={t('dashboard.cacheHitRateTrendDesc')}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={displayData.timelineData} margin={chartMargin}>
-                <CartesianGrid vertical={false} stroke={gridColor} strokeDasharray="4 4" />
-                <XAxis dataKey="label" tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} minTickGap={20} tickMargin={8} />
-                <YAxis domain={[0, 100]} tickFormatter={formatPercentTick} tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} width={58} />
-                <Tooltip
-                  position={{ y: 10 }}
-                  formatter={(value) => formatPercent(value)}
-                  labelFormatter={(_, payload) => getTooltipLabel(payload, 'fullLabel')}
-                  contentStyle={tooltipContentStyle}
-                  labelStyle={tooltipLabelStyle}
-                  itemStyle={tooltipItemStyle}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="cacheHitRate"
-                  name={t('dashboard.seriesCacheHitRate')}
-                  stroke="hsl(173 80% 36%)"
-                  strokeWidth={2.5}
-                  dot={false}
-                  connectNulls
-                  activeDot={{ r: 4 }}
-                />
-              </LineChart>
             </ResponsiveContainer>
           </ChartCard>
 
@@ -347,7 +283,8 @@ export default function DashboardUsageCharts({
                 <YAxis dataKey="shortModel" type="category" width={80} tick={{ fill: axisColor, fontSize: 12 }} axisLine={{ stroke: gridColor }} tickLine={{ stroke: gridColor }} />
                 <Tooltip
                   position={{ y: 10 }}
-                  content={<ModelRankingTooltip />}
+                  formatter={(value) => formatNumber(value)}
+                  labelFormatter={(_, payload) => getTooltipLabel(payload, 'model')}
                   contentStyle={tooltipContentStyle}
                   labelStyle={tooltipLabelStyle}
                   itemStyle={tooltipItemStyle}
@@ -364,52 +301,15 @@ export default function DashboardUsageCharts({
 
 function ChartCard({ title, description, children }: { title: string; description: string; children: ReactNode }) {
   return (
-    <Card className="py-0">
-      <CardContent className="p-6">
-        <div className="mb-5">
-          <h4 className="text-base font-semibold text-foreground">{title}</h4>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{description}</p>
+    <Card className="py-0 border-border/70 bg-card shadow-2xs transition-all duration-200 hover:border-border">
+      <CardContent className="p-3.5 sm:p-5">
+        <div className="mb-3 sm:mb-4">
+          <h4 className="text-sm font-bold tracking-tight text-foreground">{title}</h4>
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground/90">{description}</p>
         </div>
-        <div className="h-[280px]">{children}</div>
+        <div className="h-[220px] sm:h-[280px]">{children}</div>
       </CardContent>
     </Card>
-  )
-}
-
-function ModelRankingTooltip({
-  active,
-  payload,
-}: {
-  active?: boolean
-  payload?: Array<{ payload?: ModelRankingPoint }>
-}) {
-  const { t } = useTranslation()
-  const point = payload?.[0]?.payload
-  if (!active || !point) return null
-
-  return (
-    <div
-      className="rounded-2xl border border-border bg-card px-3 py-2 text-xs text-foreground shadow-xl"
-      style={tooltipContentStyle}
-    >
-      <div className="mb-2 max-w-[260px] truncate font-semibold">{point.model}</div>
-      <div className="space-y-1.5">
-        <TooltipRow label={t('dashboard.seriesRequestCount')} value={formatNumber(point.requests)} />
-        <TooltipRow label={t('dashboard.seriesAvgLatency')} value={formatDuration(point.avgLatency)} />
-        <TooltipRow label={t('dashboard.seriesInputTokens')} value={formatNumber(point.inputTokens)} />
-        <TooltipRow label={t('dashboard.seriesCachedTokens')} value={formatNumber(point.cachedTokens)} />
-        <TooltipRow label={t('dashboard.seriesCacheHitRate')} value={formatPercent(point.cacheHitRate)} />
-      </div>
-    </div>
-  )
-}
-
-function TooltipRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex min-w-[180px] items-center justify-between gap-4">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium tabular-nums">{value}</span>
-    </div>
   )
 }
 
@@ -448,6 +348,7 @@ function formatClockTime(value: number | null): string {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
+    timeZone: getTimezone(),
   })
 }
 
@@ -481,18 +382,6 @@ function formatDurationTick(value: number | string): string {
   const numericValue = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(numericValue)) return '0ms'
   return formatDuration(numericValue)
-}
-
-function formatPercent(value: unknown): string {
-  const numericValue = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(numericValue)) return '-'
-  return `${numericValue.toFixed(numericValue >= 10 ? 0 : 1)}%`
-}
-
-function formatPercentTick(value: number | string): string {
-  const numericValue = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(numericValue)) return '0%'
-  return `${Math.round(numericValue)}%`
 }
 
 function getTooltipLabel(payload: readonly { payload?: Record<string, unknown> }[] | undefined, key: string): string {

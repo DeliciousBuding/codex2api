@@ -1,20 +1,16 @@
 package proxy
 
 import (
-	"context"
 	"encoding/json"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/codex2api/cache"
 	"github.com/tidwall/gjson"
 )
 
 func resetResponseCacheForTest() {
-	respCache.mu.Lock()
-	respCache.store = make(map[string]*responseCacheEntry)
-	respCache.runtimeCache = nil
-	respCache.mu.Unlock()
+	resetResponseCacheStateForTest(defaultResponseCacheConfig())
 }
 
 func TestCacheCompletedResponseCachesCodexNativeToolCalls(t *testing.T) {
@@ -23,9 +19,9 @@ func TestCacheCompletedResponseCachesCodexNativeToolCalls(t *testing.T) {
 	expandedInput := []byte(`[{"type":"message","role":"user","content":"find a tool"}]`)
 	completed := []byte(`{"type":"response.completed","response":{"id":"resp_native","output":[{"type":"tool_search_call","id":"ts_123","call_id":"call_search","status":"completed"}]}}`)
 
-	cacheCompletedResponse(expandedInput, completed)
+	cacheCompletedResponse("key:1", expandedInput, completed)
 
-	cached := getResponseCache("resp_native")
+	cached := getResponseCache("key:1", "resp_native")
 	if len(cached) != 2 {
 		t.Fatalf("cached items = %d, want 2", len(cached))
 	}
@@ -37,16 +33,98 @@ func TestCacheCompletedResponseCachesCodexNativeToolCalls(t *testing.T) {
 	}
 }
 
+func TestCacheCompletedResponseUsesOutputItemDoneFallback(t *testing.T) {
+	resetResponseCacheForTest()
+
+	expandedInput := []byte(`[{"type":"message","role":"user","content":"inspect workspace"}]`)
+	completed := []byte(`{"type":"response.completed","response":{"id":"resp_stream"}}`)
+	outputItems := []json.RawMessage{
+		json.RawMessage(`{"type":"function_call","id":"fc_stream","call_id":"call_stream","name":"manage_todo_list","arguments":"{}"}`),
+	}
+	cacheCompletedResponseWithOutputItems("key:1", expandedInput, completed, outputItems)
+
+	next := []byte(`{"model":"gpt-5.6-sol","previous_response_id":"resp_stream","input":[{"type":"function_call_output","call_id":"call_stream","output":"ok"}]}`)
+	got, _ := PrepareResponsesBodyForOwner(next, "key:1")
+	items := gjson.GetBytes(got, "input").Array()
+	if len(items) != 3 {
+		t.Fatalf("expanded input count = %d, want 3; body=%s", len(items), got)
+	}
+	if typ := items[0].Get("type").String(); typ != "message" {
+		t.Fatalf("input[0].type = %q, want message", typ)
+	}
+	if typ := items[1].Get("type").String(); typ != "function_call" {
+		t.Fatalf("input[1].type = %q, want function_call", typ)
+	}
+	if id := items[1].Get("id"); id.Exists() {
+		t.Fatalf("cached function_call id should be stripped, got %s", id.Raw)
+	}
+	if typ := items[2].Get("type").String(); typ != "function_call_output" {
+		t.Fatalf("input[2].type = %q, want function_call_output", typ)
+	}
+	if gjson.GetBytes(got, "previous_response_id").Exists() {
+		t.Fatalf("previous_response_id should be removed after expansion: %s", got)
+	}
+}
+
+func TestCacheCompletedResponseRejectsMalformedOrdinaryFunctionCall(t *testing.T) {
+	resetResponseCacheForTest()
+
+	cacheCompletedResponse("key:1",
+		[]byte(`[{"type":"message","role":"user","content":"run"}]`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_bad","output":[{"type":"function_call","call_id":"call_bad","name":"exec","arguments":"{\"cmd\":"}]}}`),
+	)
+
+	if cached := getResponseCache("key:1", "resp_bad"); cached != nil {
+		t.Fatalf("malformed ordinary function call must not enter replay cache: %s", cached)
+	}
+}
+
+func TestCacheCompletedResponseKeepsCustomFreeFormToolCall(t *testing.T) {
+	resetResponseCacheForTest()
+
+	cacheCompletedResponse("key:1",
+		[]byte(`[{"type":"message","role":"user","content":"run"}]`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_custom","output":[{"type":"custom_tool_call","call_id":"call_custom","name":"raw","input":"not-json"}]}}`),
+	)
+
+	cached := getResponseCache("key:1", "resp_custom")
+	if len(cached) != 2 || gjson.GetBytes(cached[1], "input").String() != "not-json" {
+		t.Fatalf("custom free-form tool call should remain replayable: %s", cached)
+	}
+}
+
+func TestCacheCompletedResponseDropsMalformedInputCallAndMatchingOutput(t *testing.T) {
+	resetResponseCacheForTest()
+
+	expandedInput := []byte(`[
+		{"type":"function_call","call_id":"old_bad","name":"exec","arguments":"{\"cmd\":"},
+		{"type":"function_call_output","call_id":"old_bad","output":"poison"},
+		{"type":"message","role":"user","content":"continue"}
+	]`)
+	completed := []byte(`{"type":"response.completed","response":{"id":"resp_clean","output":[{"type":"function_call","call_id":"call_ok","name":"noop","arguments":"{}"}]}}`)
+
+	cacheCompletedResponse("key:1", expandedInput, completed)
+	cached := getResponseCache("key:1", "resp_clean")
+	if len(cached) != 2 {
+		t.Fatalf("cached item count = %d, want clean message + current call; items=%s", len(cached), cached)
+	}
+	for _, item := range cached {
+		if strings.Contains(string(item), "old_bad") || strings.Contains(string(item), "poison") {
+			t.Fatalf("malformed historical pair survived cache sanitization: %s", cached)
+		}
+	}
+}
+
 func TestExpandPreviousResponseUsesCachedCodexNativeToolContext(t *testing.T) {
 	resetResponseCacheForTest()
 
-	cacheCompletedResponse(
+	cacheCompletedResponse("key:1",
 		[]byte(`[{"type":"message","role":"user","content":"run mcp tool"}]`),
 		[]byte(`{"type":"response.completed","response":{"id":"resp_mcp","output":[{"type":"mcp_tool_call","call_id":"call_mcp","name":"read","arguments":"{}"}]}}`),
 	)
 
 	body := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_mcp","input":[{"type":"mcp_tool_call_output","call_id":"call_mcp","output":"ok"}]}`)
-	got, prevID := expandPreviousResponse(body)
+	got, prevID := expandPreviousResponse(body, "key:1")
 
 	if prevID != "resp_mcp" {
 		t.Fatalf("prevID = %q, want resp_mcp", prevID)
@@ -63,26 +141,54 @@ func TestExpandPreviousResponseUsesCachedCodexNativeToolContext(t *testing.T) {
 	}
 }
 
+// shell_call / apply_patch_call 是上游新版工具调用项，需与 function_call 一样
+// 参与 call_id 续链缓存，否则 store=false 回放会丢上下文。
+func TestExpandPreviousResponseCachesShellAndApplyPatchCalls(t *testing.T) {
+	resetResponseCacheForTest()
+
+	cacheCompletedResponse("key:1",
+		[]byte(`[{"type":"message","role":"user","content":"run a command"}]`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_shell","output":[{"type":"shell_call","id":"sc_1","call_id":"call_shell","action":{"command":["echo","hi"]}},{"type":"apply_patch_call","id":"ap_1","call_id":"call_patch","action":{"patch":"x"}}]}}`),
+	)
+
+	body := []byte(`{"model":"gpt-5.5","previous_response_id":"resp_shell","input":[{"type":"shell_call_output","call_id":"call_shell","output":"hi"}]}`)
+	got, prevID := expandPreviousResponse(body, "key:1")
+
+	if prevID != "resp_shell" {
+		t.Fatalf("prevID = %q, want resp_shell", prevID)
+	}
+	input := gjson.GetBytes(got, "input").Array()
+	if len(input) != 4 {
+		t.Fatalf("expanded input count = %d, want 4; body=%s", len(input), got)
+	}
+	if typ := input[1].Get("type").String(); typ != "shell_call" {
+		t.Fatalf("cached item 1 type = %q, want shell_call", typ)
+	}
+	if input[1].Get("id").Exists() {
+		t.Fatalf("cached shell_call id should be stripped: %s", input[1].Raw)
+	}
+	if typ := input[2].Get("type").String(); typ != "apply_patch_call" {
+		t.Fatalf("cached item 2 type = %q, want apply_patch_call", typ)
+	}
+}
+
 func TestExpandPreviousResponseUsesRuntimeCacheAfterLocalMiss(t *testing.T) {
 	resetResponseCacheForTest()
-	tc := cache.NewMemory(10)
+	tc := newRecordingResponseContextBackend(true)
 	SetResponseContextCache(tc)
 	t.Cleanup(func() {
 		SetResponseContextCache(nil)
-		_ = tc.Close()
+		_ = tc.TokenCache.Close()
 	})
 
-	ctx := context.Background()
 	items := []json.RawMessage{
 		json.RawMessage(`{"type":"message","role":"user","content":"run mcp tool"}`),
 		json.RawMessage(`{"type":"mcp_tool_call","call_id":"call_mcp","name":"read","arguments":"{}"}`),
 	}
-	if err := tc.SetResponseContext(ctx, "resp_remote", items, time.Minute); err != nil {
-		t.Fatalf("SetResponseContext: %v", err)
-	}
+	tc.bounded = cache.ResponseContextReadResult{Status: cache.ResponseContextReadFound, Items: items}
 
 	body := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_remote","input":[{"type":"mcp_tool_call_output","call_id":"call_mcp","output":"ok"}]}`)
-	got, prevID := expandPreviousResponse(body)
+	got, prevID := expandPreviousResponse(body, "key:1")
 
 	if prevID != "resp_remote" {
 		t.Fatalf("prevID = %q, want resp_remote", prevID)
@@ -99,7 +205,7 @@ func TestExpandPreviousResponseUsesRuntimeCacheAfterLocalMiss(t *testing.T) {
 func TestExpandPreviousResponseSkipsInjectionWhenInputHasFunctionCall(t *testing.T) {
 	resetResponseCacheForTest()
 
-	cacheCompletedResponse(
+	cacheCompletedResponse("key:1",
 		[]byte(`[{"type":"message","role":"user","content":"call tool"}]`),
 		[]byte(`{"type":"response.completed","response":{"id":"resp_dup","output":[{"type":"function_call","call_id":"call_abc","name":"get_weather","arguments":"{}"}]}}`),
 	)
@@ -109,7 +215,7 @@ func TestExpandPreviousResponseSkipsInjectionWhenInputHasFunctionCall(t *testing
 		`{"type":"function_call","call_id":"call_abc","name":"get_weather","arguments":"{}"},` +
 		`{"type":"function_call_output","call_id":"call_abc","output":"sunny"}` +
 		`]}`)
-	got, prevID := expandPreviousResponse(body)
+	got, prevID := expandPreviousResponse(body, "key:1")
 
 	if prevID != "resp_dup" {
 		t.Fatalf("prevID = %q, want resp_dup", prevID)
@@ -132,7 +238,7 @@ func TestExpandPreviousResponseLeavesBodyUntouchedOnCacheMiss(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_missing","input":[` +
 		`{"type":"function_call_output","call_id":"call_missing","output":"x"}` +
 		`]}`)
-	got, prevID := expandPreviousResponse(body)
+	got, prevID := expandPreviousResponse(body, "key:1")
 
 	if prevID != "resp_missing" {
 		t.Fatalf("prevID = %q, want resp_missing (returned for downstream cache linkage)", prevID)
@@ -161,10 +267,10 @@ func TestCacheCompletedResponseDoesNotCacheNonCallIDToolCalls(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			resetResponseCacheForTest()
 
-			cacheCompletedResponse([]byte(`[{"type":"message","role":"user","content":"hello"}]`), test.body)
+			cacheCompletedResponse("key:1", []byte(`[{"type":"message","role":"user","content":"hello"}]`), test.body)
 
 			respID := gjson.GetBytes(test.body, "response.id").String()
-			if cached := getResponseCache(respID); cached != nil {
+			if cached := getResponseCache("key:1", respID); cached != nil {
 				t.Fatalf("expected no cache for %s, got %d items", test.name, len(cached))
 			}
 		})
@@ -174,7 +280,7 @@ func TestCacheCompletedResponseDoesNotCacheNonCallIDToolCalls(t *testing.T) {
 func TestCacheCompletedResponseSkipsReasoningAndMessageOutputItems(t *testing.T) {
 	resetResponseCacheForTest()
 
-	cacheCompletedResponse(
+	cacheCompletedResponse("key:1",
 		[]byte(`[`+
 			`{"type":"reasoning","id":"rs_input","encrypted_content":"stale"},`+
 			`{"type":"message","id":"msg_input","role":"user","content":"call a tool"}`+
@@ -186,7 +292,7 @@ func TestCacheCompletedResponseSkipsReasoningAndMessageOutputItems(t *testing.T)
 			`]}}`),
 	)
 
-	cached := getResponseCache("resp_reasoning")
+	cached := getResponseCache("key:1", "resp_reasoning")
 	if len(cached) != 2 {
 		t.Fatalf("cached items = %d, want input message + function_call only", len(cached))
 	}
@@ -201,5 +307,60 @@ func TestCacheCompletedResponseSkipsReasoningAndMessageOutputItems(t *testing.T)
 	}
 	if id := gjson.GetBytes(cached[1], "id"); id.Exists() {
 		t.Fatalf("cached function_call id should be stripped, got %s", id.Raw)
+	}
+}
+
+// TestGetResponseCacheIsolatesOwners 验证 previous_response_id 缓存按 owner(下游
+// API Key)隔离：用户B拿着用户A的 response_id 查询必须 miss，杜绝跨用户注入他人
+// 对话历史（"用户2串到用户1的上下文"类泄露）。
+func TestGetResponseCacheIsolatesOwners(t *testing.T) {
+	resetResponseCacheForTest()
+
+	cacheCompletedResponse("key:1",
+		[]byte(`[{"type":"message","role":"user","content":"user A secret"}]`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_shared","output":[{"type":"function_call","call_id":"call_a","name":"lookup","arguments":"{}"}]}}`),
+	)
+
+	if cached := getResponseCache("key:1", "resp_shared"); len(cached) == 0 {
+		t.Fatal("owner key:1 should hit its own cache")
+	}
+	if cached := getResponseCache("key:2", "resp_shared"); cached != nil {
+		t.Fatalf("owner key:2 must NOT read key:1's cache, got %d items", len(cached))
+	}
+	if cached := getResponseCache("anon", "resp_shared"); cached != nil {
+		t.Fatalf("anon owner must NOT read key:1's cache, got %d items", len(cached))
+	}
+}
+
+// TestExpandPreviousResponseCrossOwnerMiss 验证跨 owner 的 previous_response_id
+// 展开按缓存未命中处理，body 原样透传（不注入别人的历史）。
+func TestExpandPreviousResponseCrossOwnerMiss(t *testing.T) {
+	resetResponseCacheForTest()
+
+	cacheCompletedResponse("key:1",
+		[]byte(`[{"type":"message","role":"user","content":"user A secret"}]`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_cross","output":[{"type":"mcp_tool_call","call_id":"call_x","name":"read","arguments":"{}"}]}}`),
+	)
+
+	body := []byte(`{"model":"gpt-5.4","previous_response_id":"resp_cross","input":[{"role":"user","content":"user B question"}]}`)
+	got, prevID := expandPreviousResponse(body, "key:2")
+
+	if prevID != "resp_cross" {
+		t.Fatalf("prevID = %q, want resp_cross", prevID)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("cross-owner expansion must be a no-op; got=%s", got)
+	}
+}
+
+func TestResponseCacheOwner(t *testing.T) {
+	if got := responseCacheOwner(42); got != "key:42" {
+		t.Fatalf("responseCacheOwner(42) = %q, want key:42", got)
+	}
+	if got := responseCacheOwner(0); got != "anon" {
+		t.Fatalf("responseCacheOwner(0) = %q, want anon", got)
+	}
+	if got := responseCacheOwner(-1); got != "anon" {
+		t.Fatalf("responseCacheOwner(-1) = %q, want anon", got)
 	}
 }

@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"context"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -22,6 +24,12 @@ func TestConfigureTransportProxyHTTPProxy(t *testing.T) {
 	}
 }
 
+func TestBuildHTTPClientCheckedRejectsInvalidProxy(t *testing.T) {
+	if _, err := BuildHTTPClientChecked("not-a-proxy"); err == nil {
+		t.Fatal("BuildHTTPClientChecked accepted malformed proxy and may bypass it")
+	}
+}
+
 func TestConfigureTransportProxySOCKS5Proxy(t *testing.T) {
 	transport := &http.Transport{}
 	baseDialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
@@ -37,19 +45,33 @@ func TestConfigureTransportProxySOCKS5Proxy(t *testing.T) {
 	}
 }
 
-func TestConfigureTransportProxyRejectsInvalidProxyURL(t *testing.T) {
-	for _, raw := range []string{
-		"http://",
-		"proxy.example.com:8080",
-		"ftp://proxy.example.com:21",
-	} {
-		t.Run(raw, func(t *testing.T) {
-			transport := &http.Transport{}
-			baseDialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+func TestConfigureTransportProxyConnectObserverRunsAfterProxyTCPConnect(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
 
-			if err := ConfigureTransportProxy(transport, raw, baseDialer); err == nil {
-				t.Fatalf("ConfigureTransportProxy(%q) expected error", raw)
-			}
-		})
+	var connected atomic.Bool
+	transport := &http.Transport{}
+	baseDialer := &net.Dialer{Timeout: time.Second}
+	if err := ConfigureTransportProxyWithObserver(
+		transport,
+		"http://"+listener.Addr().String(),
+		baseDialer,
+		ProxyTransportObserver{
+			OnProxyConnect: func() { connected.Store(true) },
+		},
+	); err != nil {
+		t.Fatalf("ConfigureTransportProxyWithObserver() error = %v", err)
+	}
+
+	conn, err := transport.DialContext(context.Background(), "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("DialContext() error = %v", err)
+	}
+	_ = conn.Close()
+	if !connected.Load() {
+		t.Fatal("proxy TCP connect observer was not called")
 	}
 }

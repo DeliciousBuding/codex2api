@@ -7,6 +7,14 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 
+// Portaled dropdowns (select / group picker / proxy pool) close themselves on
+// Escape from a bubble-phase document listener, but Radix dismisses the layer in
+// the capture phase first. While one is open, keep the modal and let the
+// dropdown consume the key.
+function hasOpenPortalDropdown() {
+  return typeof document !== "undefined" && document.querySelector('[data-select-dropdown="true"]') !== null
+}
+
 function isInteractivePortalTarget(target: EventTarget | null) {
   return target instanceof Element && Boolean(target.closest('[data-select-dropdown="true"]'))
 }
@@ -55,8 +63,10 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onEscapeKeyDown,
   onInteractOutside,
   onPointerDownOutside,
+  onFocusOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -67,9 +77,15 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
+          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-1.5rem)] max-h-[calc(100dvh-1.5rem-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px))] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-xl border bg-background p-5 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg sm:p-6",
           className
         )}
+        onEscapeKeyDown={(event) => {
+          onEscapeKeyDown?.(event)
+          if (hasOpenPortalDropdown()) {
+            event.preventDefault()
+          }
+        }}
         onInteractOutside={(event) => {
           onInteractOutside?.(event)
           if (isInteractivePortalTarget(event.target)) {
@@ -78,6 +94,14 @@ function DialogContent({
         }}
         onPointerDownOutside={(event) => {
           onPointerDownOutside?.(event)
+          if (isInteractivePortalTarget(event.target)) {
+            event.preventDefault()
+          }
+        }}
+        onFocusOutside={(event) => {
+          onFocusOutside?.(event)
+          // Portaled select menus (body) sit outside Dialog content; allow focus so
+          // inputs/options inside them remain usable while the modal is open.
           if (isInteractivePortalTarget(event.target)) {
             event.preventDefault()
           }

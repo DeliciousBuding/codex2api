@@ -1,94 +1,149 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { api } from '../api'
+import type { SystemUpdateInfo } from '../types'
+import { hasRemoteUpdate, normalizeVersion, resolveBuildVersions, versionLabel } from '../lib/versionCheck'
 
-const GITHUB_API = 'https://api.github.com/repos/james-6-23/codex2api/releases/latest'
-const CACHE_KEY = 'codex2api_latest_version'
-const CACHE_TTL = 10 * 60 * 1000 // 10 分钟缓存
-const POLL_INTERVAL = 30 * 60 * 1000 // 30 分钟轮询
+const REMOTE_RELEASE_CACHE_KEY = 'codex2api_latest_release'
+const LEGACY_UPDATE_CACHE_KEY = 'codex2api_latest_version'
+const CACHE_TTL = 10 * 60 * 1000
+const POLL_INTERVAL = 30 * 60 * 1000
 
-interface CachedVersion {
-  version: string
+interface RemoteReleaseInfo {
+  latest_version: string
+  release_url?: string
+  published_at?: string
+}
+
+interface CachedRemoteReleaseInfo extends RemoteReleaseInfo {
   checkedAt: number
 }
 
-function readCachedVersion(ignoreTTL = false): string | null {
+function remoteReleaseFromInfo(info: Pick<SystemUpdateInfo, 'latest_version' | 'release_url' | 'published_at'>): RemoteReleaseInfo {
+  return {
+    latest_version: info.latest_version,
+    release_url: info.release_url,
+    published_at: info.published_at,
+  }
+}
+
+function clearLegacyUpdateCache() {
   try {
-    const raw = localStorage.getItem(CACHE_KEY)
+    localStorage.removeItem(LEGACY_UPDATE_CACHE_KEY)
+  } catch {
+    // ignore localStorage failures
+  }
+}
+
+function readCachedRemoteRelease(ignoreTTL = false): RemoteReleaseInfo | null {
+  clearLegacyUpdateCache()
+  try {
+    const raw = localStorage.getItem(REMOTE_RELEASE_CACHE_KEY)
     if (!raw) return null
-    const cached: CachedVersion = JSON.parse(raw)
-    if (!cached.version) return null
+
+    const cached = JSON.parse(raw) as Partial<CachedRemoteReleaseInfo>
+    if (typeof cached.latest_version !== 'string' || !cached.latest_version.trim()) return null
+    if (typeof cached.checkedAt !== 'number') return null
     if (!ignoreTTL && Date.now() - cached.checkedAt >= CACHE_TTL) return null
-    return cached.version
+
+    return {
+      latest_version: cached.latest_version.trim(),
+      release_url: typeof cached.release_url === 'string' ? cached.release_url : undefined,
+      published_at: typeof cached.published_at === 'string' ? cached.published_at : undefined,
+    }
   } catch {
     return null
   }
 }
 
-/** 解析版本号字符串为数字数组，如 "v1.0.5" → [1, 0, 5] */
-function parseVersion(tag: string): number[] | null {
-  const m = tag.replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)/)
-  if (!m) return null
-  return [Number(m[1]), Number(m[2]), Number(m[3])]
-}
-
-/** 判断 remote 是否比 local 更新 */
-function isNewer(remote: number[], local: number[]): boolean {
-  for (let i = 0; i < 3; i++) {
-    if (remote[i] > local[i]) return true
-    if (remote[i] < local[i]) return false
+function writeCachedRemoteRelease(remote: RemoteReleaseInfo) {
+  clearLegacyUpdateCache()
+  try {
+    localStorage.setItem(REMOTE_RELEASE_CACHE_KEY, JSON.stringify({ ...remote, checkedAt: Date.now() }))
+  } catch {
+    // ignore localStorage failures
   }
-  return false
 }
 
-async function fetchLatestVersion(forceNetwork = false): Promise<string | null> {
-  // 优先读取未过期的缓存
+async function fetchUpdateInfo(forceNetwork = false): Promise<{ remote: RemoteReleaseInfo; info: SystemUpdateInfo | null } | null> {
   if (!forceNetwork) {
-    const cached = readCachedVersion()
-    if (cached) return cached
+    const cached = readCachedRemoteRelease()
+    if (cached) return { remote: cached, info: null }
   }
 
   try {
-    const res = await fetch(GITHUB_API, {
-      headers: { Accept: 'application/vnd.github.v3+json' },
-      signal: AbortSignal.timeout(10000),
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    const version = data.tag_name as string
-    if (version) {
-      localStorage.setItem(CACHE_KEY, JSON.stringify({ version, checkedAt: Date.now() }))
-    }
-    return version || null
+    const info = await api.getSystemUpdate()
+    const remote = remoteReleaseFromInfo(info)
+    return { remote, info }
   } catch {
-    return readCachedVersion(true)
+    const cached = readCachedRemoteRelease(true)
+    return cached ? { remote: cached, info: null } : null
   }
 }
 
 export function useVersionCheck(triggerKey?: string) {
+  const [updateInfo, setUpdateInfo] = useState<SystemUpdateInfo | null>(null)
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
-  const [hasUpdate, setHasUpdate] = useState(false)
+  const [backendVersion, setBackendVersion] = useState<string | null>(null)
+  const activeRef = useRef(false)
+  const healthRequestRef = useRef(0)
+  const updateRequestRef = useRef(0)
   const lastTriggerRef = useRef<string | undefined>(undefined)
+  const versions = resolveBuildVersions(__APP_VERSION__, backendVersion)
+  const hasUpdate = hasRemoteUpdate(versions.currentVersion, latestVersion)
 
   const check = useCallback(async (forceNetwork = false) => {
-    const currentVersion = __APP_VERSION__
-    // 开发模式不检查
-    if (currentVersion === 'dev') return
+    if (__APP_VERSION__ === 'dev' || !activeRef.current) return
 
-    const localParsed = parseVersion(currentVersion)
-    if (!localParsed) return
+    const healthRequest = ++healthRequestRef.current
+    const updateRequest = ++updateRequestRef.current
+    // Runtime identity is independent of both the release cache and GitHub.
+    const healthPending = (async () => {
+      let runtimeVersion: string | null = null
+      try {
+        const health = await api.getHealth({ timeoutMs: 5_000 })
+        runtimeVersion = typeof health.build_version === 'string' ? health.build_version : null
+      } catch {
+        // Legacy servers and failed probes keep the frontend build label.
+      }
+      if (activeRef.current && healthRequest === healthRequestRef.current) {
+        setBackendVersion(runtimeVersion)
+      }
+    })()
 
-    const remote = await fetchLatestVersion(forceNetwork)
-    if (!remote) return
-    const remoteParsed = parseVersion(remote)
-    if (!remoteParsed) return
+    const updatePending = (async () => {
+      const result = await fetchUpdateInfo(forceNetwork)
+      if (!activeRef.current || updateRequest !== updateRequestRef.current) return
+      if (!result) {
+        setUpdateInfo(null)
+        setLatestVersion(null)
+        return
+      }
 
-    setLatestVersion(remote)
-    setHasUpdate(isNewer(remoteParsed, localParsed))
+      if (result.info) writeCachedRemoteRelease(result.remote)
+      const remoteLatestVersion = result.remote.latest_version
+      setUpdateInfo((current) => {
+        if (result.info) return result.info
+        if (current && normalizeVersion(current.latest_version) === normalizeVersion(remoteLatestVersion)) {
+          return current
+        }
+        return null
+      })
+      setLatestVersion(versionLabel(remoteLatestVersion))
+    })()
+
+    await Promise.all([healthPending, updatePending])
   }, [])
 
   useEffect(() => {
+    activeRef.current = true
     void check()
     const timer = setInterval(() => void check(), POLL_INTERVAL)
-    return () => clearInterval(timer)
+    return () => {
+      activeRef.current = false
+      healthRequestRef.current += 1
+      updateRequestRef.current += 1
+      clearInterval(timer)
+    }
   }, [check])
 
   useEffect(() => {
@@ -102,5 +157,5 @@ export function useVersionCheck(triggerKey?: string) {
     void check(true)
   }, [check, triggerKey])
 
-  return { hasUpdate, latestVersion }
+  return { ...versions, hasUpdate, latestVersion, updateInfo, refreshVersion: check }
 }

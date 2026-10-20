@@ -82,6 +82,7 @@ func TestStatsResponse(t *testing.T) {
 	resp := statsResponse{
 		Total:         10,
 		Available:     8,
+		RateLimited:   1,
 		Error:         2,
 		TodayRequests: 1000,
 	}
@@ -103,6 +104,9 @@ func TestStatsResponse(t *testing.T) {
 	}
 	if available, ok := decoded["available"]; !ok || available != float64(8) {
 		t.Errorf("expected JSON to contain \"available\" field = 8, got %v", available)
+	}
+	if rateLimited, ok := decoded["rate_limited"]; !ok || rateLimited != float64(1) {
+		t.Errorf("expected JSON to contain \"rate_limited\" field = 1, got %v", rateLimited)
 	}
 	if errorField, ok := decoded["error"]; !ok || errorField != float64(2) {
 		t.Errorf("expected JSON to contain \"error\" field = 2, got %v", errorField)
@@ -307,6 +311,7 @@ func TestStatsResponseJSON(t *testing.T) {
 	resp := statsResponse{
 		Total:         10,
 		Available:     8,
+		RateLimited:   1,
 		Error:         2,
 		TodayRequests: 1000,
 	}
@@ -461,10 +466,13 @@ func TestUsageLogsResponse(t *testing.T) {
 	resp := usageLogsResponse{
 		Logs: []*database.UsageLog{
 			{
-				ID:           1,
-				APIKeyID:     3,
-				APIKeyName:   "Team A",
-				APIKeyMasked: "sk-a****...****1111",
+				ID:                  1,
+				APIKeyID:            3,
+				APIKeyName:          "Team A",
+				APIKeyMasked:        "sk-a****...****1111",
+				ClientUserAgent:     "codex-tui/0.150.0",
+				UpstreamUserAgent:   "codex-tui/0.151.0",
+				UserAgentOverridden: true,
 			},
 		},
 	}
@@ -494,6 +502,15 @@ func TestUsageLogsResponse(t *testing.T) {
 	}
 	if got := decoded.Logs[0]["api_key_masked"]; got != "sk-a****...****1111" {
 		t.Fatalf("api_key_masked = %v, want %q", got, "sk-a****...****1111")
+	}
+	if got := decoded.Logs[0]["client_user_agent"]; got != "codex-tui/0.150.0" {
+		t.Fatalf("client_user_agent = %v, want %q", got, "codex-tui/0.150.0")
+	}
+	if got := decoded.Logs[0]["upstream_user_agent"]; got != "codex-tui/0.151.0" {
+		t.Fatalf("upstream_user_agent = %v, want %q", got, "codex-tui/0.151.0")
+	}
+	if got := decoded.Logs[0]["user_agent_overridden"]; got != true {
+		t.Fatalf("user_agent_overridden = %v, want true", got)
 	}
 }
 

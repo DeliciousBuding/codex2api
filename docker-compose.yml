@@ -11,13 +11,18 @@ services:
     volumes:
       - image-assets:/data
       - ./logs:/app/logs
-      # 可选：启用管理后台一键更新。Docker socket 权限较高，只在可信环境中打开。
-      # - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:$${CODEX_PORT:-8080}/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 60s
+    stop_grace_period: 60s
     restart: unless-stopped
     networks:
       - codex2api-net

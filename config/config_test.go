@@ -1,8 +1,11 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadDefaultsToPostgresAndRedis(t *testing.T) {
@@ -55,8 +58,11 @@ func TestLoadDefaultsToPostgresAndRedis(t *testing.T) {
 	if got := cfg.Port; got != 8080 {
 		t.Fatalf("Port = %d, want %d", got, 8080)
 	}
-	if got := cfg.MaxRequestBodySize; got != 32*1024*1024 {
-		t.Fatalf("MaxRequestBodySize = %d, want %d", got, 32*1024*1024)
+	if got := cfg.MaxRequestBodySize; got != 48*1024*1024 {
+		t.Fatalf("MaxRequestBodySize = %d, want %d", got, 48*1024*1024)
+	}
+	if got := strings.Join(cfg.TrustedProxies, ","); got != "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16" {
+		t.Fatalf("TrustedProxies = %q, want loopback and private-network defaults", got)
 	}
 }
 
@@ -183,6 +189,38 @@ func TestLoadReadsMaxRequestBodySizeFromEnv(t *testing.T) {
 
 	if got := cfg.MaxRequestBodySize; got != 64*1024*1024 {
 		t.Fatalf("MaxRequestBodySize = %d, want %d", got, 64*1024*1024)
+	}
+}
+
+func TestLoadParsesTrustedProxiesEnv(t *testing.T) {
+	t.Setenv("DATABASE_DRIVER", "")
+	t.Setenv("DATABASE_HOST", "postgres")
+	t.Setenv("CACHE_DRIVER", "")
+	t.Setenv("REDIS_ADDR", "redis:6379")
+	t.Setenv("CODEX_TRUSTED_PROXIES", "10.0.0.0/8, 172.16.0.0/12;192.168.1.10")
+
+	cfg, err := Load("__not_exists__.env")
+	if err != nil {
+		t.Fatalf("Load() 返回错误: %v", err)
+	}
+	if got := strings.Join(cfg.TrustedProxies, ","); got != "10.0.0.0/8,172.16.0.0/12,192.168.1.10" {
+		t.Fatalf("TrustedProxies = %q", got)
+	}
+}
+
+func TestLoadCanDisableTrustedProxies(t *testing.T) {
+	t.Setenv("DATABASE_DRIVER", "")
+	t.Setenv("DATABASE_HOST", "postgres")
+	t.Setenv("CACHE_DRIVER", "")
+	t.Setenv("REDIS_ADDR", "redis:6379")
+	t.Setenv("CODEX_TRUSTED_PROXIES", "none")
+
+	cfg, err := Load("__not_exists__.env")
+	if err != nil {
+		t.Fatalf("Load() 返回错误: %v", err)
+	}
+	if cfg.TrustedProxies != nil {
+		t.Fatalf("TrustedProxies = %#v, want nil", cfg.TrustedProxies)
 	}
 }
 
@@ -362,5 +400,51 @@ func TestDSNOmitsSchemaWhenEmpty(t *testing.T) {
 	}
 	if got := d.DSN(); strings.Contains(got, "search_path") {
 		t.Fatalf("空 schema 时 DSN 不应包含 search_path: %s", got)
+	}
+}
+
+// issue #498: .env 里的 TZ 必须作用于 time.Local,否则自然日限额按宿主机时区重置。
+func TestLoadAppliesTimezoneFromEnvFile(t *testing.T) {
+	origLocal := time.Local
+	t.Cleanup(func() { time.Local = origLocal })
+	t.Setenv("TZ", "") // 注册测试结束后的恢复
+	if err := os.Unsetenv("TZ"); err != nil {
+		t.Fatalf("Unsetenv(TZ) 失败: %v", err)
+	}
+	t.Setenv("DATABASE_HOST", "postgres")
+	t.Setenv("REDIS_ADDR", "redis:6379")
+
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte("TZ=America/Chicago\n"), 0o600); err != nil {
+		t.Fatalf("写临时 .env 失败: %v", err)
+	}
+
+	if _, err := Load(envPath); err != nil {
+		t.Fatalf("Load() 返回错误: %v", err)
+	}
+	if got := time.Local.String(); got != "America/Chicago" {
+		t.Fatalf("time.Local = %q, want %q", got, "America/Chicago")
+	}
+}
+
+func TestApplyTimezoneHandlesPosixColonPrefix(t *testing.T) {
+	origLocal := time.Local
+	t.Cleanup(func() { time.Local = origLocal })
+	t.Setenv("TZ", ":Asia/Tokyo")
+
+	applyTimezone()
+	if got := time.Local.String(); got != "Asia/Tokyo" {
+		t.Fatalf("time.Local = %q, want %q", got, "Asia/Tokyo")
+	}
+}
+
+func TestApplyTimezoneKeepsLocalOnInvalidTZ(t *testing.T) {
+	origLocal := time.Local
+	t.Cleanup(func() { time.Local = origLocal })
+	t.Setenv("TZ", "Not/A_Zone")
+
+	applyTimezone()
+	if time.Local != origLocal {
+		t.Fatalf("非法 TZ 不应改动 time.Local, got %q", time.Local)
 	}
 }

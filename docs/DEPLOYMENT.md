@@ -235,8 +235,8 @@ https://<your-service>.onrender.com/health
 
 ### 环境要求
 
-- Go 1.21+
-- Node.js 18+
+- Go 1.26.9+
+- Node.js 22.12+
 - PostgreSQL 14+ (可选，可用 SQLite)
 - Redis 7+ (可选，可用内存缓存)
 
@@ -264,6 +264,10 @@ cd frontend
 
 # 安装依赖
 npm ci
+
+# 修改前端后运行验证
+npm test
+npm run typecheck
 
 # 启动开发服务器
 npm run dev
@@ -331,6 +335,10 @@ REDIS_ADDR=rediss://default:your-redis-password@your-redis-host:6379/0
 ```bash
 # 快速调度器
 FAST_SCHEDULER_ENABLED=true
+
+# 实验性：Codex Multi-Agent v2 第三方子 Agent 明文兼容（默认关闭）
+# CODEX_MULTI_AGENT_V2_COMPAT=false
+# 说明与灰度步骤见 docs/CODEX_MULTI_AGENT_V2_COMPAT.md
 ```
 
 ### 2. 系统设置（通过管理后台）
@@ -595,3 +603,10 @@ docker compose -f docker-compose.sqlite.yml start
 | SQLite 本地 | codex2api-sqlite-local | codex2api-sqlite-local_sqlite-data-local |
 
 **注意:** 不同模式的数据卷相互隔离，切换 compose 文件后看到空数据是正常现象。
+
+### 大型用量表的索引升级
+
+PostgreSQL 的网关/上游请求 ID 索引与账号代际索引在启动后的后台使用
+`CREATE INDEX CONCURRENTLY` 构建，避免在启动迁移事务中扫描大表并阻塞写入。
+多实例通过数据库 advisory lock 协调构建；中断遗留的 INVALID 索引会在线清理后重建。
+构建失败只影响相关查询性能，服务继续运行并在下次启动重试；日志可查看构建结果。

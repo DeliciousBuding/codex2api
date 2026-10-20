@@ -4,23 +4,35 @@ import (
 	"context"
 	"log"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
 const premium5hFallbackWindow = 5 * time.Hour
+const premium5hCooldownReason = "rate_limited_5h"
+
+// ResponsesRateLimitedCooldownReason marks authoritative upstream rejection.
+// It must remain distinct from WHAM-derived cooldowns so an active turn can
+// bypass only the latter when IgnoreUsageLimitStatus is enabled.
+const ResponsesRateLimitedCooldownReason = "responses_rate_limited"
 
 // NormalizePlanType canonicalizes a plan string for behavior-level comparisons.
-// OpenAI reports the $100 Pro tier as "prolite"; functionally it is a Pro plan
-// with a smaller usage cap, so we fold it into "pro" so that downstream plan
-// gating (premium 5h rate-limit, Spark routing, scheduler bias, 429 cooldown
-// window) treats it identically. The raw value is kept in Account.PlanType so
-// the UI can still render "prolite" for operator visibility.
+// OpenAI reports the $100 Pro tier as "prolite" and the top Pro tier as
+// "promax"; functionally both are Pro plans with a different usage cap, so we
+// fold them into "pro" so that downstream plan gating (premium 5h rate-limit,
+// Spark routing, scheduler bias, 429 cooldown window) treats them identically.
+// The raw value is kept in Account.PlanType so the UI can still render
+// "prolite"/"promax" for operator visibility. Enterprise and Edu SKUs
+// (ent26, enterprise_cbp_*, edu_plus, edu_pro) fold into their family the
+// same way.
 func NormalizePlanType(plan string) string {
 	normalized := strings.ToLower(strings.TrimSpace(plan))
 	switch normalized {
-	case "prolite", "pro_lite", "pro-lite":
+	case "prolite", "pro_lite", "pro-lite", "promax", "pro_max", "pro-max":
 		return "pro"
+	case "ent26", "enterprise_cbp_usage_based", "enterprise_cbp_automation":
+		return "enterprise"
+	case "edu_plus", "edu_pro":
+		return "edu"
 	default:
 		return normalized
 	}
@@ -30,12 +42,26 @@ func normalizePlanType(plan string) string {
 	return NormalizePlanType(plan)
 }
 
+// isPremium5hPlan reports whether the plan carries a rolling 5h usage window
+// (premium 5h rate-limit semantics). Free-tier plans only have the 7d window.
+// Education (k12/edu) and other paid workspace plans do have the 5h window —
+// excluding them made 429'd k12 accounts show as available and let the wham
+// usage probe clear their cooldown while still limited (issue #306/#309).
+// The plan gate errs broad on purpose: MarkPremium5hRateLimited and
+// premium5hRateLimitedLocked additionally require an actually observed 5h
+// window at 100%, so a plan without a real 5h window can never get stuck.
 func isPremium5hPlan(plan string) bool {
-	switch normalizePlanType(plan) {
-	case "plus", "pro", "team":
+	normalized := normalizePlanType(plan)
+	switch normalized {
+	case "plus", "pro", "team", "k12", "edu", "education", "go":
+		return true
+	case "claude", "max", "max-5x", "max-20x":
 		return true
 	default:
-		return false
+		if strings.HasPrefix(normalized, "claude-") {
+			return true
+		}
+		return IsPlusOrHigherPlan(plan)
 	}
 }
 
@@ -48,7 +74,7 @@ func IsPlusOrHigherPlan(plan string) bool {
 		return false
 	}
 	switch normalized {
-	case "plus", "pro", "team", "teamplus", "enterprise", "business", "edu", "education":
+	case "plus", "pro", "team", "teamplus", "enterprise", "business", "edu", "education", "k12", "go":
 		return true
 	default:
 		return strings.Contains(normalized, "plus") ||
@@ -67,6 +93,15 @@ func (a *Account) IsPremium5hPlan() bool {
 }
 
 func (a *Account) premium5hRateLimitedLocked(now time.Time) bool {
+	if a.skipsUsageWindowLimitsLocked() {
+		return false
+	}
+	return a.rawPremium5hRateLimitedLocked(now)
+}
+
+// rawPremium5hRateLimitedLocked 是不考虑任何跳过开关的 premium 5h 限流判定。
+// 「用积分顶替限流」需要知道窗口本身有没有打满，不能用上面那个已被开关抹平的结果。
+func (a *Account) rawPremium5hRateLimitedLocked(now time.Time) bool {
 	if !isPremium5hPlan(a.PlanType) {
 		return false
 	}
@@ -98,72 +133,230 @@ func (a *Account) GetUsageSnapshot5h() (pct float64, resetAt time.Time, ok bool)
 
 // PersistUsageSnapshot5hOnly 持久化仅包含 5h 数据的用量快照。
 func (s *Store) PersistUsageSnapshot5hOnly(acc *Account) {
+	s.PublishUsageSnapshot5hOnly(acc, time.Now(), true)
+}
+
+// PublishUsageSnapshot5hOnly updates the in-memory 5h snapshot and scheduler.
+// persist=false skips the DB write for the throttled WS frame path.
+func (s *Store) PublishUsageSnapshot5hOnly(acc *Account, observedAt time.Time, persist bool) bool {
 	if acc == nil || s == nil {
-		return
+		return false
 	}
 
 	pct5h, reset5hAt, ok := acc.GetUsageSnapshot5h()
 	if !ok {
-		return
+		return false
 	}
 
-	updatedAt := time.Now()
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
 	acc.mu.Lock()
-	acc.UsageUpdatedAt = updatedAt
+	acc.UsageUpdatedAt5h = observedAt
 	acc.mu.Unlock()
 
 	s.fastSchedulerUpdate(acc)
 
-	if s.db == nil {
-		return
+	if !persist || s.db == nil {
+		return false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := s.db.UpdateUsageSnapshot5h(ctx, acc.DBID, pct5h, reset5hAt, updatedAt); err != nil {
+	err := s.withUsageSnapshotWrite(acc, func() error {
+		return s.db.UpdateUsageSnapshot5h(ctx, acc.DBID, pct5h, reset5hAt, observedAt)
+	})
+	if err != nil {
 		log.Printf("[账号 %d] 持久化 5h 用量快照失败: %v", acc.DBID, err)
+		return false
 	}
+	return true
+}
+
+// Persist5hWindowActivated 把「已为哪个 Reset5hAt 发过开窗请求」写入 credentials，重启后不重复打。
+func (s *Store) Persist5hWindowActivated(acc *Account) {
+	if acc == nil || s == nil || s.db == nil {
+		return
+	}
+	resetAt := acc.GetActivated5hResetAt()
+	if resetAt.IsZero() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.db.UpdateCredentials(ctx, acc.DBID, map[string]interface{}{
+		"codex_5h_window_activated_reset_at": resetAt.UTC().Format(time.RFC3339),
+	}); err != nil {
+		log.Printf("[账号 %d] 持久化 5h 开窗标记失败: %v", acc.DBID, err)
+	}
+}
+
+// ClearAbsentUsageSnapshot5h 在上游权威探测未返回 5h 窗口时清除本地 5h 快照。
+// 内存与 credentials 一并清掉（避免「内存无、库里有」重启后重新 hydrate）。
+// 若清理前处于 premium 5h 限流态，同步清除由此驱动的 cooldown。
+// 返回 true 表示清理前本地确实持有有效 5h 快照（或 premium 5h 限流态）。
+func (s *Store) ClearAbsentUsageSnapshot5h(acc *Account) bool {
+	if acc == nil {
+		return false
+	}
+	observedAt := time.Now()
+	cleared := false
+	acc.ApplyUsageObservation(observedAt, func() {
+		cleared = s.ClearAbsentUsageSnapshot5hAt(acc, observedAt)
+	})
+	return cleared
+}
+
+// ClearAbsentUsageSnapshot5hAt applies an authoritative absence observation.
+// It clears only the cooldown created by the 5h window; newer authentication,
+// generic rate-limit, error, and disabled states are deliberately preserved.
+// Usage synchronizers call it from Account.ApplyUsageObservation so memory and
+// persistence remain ordered as one operation.
+func (s *Store) ClearAbsentUsageSnapshot5hAt(acc *Account, observedAt time.Time) bool {
+	if acc == nil {
+		return false
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+
+	acc.mu.Lock()
+	if observedAt.Before(acc.usageObservedAt) {
+		acc.mu.Unlock()
+		return false
+	}
+	acc.usageObservedAt = observedAt
+	had5h := acc.UsagePercent5hValid
+	cleared5hCooldown := s != nil && acc.Status == StatusCooldown && acc.CooldownReason == premium5hCooldownReason
+	if !had5h && !cleared5hCooldown {
+		acc.mu.Unlock()
+		return false
+	}
+
+	acc.UsagePercent5h = 0
+	acc.UsagePercent5hValid = false
+	acc.Reset5hAt = time.Time{}
+	acc.UsageUpdatedAt5h = time.Time{}
+	acc.clearQuotaGuardPendingLocked(observedAt)
+	if cleared5hCooldown {
+		acc.Status = StatusReady
+		acc.CooldownUtil = time.Time{}
+		acc.CooldownReason = ""
+		acc.LastRateLimitedAt = time.Time{}
+		if acc.HealthTier != HealthTierBanned {
+			acc.HealthTier = HealthTierWarm
+		}
+	}
+	if s != nil {
+		acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
+	}
+	acc.mu.Unlock()
+
+	if s == nil {
+		// Parse-only callers may pass a nil store. They still get the in-memory
+		// snapshot update, but cooldown transitions remain store-owned.
+		return true
+	}
+	s.fastSchedulerUpdate(acc)
+	if s.db == nil {
+		if cleared5hCooldown {
+			s.persistAccountCooldownState(acc, true, false)
+		}
+		return true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.withUsageSnapshotWrite(acc, func() error {
+		return s.db.ClearUsageSnapshot5h(ctx, acc.DBID)
+	}); err != nil {
+		log.Printf("[账号 %d] 清除 5h 用量快照失败: %v", acc.DBID, err)
+	}
+	if cleared5hCooldown {
+		s.persistAccountCooldownState(acc, true, false)
+	}
+	return true
 }
 
 // MarkPremium5hRateLimited 将账号标记为 premium 5h 限流态，并按 resetAt 驱动恢复。
 func (s *Store) MarkPremium5hRateLimited(acc *Account, resetAt time.Time) {
+	_ = s.MarkPremium5hRateLimitedAt(acc, resetAt, time.Now())
+}
+
+// MarkPremium5hRateLimitedAt marks a 5h cooldown only if this observation is
+// not older than the latest usage synchronization for the account.
+func (s *Store) MarkPremium5hRateLimitedAt(acc *Account, resetAt, observedAt time.Time) bool {
+	if acc == nil || s == nil {
+		return false
+	}
+	return acc.ApplyUsageObservation(observedAt, func() {
+		// observedAt orders competing upstream observations; stateAt reflects
+		// when the state is actually applied after any preceding DB/identity work.
+		s.markPremium5hRateLimited(acc, resetAt, time.Now(), premium5hCooldownReason, true)
+	})
+}
+
+// MarkResponsesPremium5hRateLimited records a 429 returned by /responses.
+// Unlike a WHAM snapshot, this is authoritative evidence that even an active
+// turn may no longer send another request.
+func (s *Store) MarkResponsesPremium5hRateLimited(acc *Account, resetAt time.Time) {
 	if acc == nil || s == nil {
 		return
 	}
-
 	now := time.Now()
+	_ = acc.ApplyUsageObservation(now, func() {
+		s.markPremium5hRateLimited(acc, resetAt, time.Now(), ResponsesRateLimitedCooldownReason, true)
+	})
+}
+
+func (s *Store) markPremium5hRateLimited(acc *Account, resetAt, observedAt time.Time, cooldownReason string, persist bool) {
+	now := observedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
 	if resetAt.IsZero() || !resetAt.After(now) {
 		resetAt = now.Add(premium5hFallbackWindow)
 	}
 
 	acc.mu.Lock()
+	snapshotChanged := !acc.UsagePercent5hValid || acc.UsagePercent5h != 100 || !acc.Reset5hAt.Equal(resetAt)
 	acc.UsagePercent5h = 100
 	acc.UsagePercent5hValid = true
 	acc.Reset5hAt = resetAt
-	acc.UsageUpdatedAt = now
-	acc.LastRateLimitedAt = now
-	acc.Status = StatusCooldown
-	acc.CooldownUtil = resetAt
-	acc.CooldownReason = "rate_limited"
-	if acc.HealthTier != HealthTierBanned {
-		acc.HealthTier = HealthTierRisky
+	acc.UsageUpdatedAt5h = now
+	until, reason, cooldownChanged := acc.usageCooldownTargetLocked(now, resetAt, cooldownReason)
+	// A repeated real 429 is new rejection evidence even when its deadline is
+	// unchanged. An older in-flight success must not clear that evidence.
+	if cooldownReason == ResponsesRateLimitedCooldownReason {
+		acc.LastRateLimitedAt = now
 	}
-	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	if cooldownChanged {
+		acc.LastRateLimitedAt = now
+		acc.Status = StatusCooldown
+		acc.CooldownUtil = until
+		acc.CooldownReason = reason
+		acc.usageCooldownPersistPending = true
+		if acc.HealthTier != HealthTierBanned {
+			acc.HealthTier = HealthTierRisky
+		}
+	}
+	acc.recomputeSchedulerLocked(s.maxConcurrency.Load())
 	acc.mu.Unlock()
 
 	s.fastSchedulerUpdate(acc)
-	s.setCachedAccountCooldown(acc.DBID, "rate_limited", resetAt)
+	if persist {
+		s.persistUsageCooldown(acc)
+	}
 
-	if s.db == nil {
+	if !persist || s.db == nil || (!cooldownChanged && !snapshotChanged) {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := s.db.SetCooldown(ctx, acc.DBID, "rate_limited", resetAt); err != nil {
-		log.Printf("[账号 %d] 持久化 premium 5h 限流冷却状态失败: %v", acc.DBID, err)
-	}
-	if err := s.db.UpdateUsageSnapshot5h(ctx, acc.DBID, 100, resetAt, now); err != nil {
+	if err := s.withUsageSnapshotWrite(acc, func() error {
+		return s.db.UpdateUsageSnapshot5h(ctx, acc.DBID, 100, resetAt, now)
+	}); err != nil {
 		log.Printf("[账号 %d] 持久化 premium 5h 限流快照失败: %v", acc.DBID, err)
 	}
 }

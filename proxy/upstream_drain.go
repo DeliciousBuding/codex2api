@@ -19,13 +19,26 @@ const upstreamDrainTimeout = 5 * time.Second
 //   - 如果在 drainTimeout 之前调用方主动 cancel，立即停止
 //   - parent 为 nil 时退化到 context.Background
 func newDrainableUpstreamContext(clientCtx context.Context, drainTimeout time.Duration) (context.Context, context.CancelFunc) {
-	upstreamCtx, cancelUpstream := context.WithCancel(context.Background())
+	baseCtx := context.Background()
+	if clientCtx != nil {
+		// Keep request-scoped values such as the User-Agent audit recorder while
+		// detaching cancellation and deadlines for the bounded drain window.
+		baseCtx = context.WithoutCancel(clientCtx)
+	}
+	upstreamCtx, cancelUpstream := context.WithCancel(baseCtx)
 	if clientCtx == nil || drainTimeout <= 0 {
 		return upstreamCtx, cancelUpstream
 	}
 	go func() {
 		select {
 		case <-clientCtx.Done():
+			// A newer ingress request has already taken ownership of this exact
+			// session. Draining the obsolete upstream for five more seconds would
+			// retain its account/concurrency lease and defeat the handoff.
+			if continuousRetryDeadlineExceeded(clientCtx) || isResponsesWSSessionPreempted(clientCtx) {
+				cancelUpstream()
+				return
+			}
 			timer := time.NewTimer(drainTimeout)
 			defer timer.Stop()
 			select {

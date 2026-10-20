@@ -17,8 +17,8 @@
 
 ### 前置要求
 
-- Go 1.21 或更高版本
-- Node.js 18 或更高版本
+- Go 1.26.9 或更高版本
+- Node.js 22.12 或更高版本
 - Docker 和 Docker Compose
 - Git
 
@@ -124,12 +124,27 @@ func getaccount(id int64) *Account {
 
 ### 前端代码规范
 
-1. **ESLint 配置**
+1. **运行前端验证**
 
 ```bash
 cd frontend
-npm run lint
+npm test
+npm run typecheck
+npm run build
 ```
+
+修改降智检测的 SVG 导出时，还需运行真实浏览器回归（首次运行先安装 Chromium）：
+
+```bash
+npx playwright install chromium
+npm run test:svg
+```
+
+可通过 `QUALITY_TEST_SVG_SAMPLE=/absolute/path/pelican.html npm run test:svg` 额外验证本地鹈鹕样例；样例文件不会写入仓库。
+
+修改降智检测页面、账号检测状态条或历史弹窗时，运行 `npm run test:intelligence`。
+该浏览器回归使用本地模拟接口，不请求真实模型；截图默认保存在系统临时目录，
+可通过 `INTELLIGENCE_TEST_ARTIFACT_DIR` 指定输出目录。
 
 2. **代码风格**
 

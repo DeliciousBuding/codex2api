@@ -161,14 +161,14 @@ func TestSQLiteImageStudioTablesAndPersistence(t *testing.T) {
 		t.Fatalf("job asset = %#v", job.Assets[0])
 	}
 
-	page, err := db.ListImageAssets(ctx, 1, 10)
+	page, err := db.ListImageAssets(ctx, 1, 10, 0)
 	if err != nil {
 		t.Fatalf("ListImageAssets 返回错误: %v", err)
 	}
 	if page.Total != 1 || len(page.Assets) != 1 {
 		t.Fatalf("asset page = %#v", page)
 	}
-	jobs, err := db.ListImageGenerationJobs(ctx, 1, 10)
+	jobs, err := db.ListImageGenerationJobs(ctx, 1, 10, 0)
 	if err != nil {
 		t.Fatalf("ListImageGenerationJobs 返回错误: %v", err)
 	}
@@ -176,11 +176,81 @@ func TestSQLiteImageStudioTablesAndPersistence(t *testing.T) {
 		t.Fatalf("job page = %#v", jobs)
 	}
 
+	// Portal isolation: filter by api_key_id
+	otherJobID, err := db.InsertImageGenerationJob(ctx, ImageGenerationJobInput{
+		Prompt:       "other key job",
+		ParamsJSON:   `{"model":"gpt-image-2"}`,
+		APIKeyID:     99,
+		APIKeyName:   "Other",
+		APIKeyMasked: "sk-other",
+	})
+	if err != nil {
+		t.Fatalf("InsertImageGenerationJob other 返回错误: %v", err)
+	}
+	filteredJobs, err := db.ListImageGenerationJobs(ctx, 1, 10, 7)
+	if err != nil {
+		t.Fatalf("ListImageGenerationJobs by api_key 返回错误: %v", err)
+	}
+	if filteredJobs.Total != 1 || len(filteredJobs.Jobs) != 1 || filteredJobs.Jobs[0].APIKeyID != 7 {
+		t.Fatalf("filtered jobs = %#v", filteredJobs)
+	}
+	filteredAssets, err := db.ListImageAssets(ctx, 1, 10, 7)
+	if err != nil {
+		t.Fatalf("ListImageAssets by api_key 返回错误: %v", err)
+	}
+	if filteredAssets.Total != 1 || len(filteredAssets.Assets) != 1 {
+		t.Fatalf("filtered assets = %#v", filteredAssets)
+	}
+	emptyAssets, err := db.ListImageAssets(ctx, 1, 10, 99)
+	if err != nil {
+		t.Fatalf("ListImageAssets empty key 返回错误: %v", err)
+	}
+	if emptyAssets.Total != 0 {
+		t.Fatalf("empty key assets total = %d, want 0", emptyAssets.Total)
+	}
+	ownerKeyID, err := db.GetImageAssetJobAPIKeyID(ctx, assetID)
+	if err != nil {
+		t.Fatalf("GetImageAssetJobAPIKeyID 返回错误: %v", err)
+	}
+	if ownerKeyID != 7 {
+		t.Fatalf("ownerKeyID = %d, want 7", ownerKeyID)
+	}
+	_ = otherJobID
+
 	if err := db.DeleteImageAsset(ctx, assetID); err != nil {
 		t.Fatalf("DeleteImageAsset 返回错误: %v", err)
 	}
 	if _, err := db.GetImageAsset(ctx, assetID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("GetImageAsset after delete err = %v, want sql.ErrNoRows", err)
+	}
+	jobID2, err := db.InsertImageGenerationJob(ctx, ImageGenerationJobInput{
+		Prompt:     "delete this job",
+		ParamsJSON: `{"model":"gpt-image-2"}`,
+	})
+	if err != nil {
+		t.Fatalf("InsertImageGenerationJob job2 返回错误: %v", err)
+	}
+	if err := db.MarkImageJobFailed(ctx, jobID2, "upstream failed", 456); err != nil {
+		t.Fatalf("MarkImageJobFailed 返回错误: %v", err)
+	}
+	assetID2, err := db.InsertImageAsset(ctx, ImageAssetInput{
+		JobID:       jobID2,
+		Filename:    "delete-me.png",
+		StoragePath: filepath.Join(t.TempDir(), "delete-me.png"),
+		MimeType:    "image/png",
+		Bytes:       1024,
+	})
+	if err != nil {
+		t.Fatalf("InsertImageAsset job2 返回错误: %v", err)
+	}
+	if err := db.DeleteImageGenerationJob(ctx, jobID2); err != nil {
+		t.Fatalf("DeleteImageGenerationJob 返回错误: %v", err)
+	}
+	if _, err := db.GetImageGenerationJob(ctx, jobID2); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetImageGenerationJob after delete err = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := db.GetImageAsset(ctx, assetID2); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetImageAsset after job delete err = %v, want sql.ErrNoRows", err)
 	}
 	if err := db.DeleteImagePromptTemplate(ctx, templateID); err != nil {
 		t.Fatalf("DeleteImagePromptTemplate 返回错误: %v", err)

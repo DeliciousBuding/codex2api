@@ -1,27 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getErrorMessage } from '../utils/error'
 
-interface LoadOptions {
+export interface LoadOptions {
   silent?: boolean
 }
 
 interface UseDataLoaderOptions<T> {
   initialData: T
-  load: () => Promise<T>
+  load: (options?: LoadOptions) => Promise<T>
   onError?: (message: string, error: unknown) => void
+  /**
+   * 为 false 时不自动加载(手动 reload 仍可用)。用于同一组件承载多个视图时,
+   * 让隐藏视图的数据链整体停摆,而不是在后台空转打请求。
+   */
+  enabled?: boolean
 }
 
-export function useDataLoader<T>({ initialData, load, onError }: UseDataLoaderOptions<T>) {
+export function useDataLoader<T>({ initialData, load, onError, enabled = true }: UseDataLoaderOptions<T>) {
   const [data, setData] = useState<T>(initialData)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const requestSeqRef = useRef(0)
+  const requestIdRef = useRef(0)
 
   const run = useCallback(async (options: LoadOptions = {}) => {
     const { silent = false } = options
-    const requestSeq = requestSeqRef.current + 1
-    requestSeqRef.current = requestSeq
-    const isCurrentRequest = () => requestSeqRef.current === requestSeq
+    const requestId = ++requestIdRef.current
 
     if (!silent) {
       setLoading(true)
@@ -29,31 +32,35 @@ export function useDataLoader<T>({ initialData, load, onError }: UseDataLoaderOp
     }
 
     try {
-      const nextData = await load()
-      if (isCurrentRequest()) {
+      const nextData = await load(options)
+      if (requestId === requestIdRef.current) {
         setData(nextData)
         setError(null)
       }
       return nextData
     } catch (err) {
-      const message = getErrorMessage(err)
-      if (!silent && isCurrentRequest()) {
-        setError(message)
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return null
       }
-      if (isCurrentRequest()) {
+      const message = getErrorMessage(err)
+      if (requestId === requestIdRef.current) {
+        if (!silent) {
+          setError(message)
+        }
         onError?.(message, err)
       }
       return null
     } finally {
-      if (!silent && isCurrentRequest()) {
+      if (requestId === requestIdRef.current) {
         setLoading(false)
       }
     }
   }, [load, onError])
 
   useEffect(() => {
+    if (!enabled) return
     void run()
-  }, [run])
+  }, [run, enabled])
 
   const reload = useCallback(() => run(), [run])
   const reloadSilently = useCallback(() => run({ silent: true }), [run])

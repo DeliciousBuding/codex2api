@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,7 +50,7 @@ func TestParseIDTokenMissingAuthClaim(t *testing.T) {
 
 func TestParseAccessTokenExtractsPlanType(t *testing.T) {
 	jwt := makeTestJWT(map[string]interface{}{
-		"exp": 9999999999,
+		"exp": int64(9999999999),
 		"https://api.openai.com/auth": map[string]interface{}{
 			"chatgpt_account_id": "acc_456",
 			"chatgpt_plan_type":  "pro",
@@ -102,6 +103,23 @@ func TestRefreshAccessTokenRejectsEmptyAccessToken(t *testing.T) {
 	}
 }
 
+func TestRefreshTokenReusedIsNonRetryable(t *testing.T) {
+	reusedErr := errors.New(`刷新失败 (status 401): {"error":{"code":"refresh_token_reused"}}`)
+	if !isNonRetryable(reusedErr) {
+		t.Fatal("refresh_token_reused should be treated as non-retryable")
+	}
+}
+
+func TestRefreshTokenInvalidatedIsPermanentFailure(t *testing.T) {
+	invalidatedErr := errors.New(`刷新失败（重试 3 次）: 刷新失败 (status 401): {"error":{"message":"Your session has ended. Please log in again.","code":"refresh_token_invalidated"}}`)
+	if !IsPermanentRefreshFailure(invalidatedErr) {
+		t.Fatal("refresh_token_invalidated should be treated as a permanent refresh failure")
+	}
+	if !isNonRetryable(invalidatedErr) {
+		t.Fatal("refresh_token_invalidated should skip further refresh retries")
+	}
+}
+
 func TestRefreshWithSessionToken(t *testing.T) {
 	accessToken := makeTestJWT(map[string]interface{}{
 		"exp": time.Now().Add(time.Hour).Unix(),
@@ -142,5 +160,45 @@ func TestRefreshWithSessionToken(t *testing.T) {
 	}
 	if info.Email != "session@example.com" {
 		t.Fatalf("Email = %q, want session@example.com", info.Email)
+	}
+}
+
+// 个人账号 JWT 可能没有 chatgpt_account_id，只有 user_id；解析仍需保留元数据，
+// 但 user_id 不参与 workspace 身份去重。
+func TestParseAccessTokenExtractsUserID(t *testing.T) {
+	jwt := makeTestJWT(map[string]interface{}{
+		"exp": int64(9999999999),
+		"https://api.openai.com/auth": map[string]interface{}{
+			"user_id":           "user-QJuZktEjr1Sbbiq19lRnZTow",
+			"chatgpt_plan_type": "pro",
+		},
+		"https://api.openai.com/profile": map[string]interface{}{
+			"email": "solo@example.com",
+		},
+	})
+
+	info := ParseAccessToken(jwt)
+	if info == nil {
+		t.Fatal("ParseAccessToken returned nil")
+	}
+	if info.UserID != "user-QJuZktEjr1Sbbiq19lRnZTow" {
+		t.Fatalf("UserID = %q, want user-QJuZktEjr1Sbbiq19lRnZTow", info.UserID)
+	}
+	if info.ChatGPTAccountID != "" {
+		t.Fatalf("ChatGPTAccountID = %q, want empty", info.ChatGPTAccountID)
+	}
+}
+
+func TestParseAccessTokenChatGPTUserIDFallback(t *testing.T) {
+	jwt := makeTestJWT(map[string]interface{}{
+		"exp": int64(9999999999),
+		"https://api.openai.com/auth": map[string]interface{}{
+			"chatgpt_user_id": "user-fallback-1",
+		},
+	})
+
+	info := ParseAccessToken(jwt)
+	if info == nil || info.UserID != "user-fallback-1" {
+		t.Fatalf("UserID = %v, want user-fallback-1", info)
 	}
 }

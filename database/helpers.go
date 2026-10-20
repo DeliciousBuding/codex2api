@@ -3,9 +3,11 @@ package database
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +18,47 @@ func normalizeDriver(driver string) string {
 		return "postgres"
 	}
 	return driver
+}
+
+// sqlOpenDriverName maps the application driver name onto the registered
+// database/sql driver. The public config value stays "postgres"; the connector
+// is pgx's stdlib adapter (lib/pq is unmaintained for the 2026 protocol advisories).
+func sqlOpenDriverName(driver string) string {
+	if driver == "postgres" {
+		return "pgx"
+	}
+	return driver
+}
+
+// quotePostgresIdent quotes a PostgreSQL identifier the same way lib/pq did:
+// wrap in double quotes and double any embedded quotes. A NUL truncates the
+// name so a crafted schema/index cannot leak into the surrounding SQL.
+func quotePostgresIdent(name string) string {
+	if end := strings.IndexRune(name, 0); end >= 0 {
+		name = name[:end]
+	}
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// postgresInt8Array binds a []int64 as a PostgreSQL int8[] text literal for
+// `= ANY($n)`. The application driver used to call pq.Array for this.
+type postgresInt8Array []int64
+
+func (a postgresInt8Array) Value() (driver.Value, error) {
+	if a == nil {
+		return nil, nil
+	}
+	var builder strings.Builder
+	builder.Grow(2 + len(a)*4)
+	builder.WriteByte('{')
+	for index, value := range a {
+		if index > 0 {
+			builder.WriteByte(',')
+		}
+		builder.WriteString(strconv.FormatInt(value, 10))
+	}
+	builder.WriteByte('}')
+	return builder.String(), nil
 }
 
 func parseDBTimeValue(value interface{}) (time.Time, error) {
@@ -103,6 +146,8 @@ func decodeCredentials(raw interface{}) map[string]interface{} {
 	if out == nil {
 		return map[string]interface{}{}
 	}
+	// 统一读扼要点:解密敏感字段,使所有 Go 读取端见明文(密钥未设时为 no-op)。
+	decryptSensitiveCredentialsInPlace(out)
 	return out
 }
 
@@ -294,6 +339,40 @@ func credentialString(raw interface{}, key string) string {
 	}
 }
 
+func credentialStringMap(raw interface{}, key string) map[string]string {
+	credentials := decodeCredentials(raw)
+	if credentials == nil {
+		return nil
+	}
+	value, ok := credentials[key]
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case map[string]string:
+		return cloneTrimmedStringMap(typed)
+	case map[string]interface{}:
+		out := make(map[string]string, len(typed))
+		for name, rawValue := range typed {
+			name = strings.TrimSpace(name)
+			if name == "" || rawValue == nil {
+				continue
+			}
+			value, ok := rawValue.(string)
+			if !ok {
+				continue
+			}
+			out[name] = strings.TrimSpace(value)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func credentialInt64Slice(raw interface{}, key string) []int64 {
 	credentials := decodeCredentials(raw)
 	if credentials == nil {
@@ -333,9 +412,12 @@ func (db *DB) SetMaxOpenConns(n int) {
 		return
 	}
 	if db.isSQLite() {
-		// SQLite 单文件模式下保持单连接，避免写锁竞争。
-		db.conn.SetMaxOpenConns(1)
-		db.conn.SetMaxIdleConns(1)
+		if db.sqliteSingleConn {
+			db.conn.SetMaxOpenConns(1)
+			db.conn.SetMaxIdleConns(1)
+			return
+		}
+		applySQLiteConnLimits(db.conn, n)
 		return
 	}
 	db.conn.SetMaxOpenConns(n)
@@ -358,4 +440,54 @@ func (db *DB) insertRowID(ctx context.Context, postgresQuery string, sqliteQuery
 	var id int64
 	err := db.conn.QueryRowContext(ctx, postgresQuery, args...).Scan(&id)
 	return id, err
+}
+
+// decodeInt64SliceValue parses a JSON array of integers from a JSONB or TEXT column.
+func decodeInt64SliceValue(raw interface{}) []int64 {
+	data := bytesFromDBValue(raw)
+	if len(data) == 0 {
+		return nil
+	}
+	var out []int64
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// encodeInt64SliceJSON marshals []int64 to JSON. Returns "[]" for nil/empty.
+func encodeInt64SliceJSON(values []int64) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// decodeTagsValue parses a tags column value (from JSONB on PG, TEXT on SQLite) into []string.
+func decodeTagsValue(raw interface{}) []string {
+	data := bytesFromDBValue(raw)
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// encodeTagsJSON marshals a []string to JSON array string. Returns "[]" for nil/empty.
+func encodeTagsJSON(tags []string) string {
+	if len(tags) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }

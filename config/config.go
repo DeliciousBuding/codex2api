@@ -2,10 +2,12 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -46,7 +48,7 @@ func (d *DatabaseConfig) DSN() string {
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		d.Host, d.Port, d.User, d.Password, d.DBName, sslMode)
 	if d.Schema != "" {
-		// 通过 libpq options 在连接启动时设置 search_path，覆盖连接池中的所有连接。
+		// 通过 PostgreSQL startup options 在连接启动时设置 search_path，覆盖连接池中的所有连接。
 		// schema 已在 Load() 阶段做白名单校验，此处可安全拼接。
 		dsn += fmt.Sprintf(" options='-c search_path=%s,public'", d.Schema)
 	}
@@ -88,15 +90,37 @@ func (c *CacheConfig) Label() string {
 // Config 全局核心环境配置（物理隔离的服务器参数）
 // 业务逻辑参数（如 ProxyURL，APIKeys，MaxConcurrency）已全部移至数据库 SystemSettings 进行化
 type Config struct {
-	Port                   int
-	BindAddress            string // 监听地址，默认 0.0.0.0（兼容 Docker / 反代 / 公网）；如需仅本机访问可设为 127.0.0.1
-	AdminSecret            string
-	AllowAnonymousV1       bool // 显式允许 /v1/* 在未配置 API Key 时无鉴权放行（默认禁止）
-	MaxRequestBodySize     int
-	Database               DatabaseConfig
-	Cache                  CacheConfig
-	UseWebsocket           bool   // 是否启用 WebSocket 传输
-	CodexUpstreamTransport string // http|auto|ws，默认 http；USE_WEBSOCKET 作为旧开关兼容
+	Port                      int
+	BindAddress               string // 监听地址，默认 0.0.0.0（兼容 Docker / 反代 / 公网）；如需仅本机访问可设为 127.0.0.1
+	AdminSecret               string
+	AllowAnonymousV1          bool // 显式允许 /v1/* 在未配置 API Key 时无鉴权放行（默认禁止）
+	APIKeyAuthCacheEnabled    bool
+	MaxRequestBodySize        int
+	RequestMemoryBudgetBytes  int64 // Process-local retained HTTP/WS request body budget.
+	SchedulerMaxWaiters       int   // Process-local waiting request budget.
+	SchedulerMaxWaitersPerKey int
+	Database                  DatabaseConfig
+	Cache                     CacheConfig
+	UseWebsocket              bool     // 是否启用 WebSocket 传输
+	CodexUpstreamTransport    string   // http|auto|ws，默认 http；USE_WEBSOCKET 作为旧开关兼容
+	TrustedProxies            []string // Gin 可信反向代理 CIDR/IP；默认信任回环与私有网段以兼容 Docker 反代，none/off/false/0 表示禁用
+}
+
+// applyTimezone 让 TZ 环境变量(含 .env 里的)真正作用于自然日限额等本地时间语义。
+// Go 的 time.Local 在进程首次格式化本地时间时就已锁定(main 里 config.Load 之前的
+// 启动日志即触发),godotenv 事后 os.Setenv 无法再影响它,必须显式覆盖 time.Local。
+func applyTimezone() {
+	tz := strings.TrimSpace(os.Getenv("TZ"))
+	tz = strings.TrimPrefix(tz, ":") // POSIX 允许 ":Asia/Shanghai" 写法
+	if tz == "" {
+		return
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		log.Printf("警告: TZ=%q 无法解析(%v),继续使用 %s", tz, err, time.Local)
+		return
+	}
+	time.Local = loc
 }
 
 // Load 从 .env 文件加载核心环境配置，支持环境变量覆盖
@@ -106,10 +130,11 @@ func Load(envPath string) (*Config, error) {
 		envPath = ".env"
 	}
 	_ = godotenv.Load(envPath)
+	applyTimezone()
 
 	cfg := &Config{
 		Port:               8080,
-		MaxRequestBodySize: 32 * 1024 * 1024,
+		MaxRequestBodySize: 48 * 1024 * 1024,
 	}
 
 	// Web服务端口
@@ -120,6 +145,14 @@ func Load(envPath string) (*Config, error) {
 	}
 	cfg.AdminSecret = strings.TrimSpace(os.Getenv("ADMIN_SECRET"))
 	cfg.AllowAnonymousV1 = parseBoolEnv(os.Getenv("CODEX_ALLOW_ANONYMOUS"))
+	cfg.APIKeyAuthCacheEnabled = true
+	if value := strings.TrimSpace(os.Getenv("CODEX_API_KEY_AUTH_CACHE_ENABLED")); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("CODEX_API_KEY_AUTH_CACHE_ENABLED must be a boolean")
+		}
+		cfg.APIKeyAuthCacheEnabled = enabled
+	}
 	// 默认绑 0.0.0.0 以兼容 Docker 端口映射、反向代理、生产服务器等常规部署。
 	// 安全防护由 fail-closed 中间件 + 首启自助初始化 (/api/admin/bootstrap) + 启动 banner 共同保证；
 	// 想要严格仅本机访问的用户可设 CODEX_BIND=127.0.0.1。
@@ -130,6 +163,33 @@ func Load(envPath string) (*Config, error) {
 	if v := strings.TrimSpace(os.Getenv("CODEX_MAX_REQUEST_BODY_SIZE_MB")); v != "" {
 		if mb, err := strconv.Atoi(v); err == nil && mb > 0 {
 			cfg.MaxRequestBodySize = mb * 1024 * 1024
+		}
+	}
+	cfg.RequestMemoryBudgetBytes = max(int64(128<<20), int64(cfg.MaxRequestBodySize))
+	if value := strings.TrimSpace(os.Getenv("CODEX_REQUEST_MEMORY_BUDGET_MB")); value != "" {
+		mb, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || mb <= 0 || mb > (1<<63-1)/(1<<20) {
+			return nil, fmt.Errorf("CODEX_REQUEST_MEMORY_BUDGET_MB must be a positive MiB value")
+		}
+		cfg.RequestMemoryBudgetBytes = mb << 20
+		if cfg.RequestMemoryBudgetBytes < int64(cfg.MaxRequestBodySize) {
+			return nil, fmt.Errorf("CODEX_REQUEST_MEMORY_BUDGET_MB must be at least CODEX_MAX_REQUEST_BODY_SIZE_MB")
+		}
+	}
+	cfg.TrustedProxies = parseTrustedProxiesEnv(os.Getenv("CODEX_TRUSTED_PROXIES"))
+	for _, setting := range []struct {
+		name   string
+		target *int
+	}{
+		{"CODEX_SCHEDULER_MAX_WAITERS", &cfg.SchedulerMaxWaiters},
+		{"CODEX_SCHEDULER_MAX_WAITERS_PER_KEY", &cfg.SchedulerMaxWaitersPerKey},
+	} {
+		if value := strings.TrimSpace(os.Getenv(setting.name)); value != "" {
+			n, err := strconv.Atoi(value)
+			if err != nil || n <= 0 {
+				return nil, fmt.Errorf("%s must be a positive integer", setting.name)
+			}
+			*setting.target = n
 		}
 	}
 
@@ -228,6 +288,28 @@ func parseBoolEnv(value string) bool {
 	default:
 		return false
 	}
+}
+
+func parseTrustedProxiesEnv(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+	}
+	switch strings.ToLower(value) {
+	case "0", "false", "off", "none", "no":
+		return nil
+	}
+
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+	proxies := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if proxy := strings.TrimSpace(part); proxy != "" {
+			proxies = append(proxies, proxy)
+		}
+	}
+	return proxies
 }
 
 func normalizeCodexUpstreamTransport(value string) string {
