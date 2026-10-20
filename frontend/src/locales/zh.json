@@ -1138,6 +1138,9 @@
     "recordUpdatedAtShort": "记录",
     "usageUpdatedAt": "用量更新时间",
     "usageUpdatedAtShort": "用量",
+    "usageFrameUpdatedAtShort": "WS 额度帧",
+    "gatewayUsageUpdatedAtShort": "网关统计",
+    "gatewayUsageUpdatedAtHint": "网关请求、token 与成本快照，前台每 30 秒刷新；不是官方实时结算",
     "noUsageUpdatedAt": "无",
     "importTime": "导入时间",
     "actions": "操作",
@@ -2364,6 +2367,7 @@
     "refreshing": "刷新中",
     "paused": "已暂停",
     "unsampled": "未采样",
+    "quota_guard_pending": "等待额度确认",
     "unknown": "未知",
     "usage_limited": "限流"
   },

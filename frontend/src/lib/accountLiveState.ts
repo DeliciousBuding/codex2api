@@ -28,6 +28,44 @@ export type AccountLiveMergeable = {
   usage_percent_7d?: number | null
   reset_7d_at?: string | null
   codex_usage_updated_at?: string | null
+  cooldown_until?: string | null
+  cooldown_reason?: string
+  quota_guard_pending?: boolean
+  codex_usage_frame_at?: string | null
+  codex_usage_frame_kind?: string
+  openai_responses_api?: boolean
+  grok_api?: boolean
+  antigravity_api?: boolean
+  claude_api?: boolean
+  usage_5h_detail?: unknown
+  usage_7d_detail?: unknown
+  billed_5h?: number
+  billed_7d?: number
+}
+
+// Keep only the visible page's latest observations. Partial responses retain
+// earlier keys; explicit null is retained so a stale list cannot revive them.
+export function mergeAccountLiveResponse(
+  current: AccountLiveStateResponse | null,
+  incoming: AccountLiveStateResponse,
+): AccountLiveStateResponse {
+  if (!current) return incoming
+  let changed = current.session_slot_buffer_enabled !== incoming.session_slot_buffer_enabled
+  const accounts = { ...current.accounts }
+  for (const [id, item] of Object.entries(incoming.accounts)) {
+    const previous = current.accounts[id]
+    const fields = Object.fromEntries(Object.entries(item).filter(([, value]) => value !== undefined))
+    if (previous && Object.entries(fields).every(([key, value]) => previous[key as keyof typeof previous] === value)) continue
+    accounts[id] = { ...previous, ...fields } as typeof item
+    changed = true
+  }
+  return changed ? { ...incoming, accounts } : current
+}
+
+export function getAccountUsageUpdatedAt(account: AccountLiveMergeable): string | undefined {
+  return [account.codex_5h_usage_updated_at, account.codex_usage_updated_at]
+    .filter((value): value is string => Boolean(value) && Number.isFinite(Date.parse(value!)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0]
 }
 
 export function mergeAccountLiveState<T extends AccountLiveMergeable>(
@@ -73,6 +111,21 @@ export function mergeAccountLiveState<T extends AccountLiveMergeable>(
     const updated7d = live.codex_usage_updated_at === undefined
       ? account.codex_usage_updated_at
       : (live.codex_usage_updated_at ?? undefined)
+    const cooldownUntil = live.cooldown_until === undefined
+      ? account.cooldown_until
+      : (live.cooldown_until ?? undefined)
+    const quotaGuardPending = live.quota_guard_pending === undefined
+      ? account.quota_guard_pending
+      : live.quota_guard_pending
+    const frameAt = live.codex_usage_frame_at === undefined
+      ? account.codex_usage_frame_at
+      : (live.codex_usage_frame_at ?? undefined)
+    // Gateway-only accounts have local rolling stats, not official quota
+    // windows. A cleared OAuth window must not reappear through page-stats.
+    const officialWindows = !account.openai_responses_api && !account.grok_api &&
+      !account.antigravity_api && !account.claude_api
+    const clear5h = officialWindows && live.usage_percent_5h === null && live.reset_5h_at === null
+    const clear7d = officialWindows && live.usage_percent_7d === null && live.reset_7d_at === null
     // Existing plan/credit badges use the list API's field names and null
     // semantics. A hidden balance must clear an older visible value.
     const details = {
@@ -84,6 +137,15 @@ export function mergeAccountLiveState<T extends AccountLiveMergeable>(
       credits_overage_limit_reached: live.credits_overage_limit_reached === undefined ? account.credits_overage_limit_reached : live.credits_overage_limit_reached,
       credits_spend_control_reached: live.credits_spend_control_reached === undefined ? account.credits_spend_control_reached : live.credits_spend_control_reached,
       credits_rate_limit_reached_type: live.credits_rate_limit_reached_type === undefined ? account.credits_rate_limit_reached_type : live.credits_rate_limit_reached_type,
+      cooldown_until: cooldownUntil,
+      cooldown_reason: live.cooldown_reason === undefined ? account.cooldown_reason : live.cooldown_reason,
+      quota_guard_pending: quotaGuardPending,
+      codex_usage_frame_at: frameAt,
+      codex_usage_frame_kind: live.codex_usage_frame_kind === undefined ? account.codex_usage_frame_kind : live.codex_usage_frame_kind,
+      usage_5h_detail: clear5h ? undefined : account.usage_5h_detail,
+      usage_7d_detail: clear7d ? undefined : account.usage_7d_detail,
+      billed_5h: clear5h ? undefined : account.billed_5h,
+      billed_7d: clear7d ? undefined : account.billed_7d,
     }
     const detailsUnchanged = (Object.keys(details) as (keyof typeof details)[])
       .every((key) => account[key] === details[key])

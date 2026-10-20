@@ -92,6 +92,14 @@ test("unsampled quota accounts are not treated as available", () => {
     getAccountStatusBadgeStatus({ status: "overload_paused" }),
     "active",
   );
+  assert.equal(
+    getAccountStatusBadgeStatus({
+      status: "active",
+      usage_percent_5h: 93,
+      quota_guard_pending: true,
+    }),
+    "quota_guard_pending",
+  );
 });
 
 test("official cost reload only retries Codex accounts missing the snapshot", () => {

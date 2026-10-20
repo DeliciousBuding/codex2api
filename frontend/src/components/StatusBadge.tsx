@@ -25,6 +25,7 @@ const statusConfig: Record<string, { variant: 'default' | 'secondary' | 'destruc
   refreshing: { variant: 'secondary', dotColor: 'bg-blue-500 animate-pulse' },
   paused: { variant: 'outline', dotColor: 'bg-blue-500' },
   unsampled: { variant: 'outline', dotColor: 'bg-slate-400' },
+  quota_guard_pending: { variant: 'secondary', dotColor: 'bg-amber-500 animate-pulse' },
 }
 
 export default function StatusBadge({ status, detail, errorMessage }: StatusBadgeProps) {

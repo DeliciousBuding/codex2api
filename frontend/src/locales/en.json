@@ -1140,6 +1140,9 @@
     "recordUpdatedAtShort": "Record",
     "usageUpdatedAt": "Usage updated",
     "usageUpdatedAtShort": "Usage",
+    "usageFrameUpdatedAtShort": "WS quota frame",
+    "gatewayUsageUpdatedAtShort": "Gateway stats",
+    "gatewayUsageUpdatedAtHint": "Gateway request, token and cost snapshot; refreshes every 30s while visible, not official real-time settlement",
     "noUsageUpdatedAt": "None",
     "importTime": "Import Time",
     "actions": "Actions",
@@ -2364,6 +2367,7 @@
     "refreshing": "Refreshing",
     "paused": "Paused",
     "unsampled": "Unsampled",
+    "quota_guard_pending": "Awaiting quota",
     "unknown": "Unknown",
     "usage_limited": "Rate Limited"
   },

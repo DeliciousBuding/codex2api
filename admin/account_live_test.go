@@ -80,6 +80,7 @@ func TestGetAccountLiveStateReturnsRuntimeUsage(t *testing.T) {
 	account.Reset7dAt = now.Add(24 * time.Hour)
 	account.UsageUpdatedAt = now
 	store.AddAccount(account)
+	account.SetCooldownUntil(now.Add(time.Hour), "responses_rate_limited")
 	store.ObserveUsageFramePlan(account, "pro")
 	balance := "12.5"
 	account.ApplySparseCreditsHeaders(true, false, &balance, nil, "")
@@ -114,6 +115,12 @@ func TestGetAccountLiveStateReturnsRuntimeUsage(t *testing.T) {
 	}
 	if item.UsingCredits == nil {
 		t.Fatalf("using_credits missing: %+v", item)
+	}
+	if item.AccountLiveCooldown == nil || item.CooldownUntil == nil || item.CooldownReason != "responses_rate_limited" {
+		t.Fatalf("cooldown missing: %+v", item.AccountLiveCooldown)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
 	var raw struct {
 		Accounts map[string]map[string]json.RawMessage `json:"accounts"`
@@ -174,8 +181,14 @@ func TestGetAccountLiveStateSerializesNullWindowsAndSkipsAntigravityFields(t *te
 	if got := string(codexItem["codex_usage_frame_at"]); got == "" || got == "null" {
 		t.Fatalf("codex frame time missing: %s", got)
 	}
+	if got := string(codexItem["cooldown_until"]); got != "null" {
+		t.Fatalf("codex cooldown_until = %s, want null", got)
+	}
+	if got := string(codexItem["cooldown_reason"]); got != `""` {
+		t.Fatalf("codex cooldown_reason = %s, want empty string", got)
+	}
 	antigravityItem := raw.Accounts["12"]
-	for _, key := range []string{"status", "using_credits", "plan_type", "credits_valid", "credits_balance", "codex_usage_frame_at", "codex_usage_frame_kind"} {
+	for _, key := range []string{"status", "using_credits", "plan_type", "credits_valid", "credits_balance", "codex_usage_frame_at", "codex_usage_frame_kind", "cooldown_until", "cooldown_reason"} {
 		if value, ok := antigravityItem[key]; ok {
 			t.Fatalf("antigravity item unexpectedly carries %s=%s", key, value)
 		}

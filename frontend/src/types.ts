@@ -469,7 +469,11 @@ export interface AccountRow {
   proxy_url: string
   created_at: ISODateString
   updated_at: ISODateString
+  codex_5h_usage_updated_at?: ISODateString
   codex_usage_updated_at?: ISODateString
+  codex_usage_frame_at?: ISODateString
+  codex_usage_frame_kind?: string
+  quota_guard_pending?: boolean
   active_requests?: number
   occupied_requests?: number
   session_slot_buffer_enabled?: boolean
@@ -511,6 +515,9 @@ export interface AccountRow {
   usage_7d_detail?: AccountUsageWindow
   // 今日(服务器时区当天 0 点起)网关侧聚合,由 page-stats 补齐。
   usage_today_detail?: AccountUsageWindow
+  // Client receive time for the gateway page-stats snapshot, not an official
+  // provider quota/settlement timestamp.
+  gateway_usage_updated_at?: ISODateString
   reset_5h_at?: ISODateString
   reset_7d_at?: ISODateString
   reset_spark_at?: ISODateString
@@ -645,6 +652,9 @@ export interface AccountLiveStateResponse {
     usage_percent_7d?: number | null
     reset_7d_at?: ISODateString | null
     codex_usage_updated_at?: ISODateString | null
+    cooldown_until?: ISODateString | null
+    cooldown_reason?: string
+    quota_guard_pending?: boolean
     // 最近一次被应用的 WS 配额帧；旧后端不返回，仅用于观测帧摄入。
     codex_usage_frame_at?: ISODateString
     codex_usage_frame_kind?: string
