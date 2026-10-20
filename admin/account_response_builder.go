@@ -439,6 +439,7 @@ func (h *Handler) buildAccountResponse(
 			resp.CooldownReason = reason
 			resp.CooldownUntil = until.Format(time.RFC3339)
 		}
+		resp.QuotaGuardPending = runtimeAccount.QuotaGuardPending()
 		if includeDetails {
 			for _, cooldown := range runtimeAccount.ActiveModelCooldowns() {
 				resp.ModelCooldowns = append(resp.ModelCooldowns, modelCooldownResponse{

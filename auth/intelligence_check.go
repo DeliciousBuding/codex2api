@@ -51,22 +51,19 @@ func (s *Store) TryAcquireIntelligenceCheck(a *Account) bool {
 	if a == nil || atomic.LoadInt32(&a.Disabled) != 0 {
 		return false
 	}
-	a.mu.RLock()
+	a.mu.Lock()
 	limit := a.effectiveBaseConcurrencyLocked(s.maxConcurrency.Load())
-	a.mu.RUnlock()
-	for {
-		occupied := a.OccupiedRequests.Load()
-		if occupied >= limit || a.ActiveRequests.Load() >= limit {
-			return false
-		}
-		if a.OccupiedRequests.CompareAndSwap(occupied, occupied+1) {
-			a.ActiveRequests.Add(1)
-			if atomic.LoadInt32(&a.Disabled) != 0 {
-				releaseOccupiedAccountSlot(a)
-				return false
-			}
-			s.fastSchedulerUpdate(a)
-			return true
-		}
+	if limit <= 0 || accountOccupiedRequests(a) >= limit || atomic.LoadInt32(&a.Disabled) != 0 {
+		a.mu.Unlock()
+		return false
 	}
+	a.OccupiedRequests.Add(1)
+	a.ActiveRequests.Add(1)
+	a.mu.Unlock()
+	if atomic.LoadInt32(&a.Disabled) != 0 {
+		releaseOccupiedAccountSlot(a)
+		return false
+	}
+	s.fastSchedulerUpdate(a)
+	return true
 }

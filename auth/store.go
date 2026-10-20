@@ -318,6 +318,14 @@ type Account struct {
 	// 验证帧摄入是否工作，不参与调度。
 	usageFrameLastAt   time.Time
 	usageFrameLastKind string
+	// quotaGuardPending fences fresh admissions after a request admitted in the
+	// 5h guard band finishes. It clears only when a newer 5h observation lands,
+	// so a delayed terminal WS frame cannot be bypassed by immediately reusing
+	// the slot with the pre-terminal snapshot.
+	quotaGuardPending     bool
+	quotaGuardFenceAt     time.Time
+	quotaGuardProbeTimer  *time.Timer
+	quotaGuardProbeIssued bool
 	// activated5hResetAt 是已经为其发送过「开窗」最小 /responses 的那个 Reset5hAt。
 	// 每个观测到的 5h 窗口最多激活一次（issue #581）。
 	activated5hResetAt time.Time
@@ -566,6 +574,7 @@ type AccountListRuntimeSnapshot struct {
 	Window7dSeconds         int64
 	CooldownReason          string
 	CooldownUntil           time.Time
+	QuotaGuardPending       bool
 }
 
 // ID 返回数据库 ID
@@ -1470,6 +1479,9 @@ func (a *Account) IsAvailable() bool {
 }
 
 func (a *Account) isAvailableLocked(now time.Time) bool {
+	if a.quotaGuardPending {
+		return false
+	}
 	if a.Status == StatusError {
 		return false
 	}
@@ -1675,6 +1687,53 @@ func (a *Account) quotaAutoPause5hGuardConcurrencyLimitLocked(limit int64, now t
 		return int64(a.autoPause5hGuardConcurrency)
 	}
 	return limit
+}
+
+func (a *Account) quotaAutoPause5hGuardActiveLocked(now time.Time) bool {
+	if a.AutoPause5hDisabled || a.effectiveAutoPause5h <= 0 || !a.UsagePercent5hValid ||
+		a.autoPause5hGuardBandPercent <= 0 || a.autoPause5hGuardConcurrency <= 0 ||
+		a.creditSkipsUsageWindowLocked() {
+		return false
+	}
+	if !a.Reset5hAt.IsZero() && !now.Before(a.Reset5hAt) {
+		return false
+	}
+	remainingPercent := a.effectiveAutoPause5h*100 - a.UsagePercent5h
+	return remainingPercent > 0 && remainingPercent <= a.autoPause5hGuardBandPercent
+}
+
+func (a *Account) setQuotaGuardPendingLocked(at time.Time) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	a.quotaGuardPending = true
+	if at.After(a.quotaGuardFenceAt) {
+		a.quotaGuardFenceAt = at
+	}
+}
+
+func (a *Account) clearQuotaGuardPendingLocked(observedAt time.Time) {
+	if !a.quotaGuardPending || observedAt.IsZero() || observedAt.Before(a.quotaGuardFenceAt) {
+		return
+	}
+	a.quotaGuardPending = false
+	a.quotaGuardFenceAt = time.Time{}
+	a.quotaGuardProbeIssued = false
+	if a.quotaGuardProbeTimer != nil {
+		a.quotaGuardProbeTimer.Stop()
+		a.quotaGuardProbeTimer = nil
+	}
+}
+
+// QuotaGuardPending reports whether fresh dispatch is waiting for a newer
+// post-terminal 5h observation.
+func (a *Account) QuotaGuardPending() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.quotaGuardPending
 }
 
 // smartPacingConcurrencyLimitLocked 智能配速（issue #312）：当账号在某个用量窗口内
@@ -2331,6 +2390,7 @@ func (a *Account) GetAccountListRuntimeSnapshot() AccountListRuntimeSnapshot {
 		Window7dSeconds:         a.Window7dSeconds,
 		CooldownReason:          a.CooldownReason,
 		CooldownUntil:           a.CooldownUtil,
+		QuotaGuardPending:       a.quotaGuardPending,
 	}
 }
 
@@ -2492,6 +2552,7 @@ func (a *Account) SetUsageSnapshot5hAt(pct float64, resetAt time.Time, updatedAt
 	a.UsagePercent5hValid = true
 	a.Reset5hAt = resetAt
 	a.UsageUpdatedAt5h = updatedAt
+	a.clearQuotaGuardPendingLocked(updatedAt)
 }
 
 // ApplyUsageObservation serializes one authoritative upstream usage observation,
@@ -2670,6 +2731,9 @@ type AccountLiveUsageSnapshot struct {
 	// account, as opposed to snapshots that only advance on WHAM probes.
 	UsageFrameLastAt   time.Time
 	UsageFrameLastKind string
+	CooldownUntil      time.Time
+	CooldownReason     string
+	QuotaGuardPending  bool
 }
 
 // GetAccountLiveUsageSnapshot returns the runtime usage/status projection used
@@ -2697,6 +2761,9 @@ func (a *Account) GetAccountLiveUsageSnapshot() AccountLiveUsageSnapshot {
 		UsageUpdatedAt:      a.UsageUpdatedAt,
 		UsageFrameLastAt:    a.usageFrameLastAt,
 		UsageFrameLastKind:  a.usageFrameLastKind,
+		CooldownUntil:       a.CooldownUtil,
+		CooldownReason:      a.CooldownReason,
+		QuotaGuardPending:   a.quotaGuardPending,
 	}
 }
 
@@ -3603,6 +3670,9 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 	}
 	if a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
 		return false // token 失效，wham 也会 401，探针无意义
+	}
+	if a.quotaGuardPending {
+		return true // wait for a newer post-terminal 5h observation
 	}
 	// Claude uses the native Messages endpoint rather than WHAM and may legally
 	// omit both unified quota windows. In that case the shared 7d validity bits
@@ -4711,8 +4781,8 @@ func (s *Store) configureFastScheduler(scheduler *FastScheduler) {
 	scheduler.metrics = s.schedulerMetrics
 	scheduler.mu.Unlock()
 	scheduler.SetGroupCheck(s.APIKeyAllowsAccount)
-	scheduler.SetAcquireFunc(func(acc *Account, concurrencyLimit int64) bool {
-		return s.tryAcquireAccount(acc, concurrencyLimit, false)
+	scheduler.SetAcquireFunc(func(acc *Account, concurrencyLimit int64, policy DispatchPolicy) bool {
+		return s.tryAcquireAccount(acc, concurrencyLimit, false, policy, false)
 	})
 }
 
@@ -6817,14 +6887,14 @@ const (
 	accountAcquireFailureUnavailable
 )
 
-func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSchedulerOnLimit bool) (bool, accountAcquireFailure) {
+func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSchedulerOnLimit bool, policy DispatchPolicy, continuation bool) (bool, accountAcquireFailure) {
 	if acc == nil || limit <= 0 {
 		return false, accountAcquireFailureDispatchLimit
 	}
 	if accountDispatchBlocked(acc) {
 		return false, accountAcquireFailureUnavailable
 	}
-	if !reserveOccupiedAccountSlot(acc, limit) {
+	if !reserveOccupiedAccountSlotForAdmission(acc, limit, policy, continuation) {
 		if accountDispatchBlocked(acc) {
 			return false, accountAcquireFailureUnavailable
 		}
@@ -6845,8 +6915,8 @@ func (s *Store) tryAcquireAccountWithFailure(acc *Account, limit int64, updateSc
 	return true, accountAcquireFailureNone
 }
 
-func (s *Store) tryAcquireAccount(acc *Account, limit int64, updateSchedulerOnLimit bool) bool {
-	acquired, _ := s.tryAcquireAccountWithFailure(acc, limit, updateSchedulerOnLimit)
+func (s *Store) tryAcquireAccount(acc *Account, limit int64, updateSchedulerOnLimit bool, policy DispatchPolicy, continuation bool) bool {
+	acquired, _ := s.tryAcquireAccountWithFailure(acc, limit, updateSchedulerOnLimit, policy, continuation)
 	return acquired
 }
 
@@ -6872,32 +6942,76 @@ func accountDispatchBlocked(acc *Account) bool {
 }
 
 func reserveOccupiedAccountSlot(acc *Account, limit int64) bool {
-	if limit <= 0 || accountDispatchBlocked(acc) {
+	return reserveOccupiedAccountSlotForAdmission(acc, limit, DispatchPolicyStandard, false)
+}
+
+func reserveOccupiedAccountSlotForAdmission(acc *Account, limit int64, policy DispatchPolicy, continuation bool) bool {
+	if acc == nil || limit <= 0 || accountDispatchBlocked(acc) {
 		return false
 	}
-	for {
-		occupied := acc.OccupiedRequests.Load()
-		if occupied >= limit || acc.ActiveRequests.Load() >= limit {
-			return false
-		}
-		if acc.OccupiedRequests.CompareAndSwap(occupied, occupied+1) {
-			acc.ActiveRequests.Add(1)
-			if accountDispatchBlocked(acc) {
-				releaseOccupiedAccountSlot(acc)
-				return false
-			}
-			return true
-		}
+
+	acc.mu.Lock()
+	now := time.Now()
+	_, _, currentLimit, _, available := acc.fastSchedulerSnapshotForAdmissionLocked(limit, now, policy, continuation)
+	if !available || currentLimit <= 0 {
+		acc.mu.Unlock()
+		return false
 	}
+	if currentLimit < limit {
+		limit = currentLimit
+	}
+	if accountOccupiedRequests(acc) >= limit {
+		acc.mu.Unlock()
+		return false
+	}
+	acc.OccupiedRequests.Add(1)
+	acc.ActiveRequests.Add(1)
+	acc.mu.Unlock()
+
+	if accountDispatchBlocked(acc) {
+		releaseOccupiedAccountSlot(acc)
+		return false
+	}
+	return true
 }
 
 func releaseOccupiedAccountSlot(acc *Account) bool {
 	if acc == nil {
 		return false
 	}
-	activeReleased := atomicDecrementIfPositive(&acc.ActiveRequests)
-	occupiedReleased := atomicDecrementIfPositive(&acc.OccupiedRequests)
+	acc.mu.Lock()
+	now := time.Now()
+	activeReleased := acc.ActiveRequests.Load() > 0
+	occupiedReleased := acc.OccupiedRequests.Load() > 0
+	if activeReleased {
+		acc.ActiveRequests.Add(-1)
+	}
+	if occupiedReleased {
+		acc.OccupiedRequests.Add(-1)
+	}
+	if activeReleased && acc.quotaAutoPause5hGuardActiveLocked(now) {
+		acc.setQuotaGuardPendingLocked(now)
+	}
+	acc.mu.Unlock()
 	return activeReleased || occupiedReleased
+}
+
+func finishActiveAccountSlot(acc *Account) bool {
+	if acc == nil {
+		return false
+	}
+	acc.mu.Lock()
+	now := time.Now()
+	if acc.ActiveRequests.Load() <= 0 {
+		acc.mu.Unlock()
+		return false
+	}
+	acc.ActiveRequests.Add(-1)
+	if acc.quotaAutoPause5hGuardActiveLocked(now) {
+		acc.setQuotaGuardPendingLocked(now)
+	}
+	acc.mu.Unlock()
+	return true
 }
 
 func atomicDecrementIfPositive(counter *atomic.Int64) bool {
@@ -6911,25 +7025,6 @@ func atomicDecrementIfPositive(counter *atomic.Int64) bool {
 		}
 		if counter.CompareAndSwap(current, current-1) {
 			return true
-		}
-	}
-}
-
-func atomicSubtractFloorZero(counter *atomic.Int64, delta int64) {
-	if counter == nil || delta <= 0 {
-		return
-	}
-	for {
-		current := counter.Load()
-		if current <= 0 {
-			return
-		}
-		next := current - delta
-		if next < 0 {
-			next = 0
-		}
-		if counter.CompareAndSwap(current, next) {
-			return
 		}
 	}
 }
@@ -7053,7 +7148,7 @@ func (s *Store) NextExcludingWithDispatch(apiKeyID int64, exclude map[int64]bool
 		if s.accountHasBlockingCachedCooldown(best, policy) {
 			continue
 		}
-		if s.tryAcquireAccount(best, bestLimit, true) {
+		if s.tryAcquireAccount(best, bestLimit, true, policy, false) {
 			s.recordSchedulerSelection(started, false, true, true, scanned)
 			if shadowChecked {
 				s.recordSchedulerShadow(shadowIndexedHit, true)
@@ -7179,7 +7274,7 @@ func (s *Store) lazyCanRefreshForMetadata(acc *Account) bool {
 		acc.healthTierLocked() != HealthTierBanned
 }
 
-func (s *Store) acquireLazyCandidate(acc *Account, maxConcurrency int64) bool {
+func (s *Store) acquireLazyCandidate(acc *Account, maxConcurrency int64, policy DispatchPolicy) bool {
 	if !s.ensureLazyDispatchReady(acc) {
 		return false
 	}
@@ -7187,7 +7282,7 @@ func (s *Store) acquireLazyCandidate(acc *Account, maxConcurrency int64) bool {
 	if limit <= 0 {
 		return false
 	}
-	return s.tryAcquireAccount(acc, limit, true)
+	return s.tryAcquireAccount(acc, limit, true, policy, false)
 }
 
 func (s *Store) nextExcludingWithFilterLazy(apiKeyID int64, exclude map[int64]bool, filter AccountFilter, policy DispatchPolicy) *Account {
@@ -7254,7 +7349,7 @@ func (s *Store) nextExcludingWithFilterLazy(apiKeyID int64, exclude map[int64]bo
 		if s.accountHasBlockingCachedCooldown(best, policy) {
 			continue
 		}
-		if s.acquireLazyCandidate(best, maxConcurrency) {
+		if s.acquireLazyCandidate(best, maxConcurrency, policy) {
 			return best
 		}
 	}
@@ -7663,7 +7758,7 @@ func (s *Store) nextAccountForFreshAffinityWithDispatch(key string, apiKeyID int
 		if s.accountHasBlockingCachedCooldown(c.acc, policy) {
 			continue
 		}
-		if s.tryAcquireAccount(c.acc, c.limit, true) {
+		if s.tryAcquireAccount(c.acc, c.limit, true, policy, false) {
 			return c.acc
 		}
 	}
@@ -7867,7 +7962,7 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 	maxConcurrency := s.maxConcurrency.Load()
 	now := time.Now()
 	if s.GetLazyMode() && !continuationEligible {
-		if s.tryReclaimSessionSlot(target, sessionKey, true) {
+		if s.tryReclaimSessionSlot(target, sessionKey, maxConcurrency, DispatchPolicyStandard, false, true) {
 			return target, false
 		}
 		if !s.ensureLazyDispatchReady(target) {
@@ -7877,7 +7972,7 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 		if limit <= 0 {
 			return nil, false
 		}
-		acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true)
+		acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true, policy, continuationEligible)
 		if !acquired {
 			return nil, failure == accountAcquireFailureCapacity
 		}
@@ -7894,10 +7989,10 @@ func (s *Store) takeByIDModeWithCapacity(id int64, apiKeyID int64, exclude map[i
 	if !available || limit <= 0 {
 		return nil, false
 	}
-	if s.tryReclaimSessionSlot(target, sessionKey, true) {
+	if s.tryReclaimSessionSlot(target, sessionKey, maxConcurrency, policy, continuationEligible, true) {
 		return target, false
 	}
-	acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true)
+	acquired, failure := s.tryAcquireAccountWithFailure(target, limit, true, policy, continuationEligible)
 	if !acquired {
 		return nil, failure == accountAcquireFailureCapacity
 	}
@@ -8391,7 +8486,14 @@ func (s *Store) SetSessionSlotBufferEnabled(enabled bool) {
 			continue
 		}
 		if count := releasedByAccount[acc.DBID]; count > 0 {
-			atomicSubtractFloorZero(&acc.OccupiedRequests, count)
+			acc.mu.Lock()
+			occupied := acc.OccupiedRequests.Load()
+			if count >= occupied {
+				acc.OccupiedRequests.Store(0)
+			} else {
+				acc.OccupiedRequests.Store(occupied - count)
+			}
+			acc.mu.Unlock()
 		}
 	}
 	if len(releasedByAccount) > 0 {
@@ -8430,8 +8532,9 @@ func (s *Store) ReleaseForSession(acc *Account, sessionKey string) {
 		s.sessionSlotReservations[acc.DBID] = bySession
 	}
 	bySession[sessionKey] = append(bySession[sessionKey], reservationID)
-	atomicDecrementIfPositive(&acc.ActiveRequests)
 	s.sessionMu.Unlock()
+	finishActiveAccountSlot(acc)
+	s.armQuotaGuardProbeIfPending(acc)
 
 	time.AfterFunc(buffer, func() {
 		s.expireSessionSlot(acc, sessionKey, reservationID)
@@ -8477,13 +8580,24 @@ func (s *Store) expireSessionSlot(acc *Account, sessionKey string, reservationID
 	}
 	s.sessionMu.Unlock()
 	if released {
-		atomicDecrementIfPositive(&acc.OccupiedRequests)
+		acc.mu.Lock()
+		if acc.OccupiedRequests.Load() > 0 {
+			acc.OccupiedRequests.Add(-1)
+		}
+		acc.mu.Unlock()
 		s.notifySchedulerAccountAvailability(acc, false)
 	}
 }
 
-func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSchedulerOnLimit bool) bool {
+func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, baseLimit int64, policy DispatchPolicy, continuation bool, updateSchedulerOnLimit bool) bool {
 	if s == nil || accountDispatchBlocked(acc) || strings.TrimSpace(sessionKey) == "" || !s.SessionSlotBufferEnabled() || s.GetSessionSlotBuffer() <= 0 {
+		return false
+	}
+	acc.mu.Lock()
+	now := time.Now()
+	_, _, currentLimit, _, available := acc.fastSchedulerSnapshotForAdmissionLocked(baseLimit, now, policy, continuation)
+	if !available || currentLimit <= 0 || acc.ActiveRequests.Load() >= currentLimit {
+		acc.mu.Unlock()
 		return false
 	}
 	sessionKey = strings.TrimSpace(sessionKey)
@@ -8507,6 +8621,7 @@ func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSch
 		}
 	}
 	s.sessionMu.Unlock()
+	acc.mu.Unlock()
 	if !reclaimed {
 		return false
 	}
@@ -8516,8 +8631,6 @@ func (s *Store) tryReclaimSessionSlot(acc *Account, sessionKey string, updateSch
 		}
 		return false
 	}
-
-	now := time.Now()
 	dispatchReservation := acc.reserveDispatchCount(now)
 	if !dispatchReservation.Allowed {
 		if releaseOccupiedAccountSlot(acc) {
@@ -8542,6 +8655,7 @@ func (s *Store) Release(acc *Account) {
 	}
 	if releaseOccupiedAccountSlot(acc) {
 		s.notifySchedulerAccountAvailability(acc, false)
+		s.armQuotaGuardProbeIfPending(acc)
 	}
 }
 
@@ -11444,6 +11558,42 @@ func (s *Store) finishUsageProbeBatch() {
 	if onComplete != nil {
 		onComplete()
 	}
+}
+
+const quotaGuardProbeDelay = 2 * time.Second
+
+// armQuotaGuardProbeIfPending performs one delayed, zero-cost WHAM probe when
+// the connection-level post-terminal frame does not arrive promptly. The timer
+// is per account and is not rearmed by ordinary slot churn.
+func (s *Store) armQuotaGuardProbeIfPending(account *Account) {
+	if s == nil || account == nil {
+		return
+	}
+	account.mu.Lock()
+	if !account.quotaGuardPending || account.quotaGuardProbeTimer != nil || account.quotaGuardProbeIssued {
+		account.mu.Unlock()
+		return
+	}
+	account.quotaGuardProbeIssued = true
+	var timer *time.Timer
+	timer = time.AfterFunc(quotaGuardProbeDelay, func() {
+		account.mu.Lock()
+		// A newer observation may have stopped and replaced this timer while
+		// the callback was waiting for the account lock. Only the timer that
+		// still owns the field may consume this fence generation.
+		if account.quotaGuardProbeTimer != timer {
+			account.mu.Unlock()
+			return
+		}
+		account.quotaGuardProbeTimer = nil
+		pending := account.quotaGuardPending
+		account.mu.Unlock()
+		if pending {
+			s.TriggerUsageProbeForAccountAsync(account)
+		}
+	})
+	account.quotaGuardProbeTimer = timer
+	account.mu.Unlock()
 }
 
 // TriggerUsageProbeForAccountAsync immediately probes one account without

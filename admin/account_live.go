@@ -10,6 +10,7 @@ import (
 type accountLiveItem struct {
 	// A nil embedded projection omits Codex credit fields for other planes.
 	*AccountLiveCredits
+	*AccountLiveCooldown
 	ActiveRequests   int64 `json:"active_requests"`
 	OccupiedRequests int64 `json:"occupied_requests"`
 	// DynamicConcurrencyLimit is the admission cap the scheduler currently
@@ -48,6 +49,14 @@ type AccountLiveCredits struct {
 	OverageLimitReached  *bool   `json:"credits_overage_limit_reached"`
 	SpendControlReached  *bool   `json:"credits_spend_control_reached"`
 	RateLimitReachedType string  `json:"credits_rate_limit_reached_type"`
+}
+
+// Null clears an earlier countdown when the runtime releases its cooldown.
+// A nil embedded projection leaves other providers' persisted status alone.
+type AccountLiveCooldown struct {
+	CooldownUntil     *string `json:"cooldown_until"`
+	CooldownReason    string  `json:"cooldown_reason"`
+	QuotaGuardPending *bool   `json:"quota_guard_pending"`
 }
 
 // GetAccountLiveState returns request-local runtime counters for the visible
@@ -94,6 +103,11 @@ func (h *Handler) GetAccountLiveState(c *gin.Context) {
 			}
 			status := usage.Status
 			item.Status = &status
+			item.AccountLiveCooldown = &AccountLiveCooldown{
+				CooldownUntil:     optionalLiveTime(usage.CooldownUntil),
+				CooldownReason:    usage.CooldownReason,
+				QuotaGuardPending: &usage.QuotaGuardPending,
+			}
 			usingCredits := usage.UsingCredits
 			item.UsingCredits = &usingCredits
 			if usage.UsagePercent5hValid {
@@ -116,6 +130,7 @@ func (h *Handler) GetAccountLiveState(c *gin.Context) {
 		}
 		live[id] = item
 	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
 		"accounts":                    live,
 		"session_slot_buffer_enabled": h.store.SessionSlotBufferEnabled(),
