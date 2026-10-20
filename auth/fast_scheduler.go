@@ -53,7 +53,7 @@ type FastScheduler struct {
 	unsorted   map[AccountHealthTier]bool
 	cursors    [3]atomic.Uint64
 	groupCheck func(apiKeyID int64, account *Account) bool
-	acquire    func(account *Account, concurrencyLimit int64) bool
+	acquire    func(account *Account, concurrencyLimit int64, policy DispatchPolicy) bool
 	generation uint64 // detects candidate invalidation while callbacks run without mu
 	metrics    *schedulerRuntimeMetrics
 	// retainUnavailable keeps dormant entries in sparse routing schedulers. The
@@ -102,7 +102,7 @@ func (s *FastScheduler) SetGroupCheck(check func(apiKeyID int64, account *Accoun
 	s.mu.Unlock()
 }
 
-func (s *FastScheduler) SetAcquireFunc(acquire func(account *Account, concurrencyLimit int64) bool) {
+func (s *FastScheduler) SetAcquireFunc(acquire func(account *Account, concurrencyLimit int64, policy DispatchPolicy) bool) {
 	if s == nil {
 		return
 	}
@@ -695,9 +695,9 @@ func (s *FastScheduler) acquireCandidatesOutsideLock(candidates []fastSchedulerC
 		}
 		acquired := false
 		if acquire != nil {
-			acquired = acquire(acc, limit)
+			acquired = acquire(acc, limit, policy)
 		} else {
-			acquired = tryAcquireAccount(acc, limit)
+			acquired = tryAcquireAccount(acc, limit, policy, false)
 		}
 		if acquired {
 			return acc, false
@@ -834,7 +834,10 @@ func (a *Account) fastSchedulerSnapshotForPolicy(baseLimit int64, now time.Time,
 func (a *Account) fastSchedulerSnapshotForSpark(baseLimit int64, now time.Time) (AccountHealthTier, float64, int64, bool, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.fastSchedulerSnapshotForSparkLocked(baseLimit, now)
+}
 
+func (a *Account) fastSchedulerSnapshotForSparkLocked(baseLimit int64, now time.Time) (AccountHealthTier, float64, int64, bool, bool) {
 	tier := a.healthTierLocked()
 	score := a.DispatchScore
 	proven := a.TotalRequests.Load() > 10
@@ -869,7 +872,15 @@ func (a *Account) fastSchedulerSnapshotForContinuation(baseLimit int64, now time
 func (a *Account) fastSchedulerSnapshotWithUsageOverride(baseLimit int64, now time.Time, continuation bool) (AccountHealthTier, float64, int64, bool, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.fastSchedulerSnapshotWithUsageOverrideLocked(baseLimit, now, continuation)
+}
 
+// fastSchedulerSnapshotWithUsageOverrideLocked is shared by candidate reads
+// and the final slot reservation. Keeping both on the same locked projection
+// makes a usage observation and an admission decision totally ordered: a
+// request that wins the lock first may proceed, while every request arriving
+// after a threshold observation observes that threshold.
+func (a *Account) fastSchedulerSnapshotWithUsageOverrideLocked(baseLimit int64, now time.Time, continuation bool) (AccountHealthTier, float64, int64, bool, bool) {
 	if (isPremium5hPlan(a.PlanType) && a.UsagePercent5hValid) ||
 		(IsPlusOrHigherPlan(a.PlanType) && a.UsagePercent7dValid) {
 		a.recomputeSchedulerLocked(baseLimit)
@@ -908,6 +919,9 @@ func (a *Account) fastSchedulerSnapshotWithUsageOverride(baseLimit int64, now ti
 	if a.quotaAutoPausedLocked(now) {
 		available = false
 	}
+	if a.quotaGuardPending {
+		available = false
+	}
 	// Fresh dispatch remains fenced by WHAM-reported usage windows even when
 	// IgnoreUsageLimitStatus is enabled. Continuations use a separate, narrow
 	// account-selection path in Store.
@@ -920,7 +934,7 @@ func (a *Account) fastSchedulerSnapshotWithUsageOverride(baseLimit int64, now ti
 	return tier, score, limit, proven, available
 }
 
-func tryAcquireAccount(acc *Account, limit int64) bool {
+func tryAcquireAccount(acc *Account, limit int64, policy DispatchPolicy, continuation bool) bool {
 	if acc == nil {
 		return false
 	}
@@ -929,10 +943,20 @@ func tryAcquireAccount(acc *Account, limit int64) bool {
 		return false
 	}
 
-	if !reserveOccupiedAccountSlot(acc, limit) {
+	if !reserveOccupiedAccountSlotForAdmission(acc, limit, policy, continuation) {
 		return false
 	}
 	acc.TotalRequests.Add(1)
 	acc.LastUsedAt.Store(time.Now().UnixNano())
 	return true
+}
+
+func (a *Account) fastSchedulerSnapshotForAdmissionLocked(baseLimit int64, now time.Time, policy DispatchPolicy, continuation bool) (AccountHealthTier, float64, int64, bool, bool) {
+	if continuation {
+		return a.fastSchedulerSnapshotWithUsageOverrideLocked(baseLimit, now, true)
+	}
+	if policy == DispatchPolicySpark {
+		return a.fastSchedulerSnapshotForSparkLocked(baseLimit, now)
+	}
+	return a.fastSchedulerSnapshotWithUsageOverrideLocked(baseLimit, now, false)
 }

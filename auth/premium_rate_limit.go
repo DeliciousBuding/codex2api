@@ -237,6 +237,7 @@ func (s *Store) ClearAbsentUsageSnapshot5hAt(acc *Account, observedAt time.Time)
 	acc.UsagePercent5hValid = false
 	acc.Reset5hAt = time.Time{}
 	acc.UsageUpdatedAt5h = time.Time{}
+	acc.clearQuotaGuardPendingLocked(observedAt)
 	if cleared5hCooldown {
 		acc.Status = StatusReady
 		acc.CooldownUtil = time.Time{}

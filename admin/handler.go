@@ -1830,6 +1830,7 @@ type accountResponse struct {
 	LastServerErrorAt             string                      `json:"last_server_error_at,omitempty"`
 	CooldownReason                string                      `json:"cooldown_reason,omitempty"`
 	CooldownUntil                 string                      `json:"cooldown_until,omitempty"`
+	QuotaGuardPending             bool                        `json:"quota_guard_pending"`
 	ModelCooldowns                []modelCooldownResponse     `json:"model_cooldowns,omitempty"`
 	ModelCooldownModeOverride     *string                     `json:"model_cooldown_mode_override"`
 	ModelCooldownSecondsOverride  *int                        `json:"model_cooldown_seconds_override"`

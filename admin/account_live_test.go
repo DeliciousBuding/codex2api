@@ -116,8 +116,9 @@ func TestGetAccountLiveStateReturnsRuntimeUsage(t *testing.T) {
 	if item.UsingCredits == nil {
 		t.Fatalf("using_credits missing: %+v", item)
 	}
-	if item.AccountLiveCooldown == nil || item.CooldownUntil == nil || item.CooldownReason != "responses_rate_limited" {
-		t.Fatalf("cooldown missing: %+v", item.AccountLiveCooldown)
+	if item.AccountLiveCooldown == nil || item.CooldownUntil == nil || item.CooldownReason != "responses_rate_limited" ||
+		item.QuotaGuardPending == nil || *item.QuotaGuardPending {
+		t.Fatalf("cooldown/guard projection missing: %+v", item.AccountLiveCooldown)
 	}
 	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
@@ -187,8 +188,11 @@ func TestGetAccountLiveStateSerializesNullWindowsAndSkipsAntigravityFields(t *te
 	if got := string(codexItem["cooldown_reason"]); got != `""` {
 		t.Fatalf("codex cooldown_reason = %s, want empty string", got)
 	}
+	if got := string(codexItem["quota_guard_pending"]); got != "false" {
+		t.Fatalf("codex quota_guard_pending = %s, want false", got)
+	}
 	antigravityItem := raw.Accounts["12"]
-	for _, key := range []string{"status", "using_credits", "plan_type", "credits_valid", "credits_balance", "codex_usage_frame_at", "codex_usage_frame_kind", "cooldown_until", "cooldown_reason"} {
+	for _, key := range []string{"status", "using_credits", "plan_type", "credits_valid", "credits_balance", "codex_usage_frame_at", "codex_usage_frame_kind", "cooldown_until", "cooldown_reason", "quota_guard_pending"} {
 		if value, ok := antigravityItem[key]; ok {
 			t.Fatalf("antigravity item unexpectedly carries %s=%s", key, value)
 		}

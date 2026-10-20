@@ -54,8 +54,9 @@ type AccountLiveCredits struct {
 // Null clears an earlier countdown when the runtime releases its cooldown.
 // A nil embedded projection leaves other providers' persisted status alone.
 type AccountLiveCooldown struct {
-	CooldownUntil  *string `json:"cooldown_until"`
-	CooldownReason string  `json:"cooldown_reason"`
+	CooldownUntil     *string `json:"cooldown_until"`
+	CooldownReason    string  `json:"cooldown_reason"`
+	QuotaGuardPending *bool   `json:"quota_guard_pending"`
 }
 
 // GetAccountLiveState returns request-local runtime counters for the visible
@@ -103,8 +104,9 @@ func (h *Handler) GetAccountLiveState(c *gin.Context) {
 			status := usage.Status
 			item.Status = &status
 			item.AccountLiveCooldown = &AccountLiveCooldown{
-				CooldownUntil:  optionalLiveTime(usage.CooldownUntil),
-				CooldownReason: usage.CooldownReason,
+				CooldownUntil:     optionalLiveTime(usage.CooldownUntil),
+				CooldownReason:    usage.CooldownReason,
+				QuotaGuardPending: &usage.QuotaGuardPending,
 			}
 			usingCredits := usage.UsingCredits
 			item.UsingCredits = &usingCredits
