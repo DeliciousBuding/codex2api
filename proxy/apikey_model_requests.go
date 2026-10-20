@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,22 +64,36 @@ func (h *Handler) attachAPIKeyModelRequestQuota(c *gin.Context, newTurn bool) {
 	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), apiKeyModelRequestContextKey{}, state))
 }
 
-func (h *Handler) refreshAPIKeyModelRequestQuotaTurn(c *gin.Context) error {
+func (h *Handler) refreshAPIKeyWebSocketTurn(c *gin.Context) error {
 	row := apiKeyRowFromContext(c)
 	if row != nil && row.ID > 0 && h.db != nil {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
 		defer cancel()
 		fresh, err := h.db.GetAPIKeyByID(ctx, row.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return &apiKeyModelRequestQuotaError{http.StatusUnauthorized, api.ErrInvalidAPIKey}
+		}
 		if err != nil {
 			return &apiKeyModelRequestQuotaError{http.StatusServiceUnavailable,
-				api.NewAPIError(api.ErrCodeServiceUnavailable, "Model request quota configuration is unavailable", api.ErrorTypeServer)}
+				api.NewAPIError(api.ErrCodeServiceUnavailable, "API key configuration is unavailable", api.ErrorTypeServer)}
 		}
-		// A long-lived socket must observe newly added budgets as well as limit
-		// changes. Keep other existing connection admission behavior unchanged.
-		frameRow := *row
-		frameRow.Limits.ModelRequestLimits = fresh.Limits.ModelRequestLimits
-		c.Set(contextAPIKeyRow, &frameRow)
-		defer c.Set(contextAPIKeyRow, row)
+		if !fresh.Enabled {
+			return &apiKeyModelRequestQuotaError{http.StatusUnauthorized,
+				api.NewAPIError(api.ErrCodeInvalidAuth, "API key is disabled", api.ErrorTypeAuthentication)}
+		}
+		if fresh.IsExpired(time.Now()) {
+			return &apiKeyModelRequestQuotaError{http.StatusUnauthorized,
+				api.NewAPIError(api.ErrCodeInvalidAuth, "API key has expired", api.ErrorTypeAuthentication)}
+		}
+		if fresh.IsQuotaExhausted() {
+			return &apiKeyModelRequestQuotaError{http.StatusTooManyRequests,
+				api.NewAPIError(api.ErrCodeRateLimitReached, "API key quota exhausted", api.ErrorTypeRateLimit)}
+		}
+		// Each turn is a new request. Reuse the existing database read for the
+		// full admission snapshot, not just weekly model request budgets.
+		c.Set(contextAPIKeyRow, fresh)
+		c.Set(contextAPIKeyName, strings.TrimSpace(fresh.Name))
+		h.syncAPIKeyAllowedGroups(fresh)
 	}
 	h.attachAPIKeyModelRequestQuota(c, true)
 	return nil

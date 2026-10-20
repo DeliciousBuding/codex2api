@@ -62,10 +62,29 @@ func (h *Handler) CodexAlphaSearchHandler(c *gin.Context) {
 		return
 	}
 	h.capturePromptRequestIngress(c, rawBody)
-	model := strings.TrimSpace(gjson.GetBytes(rawBody, "model").String())
+	model, err := requestPolicyModel(rawBody)
+	if err != nil {
+		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, err.Error(), api.ErrorTypeInvalidRequest))
+		return
+	}
 	if h.inspectPromptFilterOpenAI(c, rawBody, "/v1/alpha/search", model) {
 		return
 	}
+	if row := apiKeyRowFromContext(c); model == "" && row != nil && (len(row.Limits.ModelAllow) > 0 || len(row.Limits.ModelDeny) > 0 || len(row.Limits.ModelRequestLimits) > 0) {
+		SendAPIKeyLimitError(c, http.StatusForbidden, "A model is required for search with this API key's model restrictions")
+		return
+	}
+	if h.enforceAPIKeyLimitsAndReply(c, model) {
+		return
+	}
+	releaseKey, ok := h.acquireAPIKeyConcurrency(c)
+	if !ok {
+		return
+	}
+	if releaseKey != nil {
+		defer releaseKey()
+	}
+	defer h.ReleaseAPIKeyScopeConcurrency(c)
 	continuousRetryPolicy := continuousRetryPolicyForCall(nil)
 	rememberContinuousRetryPolicyForRequest(c, continuousRetryPolicy)
 	stopRetryDeadline := installContinuousRetryHTTPDeadline(c, continuousRetryPolicy, continuousRetryProtocolResponses)
@@ -79,12 +98,18 @@ func (h *Handler) CodexAlphaSearchHandler(c *gin.Context) {
 	searchFilter := applyAffinityGroupRouting(c, resolveRequestSessionIdentity(c.Request.Header, rawBody), func(a *auth.Account) bool {
 		return !a.IsRelayStyle()
 	})
+	searchFilter = h.applyScopeBudgetFilter(c, searchFilter)
 	account := h.store.NextExcludingWithFilter(apiKeyID, nil, searchFilter)
 	if account == nil {
+		if msg := scopeBudgetExhaustedMessage(c); msg != "" {
+			SendAPIKeyLimitError(c, http.StatusTooManyRequests, msg)
+			return
+		}
 		api.SendError(c, api.ErrServiceUnavailable)
 		return
 	}
 	defer h.store.Release(account)
+	h.AcquireAPIKeyScopeConcurrency(c, account)
 
 	apiKey := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
 	resp, err := ForwardCodexAlphaSearch(
@@ -97,6 +122,9 @@ func (h *Handler) CodexAlphaSearchHandler(c *gin.Context) {
 		apiKey,
 	)
 	if err != nil {
+		if sendAPIKeyModelRequestQuotaError(c, err) {
+			return
+		}
 		// 版本不可用在出站前就已拦下，是本地配置问题，不能报成上游 502。
 		var identityErr *Error
 		if errors.As(err, &identityErr) && identityErr.Code == ErrorCodeCodexClientVersionUnavailable {
@@ -179,6 +207,9 @@ func ForwardCodexAlphaSearch(ctx context.Context, account *auth.Account, proxyUR
 	// 复用网关同款 transport（支持 uTLS Chrome 指纹），与 /responses、清单透传一致。
 	// 池化而非每次新建，避免一次性 uTLS transport 泄漏连接（issue #446）。
 	client := getCodexMaintenanceClient(account, proxyURL)
+	if err := ConsumeAPIKeyModelRequestQuota(reqCtx, strings.TrimSpace(gjson.GetBytes(rawBody, "model").String())); err != nil {
+		return nil, err
+	}
 	resp, err := executeHTTPWithContinuousRetryKeepalive(reqCtx, func() (*http.Response, error) {
 		return client.Do(req)
 	})
