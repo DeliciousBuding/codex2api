@@ -36,7 +36,10 @@ import {
 import GrokAccounts from "./GrokAccounts";
 import AntigravityAccounts from "./AntigravityAccounts";
 import ClaudeAccounts from "./ClaudeAccounts";
-import { mergeAccountLiveState, useAccountLiveState } from "../hooks/useAccountLiveState";
+import { useLiveAccounts } from "../hooks/useAccountLiveState";
+import { useAccountPageStats } from "../hooks/useAccountPageStats";
+import { getAccountUsageUpdatedAt } from "../lib/accountLiveState";
+import { mergeAccountPageStats } from "../lib/accountPageStats";
 import PageHeader from "../components/PageHeader";
 import {
   HeaderActionMenu,
@@ -79,8 +82,6 @@ import type {
   AccountListSummary,
   AccountEmailDomainFacet,
   AccountOperationSelector,
-  AccountPageStatsItem,
-  AccountLiveStateResponse,
   UpstreamChannel,
   OpenAIResponsesBalanceResponse,
   ChannelMonitorBillingSnapshot,
@@ -1633,11 +1634,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                       <span className="mr-1 text-[11px] text-muted-foreground/70">
                                         {t("accounts.usageUpdatedAtShort")}
                                       </span>
-                                      {account.codex_usage_updated_at
-                                        ? formatRelativeTime(
-                                            account.codex_usage_updated_at,
-                                          )
-                                        : t("accounts.noUsageUpdatedAt")}
+                                      <AccountUsageTimestamp account={account} />
                                     </div>
                                   </div>
                                 ) : (
@@ -1733,7 +1730,7 @@ const AccountTableRow = memo(function AccountTableRow({
 
 // AccountMobileCard 的 memo 包装:内联回调只在本组件重渲染时重建,
 // 行数据不变则整卡跳过。
-const AccountCardItem = memo(function AccountCardItem({
+export const AccountCardItem = memo(function AccountCardItem({
   account,
   channelMonitorBilling,
   sequence,
@@ -3012,25 +3009,17 @@ export default function Accounts() {
       controller.abort();
     };
   }, [providerView, refreshChannelMonitorBilling, responsesAccountIDsKey]);
-  const applyAccountLiveState = useCallback((response: AccountLiveStateResponse) => {
-    setData((current) => {
-      const accounts = mergeAccountLiveState(current.accounts, response);
-      return accounts === current.accounts ? current : { ...current, accounts };
-    });
-  }, [setData]);
-  useAccountLiveState(visibleAccountIDs, applyAccountLiveState, providerView === "codex");
   const loadAccountDetail = useCallback(
     (account: AccountRow) =>
       account.detail_loaded ? Promise.resolve(account) : api.getAccount(account.id),
     [],
   );
-  // page-stats 存独立 state 并在渲染时合并:分页基础行不含成本/用量明细,
-  // 若把 stats 写回 data.accounts,任何静默列表刷新都会用基础行整体覆盖,
-  // 成本列在 ID 不变时永久变 "-" (issue #499)。
-  const [accountPageStats, setAccountPageStats] = useState<Record<string, AccountPageStatsItem>>({});
+  // The list, gateway stats and runtime quota poll are independent. Overlay
+  // runtime fields last so an older list/stats response cannot undo a poll.
   // 用量弹窗里手动刷新官方统计后 bump 一次,强制重拉本页 stats——
   // 否则官方成本胶囊要等翻页/改筛选才出现,看起来像刷新没生效。
   const [pageStatsReloadToken, setPageStatsReloadToken] = useState(0);
+  const { snapshot: accountPageStats, patchOfficialUsage } = useAccountPageStats(visibleAccountIDs.join(","), pageStatsReloadToken, providerView === "codex");
   // 顶部刷新同时要重拉 page-stats。列表和 page-stats 是两条独立请求链,
   // 账号 ID 不变时仅 reload 列表不会触发 page-stats effect,今日统计就会留在旧快照。
   const refreshAccountPage = useCallback(async () => {
@@ -3039,93 +3028,17 @@ export default function Accounts() {
   }, [reload]);
   const handleOfficialUsageRefreshed = useCallback(
     (patch?: { accountId: number; officialUsd: number | null }) => {
-      if (patch) {
-        setAccountPageStats((current) => ({
-          ...current,
-          [String(patch.accountId)]: {
-            ...current[String(patch.accountId)],
-            official_usd: patch.officialUsd ?? undefined,
-            official_usd_7d: patch.officialUsd ?? undefined,
-            official_usage_synced: true,
-          },
-        }));
-      }
+      if (patch) patchOfficialUsage(patch);
       setPageStatsReloadToken((token) => token + 1);
     },
-    [],
+    [patchOfficialUsage],
   );
   // Codex 视图的统计卡/额度分布/列表/批量操作一律排除 Grok 账号
   // （Grok 账号由顶部切换后的 Grok 页单独统计与管理）。
-  const allAccounts = useMemo(() => {
-    const sameOptional = (a: unknown, b: unknown) =>
-      (a ?? undefined) === (b ?? undefined);
-    return data.accounts.map((account) => {
-      const stats = accountPageStats[String(account.id)];
-      if (!stats) return account;
-      // 行自身已带的字段优先(如 refreshAccountRow 拉回的完整详情比
-      // 本页 stats 快照更新),page-stats 只补基础行缺失的部分。
-      // 官方结算例外：点进官方统计刷新后必须以最新快照为准，
-      // 否则行上的旧额度会挡住这次同步时间点。
-      const billed5h =
-        account.billed_5h == null && stats.billed_5h != null
-          ? stats.billed_5h
-          : account.billed_5h;
-      const billed7d =
-        account.billed_7d == null && stats.billed_7d != null
-          ? stats.billed_7d
-          : account.billed_7d;
-      const officialUsd = stats.official_usd ?? stats.official_usd_7d;
-      let nextOfficialUsd = account.official_usd;
-      let nextOfficialUsd7d = account.official_usd_7d;
-      if (officialUsd != null) {
-        nextOfficialUsd = officialUsd;
-        nextOfficialUsd7d = officialUsd;
-      } else if (stats.official_usage_synced) {
-        nextOfficialUsd = undefined;
-        nextOfficialUsd7d = undefined;
-      }
-      const officialSynced =
-        stats.official_usage_synced != null
-          ? stats.official_usage_synced
-          : account.official_usage_synced;
-      const usage5hDetail =
-        !account.usage_5h_detail && stats.usage_5h_detail
-          ? stats.usage_5h_detail
-          : account.usage_5h_detail;
-      const usage7dDetail =
-        !account.usage_7d_detail && stats.usage_7d_detail
-          ? stats.usage_7d_detail
-          : account.usage_7d_detail;
-      const usageTodayDetail =
-        !account.usage_today_detail && stats.usage_today_detail
-          ? stats.usage_today_detail
-          : account.usage_today_detail;
-      // page-stats 对本页每个账号都有条目；合并结果没变时保留行对象，
-      // 否则 1 秒 live 更新会让整页行级 memo 每秒全部失效。
-      if (
-        sameOptional(billed5h, account.billed_5h) &&
-        sameOptional(billed7d, account.billed_7d) &&
-        sameOptional(nextOfficialUsd, account.official_usd) &&
-        sameOptional(nextOfficialUsd7d, account.official_usd_7d) &&
-        sameOptional(officialSynced, account.official_usage_synced) &&
-        sameOptional(usage5hDetail, account.usage_5h_detail) &&
-        sameOptional(usage7dDetail, account.usage_7d_detail) &&
-        sameOptional(usageTodayDetail, account.usage_today_detail)
-      ) {
-        return account;
-      }
-      const merged = { ...account };
-      merged.billed_5h = billed5h;
-      merged.billed_7d = billed7d;
-      merged.official_usd = nextOfficialUsd;
-      merged.official_usd_7d = nextOfficialUsd7d;
-      merged.official_usage_synced = officialSynced;
-      merged.usage_5h_detail = usage5hDetail;
-      merged.usage_7d_detail = usage7dDetail;
-      merged.usage_today_detail = usageTodayDetail;
-      return merged;
-    });
-  }, [data.accounts, accountPageStats]);
+  const accountsWithStats = useMemo(() => mergeAccountPageStats(
+    data.accounts, accountPageStats?.stats ?? {}, accountPageStats?.updatedAt,
+  ), [data.accounts, accountPageStats]);
+  const allAccounts = useLiveAccounts(accountsWithStats, providerView === "codex");
   const accounts = useMemo(
     () => allAccounts.filter((account) => !account.grok_api),
     [allAccounts],
@@ -3169,36 +3082,14 @@ export default function Accounts() {
 
   const { bars: intelligenceBars, error: intelligenceBarsError } = useIntelligenceBars(accountPageIDsKey, healthBarsReloadToken);
 
-  // 最近一次拉取 page-stats 的时间,供自动刷新节流(任何来源触发都会更新)。
-  const pageStatsLoadedAtRef = useRef(0);
-  useEffect(() => {
-    if (!accountPageIDsKey) {
-      setAccountPageStats({});
-      return undefined;
-    }
-    const controller = new AbortController();
-    const ids = accountPageIDsKey.split(",").map(Number);
-    pageStatsLoadedAtRef.current = Date.now();
-    void api.getAccountPageStats(ids, controller.signal)
-      .then((response) => {
-        if (controller.signal.aborted) return;
-        setAccountPageStats(response.stats ?? {});
-      })
-      .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
-        // 该请求失败时成本/用量列会静默空白,必须留痕(issue #493)。
-        console.warn("account page stats load failed:", err);
-      });
-    return () => controller.abort();
-  }, [accountPageIDsKey, pageStatsReloadToken]);
-  // 自动刷新:列表静默重拉(不闪加载态、失败不弹错);page-stats 与健康条
-  // 是 usage_logs 聚合查询,按 ACCOUNT_PAGE_STATS_MIN_REFRESH_MS 节流。
+  // Gateway stats already refresh at 30s independently of list auto-refresh.
+  // Keep the existing health-bar throttle; neither path joins the 1s live poll.
+  const healthBarsLoadedAtRef = useRef(0);
   const autoRefreshAccountPage = useCallback(async () => {
     await reloadSilently();
     const now = Date.now();
-    if (shouldRefreshPageStats(pageStatsLoadedAtRef.current, now)) {
-      pageStatsLoadedAtRef.current = now;
-      setPageStatsReloadToken((token) => token + 1);
+    if (shouldRefreshPageStats(healthBarsLoadedAtRef.current, now)) {
+      healthBarsLoadedAtRef.current = now;
       setHealthBarsReloadToken((token) => token + 1);
     }
   }, [reloadSilently]);
@@ -14465,18 +14356,40 @@ function AccountMobileCard({
               </dd>
             </div>
           )}
-          {showColumn("updatedAt") && lazyMode && (
+          {showColumn("updatedAt") && (
             <div>
               <dt>
                 <Clock className="size-3 text-muted-foreground/75" />
                 <span>{t("accounts.usageUpdatedAtShort")}</span>
               </dt>
               <dd>
-                {account.codex_usage_updated_at ? (
-                  <time dateTime={account.codex_usage_updated_at} title={formatBeijingTime(account.codex_usage_updated_at)}>
-                    {formatRelativeTime(account.codex_usage_updated_at)}
-                  </time>
-                ) : t("accounts.noUsageUpdatedAt")}
+                <AccountUsageTimestamp account={account} />
+              </dd>
+            </div>
+          )}
+          {showColumn("updatedAt") && account.codex_usage_frame_at && (
+            <div>
+              <dt>
+                <Zap className="size-3 text-muted-foreground/75" />
+                <span>{t("accounts.usageFrameUpdatedAtShort")}</span>
+              </dt>
+              <dd>
+                <time dateTime={account.codex_usage_frame_at} title={`${account.codex_usage_frame_kind || "WS"} · ${formatBeijingTime(account.codex_usage_frame_at)}`}>
+                  {formatRelativeTime(account.codex_usage_frame_at)}
+                </time>
+              </dd>
+            </div>
+          )}
+          {showColumn("updatedAt") && account.gateway_usage_updated_at && (
+            <div>
+              <dt title={t("accounts.gatewayUsageUpdatedAtHint")}>
+                <BarChart3 className="size-3 text-muted-foreground/75" />
+                <span>{t("accounts.gatewayUsageUpdatedAtShort")}</span>
+              </dt>
+              <dd>
+                <time dateTime={account.gateway_usage_updated_at} title={`${t("accounts.gatewayUsageUpdatedAtHint")} · ${formatBeijingTime(account.gateway_usage_updated_at)}`}>
+                  {formatRelativeTime(account.gateway_usage_updated_at)}
+                </time>
               </dd>
             </div>
           )}
@@ -14535,6 +14448,16 @@ function AccountMobileCard({
       </footer>
     </article>
   );
+}
+
+function AccountUsageTimestamp({ account }: { account: AccountRow }) {
+  const { t } = useTranslation();
+  const updatedAt = getAccountUsageUpdatedAt(account);
+  return updatedAt ? (
+    <time dateTime={updatedAt} title={formatBeijingTime(updatedAt)}>
+      {formatRelativeTime(updatedAt)}
+    </time>
+  ) : <>{t("accounts.noUsageUpdatedAt")}</>;
 }
 
 function AccountCardMetric({

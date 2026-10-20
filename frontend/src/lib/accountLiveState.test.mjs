@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeAccountLiveState } from "./accountLiveState.ts";
+import { getAccountUsageUpdatedAt, mergeAccountLiveResponse, mergeAccountLiveState } from "./accountLiveState.ts";
 
 const baseRow = {
   id: 1,
@@ -162,4 +162,47 @@ test("hidden credit balance clears the prior value and absent fields preserve it
   delete payload.accounts["1"].credits_balance;
   delete payload.accounts["1"].plan_type;
   assert.equal(mergeAccountLiveState([baseRow], payload)[0], baseRow);
+});
+
+test("cooldown and WS frame freshness reach the row and null clears the countdown", () => {
+  const frameAt = "2026-10-18T13:01:00+08:00";
+  const merged = mergeAccountLiveState([baseRow], live({
+    cooldown_until: frameAt,
+    cooldown_reason: "responses_rate_limited",
+    quota_guard_pending: true,
+    codex_usage_frame_at: frameAt,
+    codex_usage_frame_kind: "codex.rate_limits",
+  }));
+  assert.equal(merged[0].cooldown_until, frameAt);
+  assert.equal(merged[0].cooldown_reason, "responses_rate_limited");
+  assert.equal(merged[0].quota_guard_pending, true);
+  assert.equal(merged[0].codex_usage_frame_at, frameAt);
+  assert.equal(merged[0].codex_usage_frame_kind, "codex.rate_limits");
+  assert.equal(mergeAccountLiveState(merged, live({ cooldown_until: null, cooldown_reason: "" }))[0].cooldown_until, undefined);
+  assert.equal(mergeAccountLiveState(merged, live({ quota_guard_pending: false }))[0].quota_guard_pending, false);
+});
+
+test("explicitly invalid official windows cannot be resurrected by gateway details", () => {
+  const account = { ...baseRow, usage_5h_detail: { requests: 10, tokens: 500 }, billed_5h: 1 };
+  const merged = mergeAccountLiveState([account], live({ usage_percent_5h: null, reset_5h_at: null }));
+  assert.equal(merged[0].usage_5h_detail, undefined);
+  assert.equal(merged[0].billed_5h, undefined);
+  const relay = { ...account, openai_responses_api: true };
+  assert.equal(mergeAccountLiveState([relay], live({ usage_percent_5h: null, reset_5h_at: null }))[0].usage_5h_detail, relay.usage_5h_detail);
+});
+
+test("partial live snapshots retain null and avoid replacing unchanged items", () => {
+  const first = live({ usage_percent_5h: null, reset_5h_at: null });
+  assert.equal(mergeAccountLiveResponse(first, live({ usage_percent_5h: null, reset_5h_at: null })), first);
+  const partial = { accounts: { "1": { active_requests: 2, occupied_requests: 2 } }, session_slot_buffer_enabled: false };
+  const next = mergeAccountLiveResponse(first, partial);
+  assert.equal(next.accounts["1"].usage_percent_5h, null);
+  assert.equal(next.accounts["1"].reset_5h_at, null);
+  assert.equal(next.accounts["1"].active_requests, 2);
+});
+
+test("usage freshness chooses the newer official window and handles 5h-only rows", () => {
+  assert.equal(getAccountUsageUpdatedAt({ id: 1, codex_5h_usage_updated_at: baseRow.codex_5h_usage_updated_at }), baseRow.codex_5h_usage_updated_at);
+  assert.equal(getAccountUsageUpdatedAt({ ...baseRow, codex_5h_usage_updated_at: "2026-10-18T13:01:00+08:00" }), "2026-10-18T13:01:00+08:00");
+  assert.equal(getAccountUsageUpdatedAt({ ...baseRow, codex_5h_usage_updated_at: "bad" }), baseRow.codex_usage_updated_at);
 });

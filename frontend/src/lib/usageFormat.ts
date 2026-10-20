@@ -72,6 +72,7 @@ export function needsUsageReload(account: {
 
 type AccountStatusSource = {
   status?: string | null
+  quota_guard_pending?: boolean
   openai_responses_api?: boolean
   grok_api?: boolean
   antigravity_api?: boolean
@@ -117,6 +118,9 @@ export function getAccountStatusBadgeStatus(account: AccountStatusSource): strin
   const status = account.status || 'unknown'
   if (status === 'overload_paused') return 'active'
   const key = status.toLowerCase()
+  if (account.quota_guard_pending && (key === 'active' || key === 'ready')) {
+    return 'quota_guard_pending'
+  }
   if ((key === 'active' || key === 'ready') && isUnsampledQuotaAccount(account)) {
     return 'unsampled'
   }
