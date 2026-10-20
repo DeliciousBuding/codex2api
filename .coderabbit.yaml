@@ -1,0 +1,6 @@
+reviews:
+  auto_review:
+    enabled: false
+  request_changes_workflow: false
+  poem: false
+  chat_auto_reply: false

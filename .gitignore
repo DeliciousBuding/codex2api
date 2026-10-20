@@ -57,6 +57,8 @@ diagrams/
 /data/
 /codex2api_local
 /server.log
+/.local/
+/.worktrees/
 
 # local e2e test scaffolding (mock upstream + scripts, not for CI)
 /local-test/
