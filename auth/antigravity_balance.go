@@ -193,7 +193,7 @@ func (s *Store) selectAntigravityBalancedAccount(key string, apiKeyID int64, exc
 			if s.accountHasBlockingCachedCooldown(c.acc, opts.Policy) {
 				continue
 			}
-			if s.tryAcquireAccount(c.acc, c.limit, true) {
+			if s.tryAcquireAccount(c.acc, c.limit, true, opts.Policy, false) {
 				return c.acc, true
 			}
 		}
